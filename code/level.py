@@ -151,6 +151,10 @@ class Level:
 
 		# get the display surface
 		self.display_surface = pygame.display.get_surface()
+		self.storm_tint = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+		self.storm_tint.fill(Colors.STORM_TINT)
+		self.fog_sky_tint = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+		self.fog_sky_tint.fill(Colors.FOG_SKY_TINT)
 
 		# sprite groups
 		self.all_sprites = CameraGroup()
@@ -743,13 +747,9 @@ class Level:
 		if self.use_day_night:
 			self.sky.display(dt)
 		else:
-			storm_tint = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-			storm_tint.fill(Colors.STORM_TINT)
-			self.display_surface.blit(storm_tint, (0, 0))
+			self.display_surface.blit(self.storm_tint, (0, 0))
 		if self.current_mode == 4:
-			fog_sky = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-			fog_sky.fill(Colors.FOG_SKY_TINT)
-			self.display_surface.blit(fog_sky, (0, 0))
+			self.display_surface.blit(self.fog_sky_tint, (0, 0))
 
 		# transition overlay
 		if self.player.sleep:
@@ -788,19 +788,24 @@ class CameraGroup(pygame.sprite.Group):
 			self.offset.x = player.rect.centerx - SCREEN_WIDTH / 2
 			self.offset.y = player.rect.centery - SCREEN_HEIGHT / 2
 
-		for layer in LAYERS.values():
-			for sprite in sorted(self.sprites(), key = lambda sprite: sprite.rect.centery):
-				if sprite.z == layer:
-					offset_rect = sprite.rect.copy()
-					screen_center = (
-						(offset_rect.centerx - self.offset.x) * self.zoom,
-						(offset_rect.centery - self.offset.y) * self.zoom)
-					if self.zoom == 1.0:
-						offset_rect.center = screen_center
-						self.display_surface.blit(sprite.image, offset_rect)
-					else:
-						width = max(1, int(sprite.image.get_width() * self.zoom))
-						height = max(1, int(sprite.image.get_height() * self.zoom))
-						image = pygame.transform.smoothscale(sprite.image, (width, height))
-						draw_rect = image.get_rect(center=screen_center)
-						self.display_surface.blit(image, draw_rect)
+		visible_area = self.display_surface.get_rect().inflate(TILE_SIZE * 2, TILE_SIZE * 2)
+		sorted_sprites = sorted(
+			self.sprites(),
+			key=lambda sprite: (sprite.z, sprite.rect.centery))
+		for sprite in sorted_sprites:
+			offset_rect = sprite.rect.copy()
+			screen_center = (
+				(offset_rect.centerx - self.offset.x) * self.zoom,
+				(offset_rect.centery - self.offset.y) * self.zoom)
+			if self.zoom == 1.0:
+				offset_rect.center = screen_center
+				if visible_area.colliderect(offset_rect):
+					self.display_surface.blit(sprite.image, offset_rect)
+			else:
+				width = max(1, int(sprite.image.get_width() * self.zoom))
+				height = max(1, int(sprite.image.get_height() * self.zoom))
+				draw_rect = pygame.Rect(0, 0, width, height)
+				draw_rect.center = screen_center
+				if visible_area.colliderect(draw_rect):
+					image = pygame.transform.smoothscale(sprite.image, (width, height))
+					self.display_surface.blit(image, draw_rect)

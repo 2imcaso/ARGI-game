@@ -71,6 +71,7 @@ class FarmAIController:
         self.counter = count()
         self.message = f"Khu {mode}: {self.algorithm_name}"
         self.visual_assets = self._load_visual_assets()
+        self._init_render_cache()
         self.fog_time = 0.0
 
         # --- Thá»‘ng kĂª hiá»ƒn thá»‹ chung ---
@@ -237,6 +238,55 @@ class FarmAIController:
                 assets[key] = pygame.transform.scale(image, (TILE_SIZE, TILE_SIZE))
         return assets
 
+    def _init_render_cache(self):
+        self.font_18 = pygame.font.Font(None, 18)
+        self.font_20 = pygame.font.Font(None, 20)
+        self.font_22 = pygame.font.Font(None, 22)
+        self.font_panel = pygame.font.Font(None, 22)
+        self.font_panel_title = pygame.font.Font(None, 26)
+        self.font_panel_small = pygame.font.Font(None, 20)
+
+        self.task_marker_surface = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        marker_rect = pygame.Rect(5, 5, TILE_SIZE - 10, TILE_SIZE - 10)
+        pygame.draw.rect(
+            self.task_marker_surface, Colors.TASK_MARKER_FILL, marker_rect,
+            border_radius=6)
+        pygame.draw.rect(
+            self.task_marker_surface, Colors.TASK_MARKER_BORDER, marker_rect, 1,
+            border_radius=5)
+        corner = 10
+        color = Colors.TASK_MARKER_CORNER
+        pygame.draw.line(self.task_marker_surface, color, marker_rect.topleft,
+                         (marker_rect.left + corner, marker_rect.top), 2)
+        pygame.draw.line(self.task_marker_surface, color, marker_rect.topleft,
+                         (marker_rect.left, marker_rect.top + corner), 2)
+        pygame.draw.line(self.task_marker_surface, color, marker_rect.topright,
+                         (marker_rect.right - corner, marker_rect.top), 2)
+        pygame.draw.line(self.task_marker_surface, color, marker_rect.topright,
+                         (marker_rect.right, marker_rect.top + corner), 2)
+        pygame.draw.line(self.task_marker_surface, color, marker_rect.bottomleft,
+                         (marker_rect.left + corner, marker_rect.bottom), 2)
+        pygame.draw.line(self.task_marker_surface, color, marker_rect.bottomleft,
+                         (marker_rect.left, marker_rect.bottom - corner), 2)
+        pygame.draw.line(self.task_marker_surface, color, marker_rect.bottomright,
+                         (marker_rect.right - corner, marker_rect.bottom), 2)
+        pygame.draw.line(self.task_marker_surface, color, marker_rect.bottomright,
+                         (marker_rect.right, marker_rect.bottom - corner), 2)
+
+        self.explore_surfaces = {}
+        for mode, color in MODE_EXPLORE_FILLS.items():
+            surf = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
+            surf.fill(color)
+            self.explore_surfaces[mode] = surf
+
+        self.fog_surface = pygame.Surface(
+            pygame.display.get_surface().get_size(), pygame.SRCALPHA)
+        self.csp_surfaces = {}
+        for crop, bg in (("corn", Colors.CSP_CORN_BG), ("tomato", Colors.CSP_TOMATO_BG)):
+            surf = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
+            surf.fill(bg)
+            self.csp_surfaces[crop] = surf
+
     def _blit_tile_asset(self, surface, offset, tile, asset_key, y_offset=0):
         image = self.visual_assets.get(asset_key)
         if image is None:
@@ -299,26 +349,7 @@ class FarmAIController:
         world = self._tile_center(tile)
         sx = int(world.x - offset.x)
         sy = int(world.y - offset.y)
-        marker = pygame.Surface((TILE_SIZE - 10, TILE_SIZE - 10),
-                                pygame.SRCALPHA)
-        pygame.draw.rect(marker, Colors.TASK_MARKER_FILL, marker.get_rect(),
-                         border_radius=6)
-        surface.blit(marker, (sx - TILE_SIZE // 2 + 5,
-                              sy - TILE_SIZE // 2 + 5))
-        rect = pygame.Rect(0, 0, TILE_SIZE - 10, TILE_SIZE - 10)
-        rect.center = (sx, sy)
-        pygame.draw.rect(surface, Colors.TASK_MARKER_BORDER, rect, 1,
-                         border_radius=5)
-        corner = 10
-        color = Colors.TASK_MARKER_CORNER
-        pygame.draw.line(surface, color, rect.topleft, (rect.left + corner, rect.top), 2)
-        pygame.draw.line(surface, color, rect.topleft, (rect.left, rect.top + corner), 2)
-        pygame.draw.line(surface, color, rect.topright, (rect.right - corner, rect.top), 2)
-        pygame.draw.line(surface, color, rect.topright, (rect.right, rect.top + corner), 2)
-        pygame.draw.line(surface, color, rect.bottomleft, (rect.left + corner, rect.bottom), 2)
-        pygame.draw.line(surface, color, rect.bottomleft, (rect.left, rect.bottom - corner), 2)
-        pygame.draw.line(surface, color, rect.bottomright, (rect.right - corner, rect.bottom), 2)
-        pygame.draw.line(surface, color, rect.bottomright, (rect.right, rect.bottom - corner), 2)
+        surface.blit(self.task_marker_surface, (sx - TILE_SIZE // 2, sy - TILE_SIZE // 2))
 
     def _draw_mist_effect(self, surface):
         mist = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -646,11 +677,11 @@ class FarmAIController:
         return best[1] if best else None
 
     # ---------------------------------------------------- player direction
-    def _set_player_direction_to(self, world_pos):
+    def _set_player_direction_to(self, world_pos, dt):
         """Di chuyá»ƒn player vá» world_pos. Tráº£ vá» True khi Ä‘Ă£ Ä‘áº¿n nÆ¡i."""
         delta = pygame.math.Vector2(world_pos) - self.player.pos
-        # Tăng ngưỡng bắt dính lên 25 để tránh bị trượt (overshoot) khi robot chạy nhanh
-        if delta.length() < 25:
+        snap_distance = max(3, self.player.speed * dt * 1.25)
+        if delta.length() <= snap_distance:
             # Snap chĂ­nh xĂ¡c vĂ o center tile trĂ¡nh drift tĂ­ch lÅ©y
             self.player.pos.update(world_pos)
             self.player.rect.center = (round(world_pos.x), round(world_pos.y))
@@ -804,7 +835,7 @@ class FarmAIController:
                     return
 
             reached = self._set_player_direction_to(
-                self._tile_center(next_tile))
+                self._tile_center(next_tile), dt)
             if reached:
                 self.path.pop(0)
                 # Mode 4: tiáº¿p tá»¥c má»Ÿ rá»™ng táº§m nhĂ¬n khi di chuyá»ƒn
@@ -904,27 +935,24 @@ class FarmAIController:
 
         # --- Mode 1: BFS explored nodes (xanh dương nhạt) ---
         if self.mode == 1 and self.bfs_explored:
+            s = self.explore_surfaces[1]
             for tile in self.bfs_explored:
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
-                s.fill(MODE_EXPLORE_FILLS[1])
                 surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
 
         # --- Mode 2: A* explored nodes (xanh lá nhạt) ---
         if self.mode == 2 and self.astar_explored:
+            s = self.explore_surfaces[2]
             for tile in self.astar_explored:
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
-                s.fill(MODE_EXPLORE_FILLS[2])
                 surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
 
         # --- Mode 3: Hill Climbing scores trên mỗi ô ---
         if self.mode == 3 and self.hc_scores:
-            font_sm = pygame.font.Font(None, 20)
             for tile, score in self.hc_scores.items():
                 if tile in self.done_tiles:
                     continue
@@ -937,12 +965,13 @@ class FarmAIController:
                 s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
                 s.fill((r, g, 80, 60))
                 surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
-                txt = font_sm.render(f"{score:.0f}", True, Colors.SCORE_TEXT)
+                txt = self.font_20.render(f"{score:.0f}", True, Colors.SCORE_TEXT)
                 surface.blit(txt, (sx - 10, sy - 8))
 
         # --- Mode 4: Fog-of-war ---
         if self.mode == 4:
-            fog = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+            fog = self.fog_surface
+            fog.fill((0, 0, 0, 0))
             fog.fill(Colors.FOG_DARK)
             center = (
                 int(self.player.rect.centerx - offset.x),
@@ -960,24 +989,21 @@ class FarmAIController:
                 world = self._tile_center(tile)
                 rect = pygame.Rect(0, 0, TILE_SIZE - 8, TILE_SIZE - 8)
                 rect.center = (int(world.x - offset.x), int(world.y - offset.y))
-                font_sm = pygame.font.Font(None, 18)
-                txt = font_sm.render("BLOCK", True, Colors.BLOCK_LABEL)
+                txt = self.font_18.render("BLOCK", True, Colors.BLOCK_LABEL)
                 surface.blit(txt, (rect.x + 4, rect.y + 20))
 
         # --- Mode 5: CSP assignment labels (C/T) ---
         if self.mode == 5 and self.seed_plan:
-            font_sm = pygame.font.Font(None, 22)
             for tile, crop in self.seed_plan.items():
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
                 label = "C" if crop == "corn" else "T"
                 color = Colors.CSP_CORN if crop == "corn" else Colors.CSP_TOMATO
-                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
-                bg = Colors.CSP_CORN_BG if crop == "corn" else Colors.CSP_TOMATO_BG
-                s.fill(bg)
-                surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
-                txt = font_sm.render(label, True, color)
+                s = self.csp_surfaces.get(crop)
+                if s:
+                    surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
+                txt = self.font_22.render(label, True, color)
                 surface.blit(txt, (sx - 5, sy - 8))
 
         # --- Mode 6: Enemy + enemy path ---
@@ -1015,8 +1041,7 @@ class FarmAIController:
                 pygame.draw.circle(surface, Colors.ENEMY_FALLBACK_OUTLINE, (ex, ey), 20, 3)
 
             # Label CROW
-            font_sm = pygame.font.Font(None, 20)
-            txt = font_sm.render("CROW", True, Colors.ENEMY)
+            txt = self.font_20.render("CROW", True, Colors.ENEMY)
             surface.blit(txt, (ex - 18, ey - 42))
 
             # 3. Vẽ thanh Progress Bar (Đếm ngược 0.45s cân bằng với Robot)
@@ -1061,8 +1086,7 @@ class FarmAIController:
                 surface.blit(s, rect.topleft)
 
                 # Chữ đánh dấu tâm
-                font_sm = pygame.font.Font(None, 20)
-                txt = font_sm.render("SCARECROW", True, (200, 255, 200))
+                txt = self.font_20.render("SCARECROW", True, (200, 255, 200))
                 surface.blit(txt, (rect.centerx - 40, rect.centery - 10))
 
         # --- Đường đi chung (vàng) ---
@@ -1078,9 +1102,9 @@ class FarmAIController:
     # ------------------------------------------------------------ panel
     def _draw_panel(self, surface):
         """Váº½ panel thĂ´ng tin thuáº­t toĂ¡n â€” riĂªng theo tá»«ng cáº¥p Ä‘á»™."""
-        font = pygame.font.Font(None, 22)
-        font_title = pygame.font.Font(None, 26)
-        font_small = pygame.font.Font(None, 20)
+        font = self.font_panel
+        font_title = self.font_panel_title
+        font_small = self.font_panel_small
 
         # --- Header ---
         lines = []
