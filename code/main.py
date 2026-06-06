@@ -85,6 +85,9 @@ class Game:
 
         if pygame.K_1 <= event.key <= pygame.K_6:
             self.start_day(event.key - pygame.K_0)
+        elif event.key == pygame.K_m:
+            # Toggle between AI control and manual control
+            self.level.player.auto_control = not self.level.player.auto_control
         elif event.key == pygame.K_e:
             self.show_ending()
 
@@ -110,8 +113,14 @@ class Game:
                 pygame.quit()
                 sys.exit()
             if self.ending_screen.restart:
+                # FIX: reset day du state tranh leak sang session moi
+                # (ban dau chi reset intro_screen va state)
                 self.intro_screen = IntroScreen(self.screen)
+                self.day_screen = None
+                self.ending_screen = None
+                self.story_panel = None
                 self.state = "intro"
+                self.mode = 1
             return
 
         self.level.run(dt)
@@ -121,7 +130,7 @@ class Game:
 
     def run(self):
         while True:
-            dt = self.clock.tick() / 1000
+            dt = self.clock.tick(60) / 1000  # FIX: typo 10006->1000; cap 60fps tranh dt spike
             for event in pygame.event.get():
                 self.handle_event(event)
             self.update_and_draw(dt)

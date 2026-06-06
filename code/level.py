@@ -723,6 +723,9 @@ class Level:
 		# updates
 		if self.shop_active:
 			self.menu.update()
+			# Disable player/AI when shop is open
+			self.player.direction.update(0, 0)
+			self.player.status = 'down_idle'
 		else:
 			if not self.overview_active:
 				self.ai.update(dt)

@@ -151,14 +151,21 @@ class FarmAIController:
         self.minimax_value = 0
         self.alpha_beta_info = {"alpha": "-âˆ", "beta": "+âˆ", "pruned": 0}
         if self.mode == 6:
-            if enemy_spawn is not None:
-                # DĂ¹ng spawn cá»‘ Ä‘á»‹nh tá»« Level (gĂ³c pháº£i hĂ ng dÆ°á»›i)
+         if enemy_spawn is not None:
                 self.enemy_tile = tuple(enemy_spawn)
-            elif self.farm_tiles:
-                # Fallback: tĂ­nh tá»« farm tiles
+         elif self.farm_tiles:
                 xs = [t[0] for t in self.farm_tiles]
                 ys = [t[1] for t in self.farm_tiles]
                 self.enemy_tile = (max(xs) + 3, max(ys) + 2)
+
+    # ===== Đồng bộ thời gian robot và quạ =====
+        self.action_duration = 0.15      # robot
+        self.enemy_action_duration = 0.15 # quạ
+        self.enemy_action_time = 0.0
+        # quạ phải mất thời gian phá cây
+        self.enemy_attack_timer = 0.0
+        self.enemy_attack_duration = 0.45  # bằng HOE + PLANT + WATER
+        self.enemy_attacking_tile = None
 
     # -------------------------------------------------------- helpers chung
     def _tile_center(self, tile):
@@ -407,7 +414,7 @@ class FarmAIController:
         self.current_target = None
         self.path = []
         self.state = "CHOOSE_TARGET"
-        self.wait_time = 0.45
+        self.wait_time = 0.15
 
     def _finish_pest_target(self, tile, condition):
         self.player.status = "down_idle"
@@ -419,7 +426,7 @@ class FarmAIController:
         self.current_target = None
         self.path = []
         self.state = "CHOOSE_TARGET"
-        self.wait_time = 0.45
+        self.wait_time = 0.15
 
     def _finish_cultivation_target(self, tile, message):
         self.message = message
@@ -427,7 +434,7 @@ class FarmAIController:
         self.current_target = None
         self.path = []
         self.state = "CHOOSE_TARGET"
-        self.wait_time = 0.35
+        self.wait_time = 0.15
 
     def _condition_label(self, condition):
         labels = {
@@ -540,30 +547,67 @@ class FarmAIController:
         return best_tile
 
     def _move_enemy_towards(self, dt):
-        """Di chuyá»ƒn enemy dáº§n dáº§n tá»›i target."""
-        if not self.enemy_tile:
-            return
+       # ===== Anti-collision AI =====
+        if self.enemy_target and self.current_target:
+
+            if self.enemy_target == self.current_target:
+
+                robot_tile = self._world_to_tile(
+                    self.player.rect.center
+        )
+
+                candidates = [
+                 t for t in self.farm_tiles
+                 if t not in self.done_tiles
+                 and t not in self.enemy_done_tiles
+                 and t != self.current_target
+        ]
+
+                if candidates:
+
+                 def score(tile):
+
+                # quạ thích cây giá trị cao
+                     value = self._care_value(tile)
+
+                # nhưng tránh cây robot sắp tới
+                     robot_dist = self._heuristic(
+                         robot_tile,
+                         tile
+                )
+
+                     return value + robot_dist * 2
+
+                self.enemy_target = max(
+                 candidates,
+                 key=score
+            )
         target = self.enemy_target or self.enemy_retreat_target
         if not target:
             return
         ex, ey = self.enemy_tile
         tx, ty = target
-        speed = 0.8  # tiles per second
+        speed = 12.5  # tiles per second (match player speed 800px/s)
         step = speed * dt
 
         dx = tx - ex
         dy = ty - ey
         dist = math.sqrt(dx * dx + dy * dy)
         if dist < 0.3:
-            # Enemy "Ä‘áº¿n" Ă´ target
+
             if self.enemy_retreat_target and not self.enemy_target:
                 self.enemy_tile = self.enemy_retreat_target
                 self.enemy_retreat_target = None
                 return
             damaged_tile = self.enemy_target
-            self.enemy_done_tiles.add(damaged_tile)
-            self.enemy_tile = damaged_tile
-            self.enemy_target = None
+
+    # bắt đầu phá cây
+            if self.enemy_attacking_tile is None:
+                self.enemy_attacking_tile = damaged_tile
+                self.enemy_attack_timer = self.enemy_attack_duration
+                self.enemy_tile = damaged_tile
+                return
+
             return
 
         # Di chuyá»ƒn tá»«ng bÆ°á»›c nhá»
@@ -605,9 +649,8 @@ class FarmAIController:
     def _set_player_direction_to(self, world_pos):
         """Di chuyá»ƒn player vá» world_pos. Tráº£ vá» True khi Ä‘Ă£ Ä‘áº¿n nÆ¡i."""
         delta = pygame.math.Vector2(world_pos) - self.player.pos
-        # NgÆ°á»¡ng lá»›n hÆ¡n: 1 tile = 64px, player speed=200px/s
-        # Chá»‰ cáº§n náº±m trong 14px (< 1 bÆ°á»›c dt=0.07s) lĂ  coi nhÆ° Ä‘áº¿n
-        if delta.length() < 14:
+        # Tăng ngưỡng bắt dính lên 25 để tránh bị trượt (overshoot) khi robot chạy nhanh
+        if delta.length() < 25:
             # Snap chĂ­nh xĂ¡c vĂ o center tile trĂ¡nh drift tĂ­ch lÅ©y
             self.player.pos.update(world_pos)
             self.player.rect.center = (round(world_pos.x), round(world_pos.y))
@@ -660,7 +703,7 @@ class FarmAIController:
                         self.path.pop(0)
                     self._stuck_pos = None
                     self._stuck_timer = 0.0
-                    self.wait_time = 0.1
+                    self.wait_time = 0.15
                     self.message = "Recover: skip tile bi ket"
                     return
             else:
@@ -669,7 +712,18 @@ class FarmAIController:
 
         # Mode 6: enemy di chuyá»ƒn liĂªn tá»¥c
         if self.mode == 6:
-            self._move_enemy_towards(dt)
+
+    # đang phá cây
+            if self.enemy_attacking_tile is not None:
+                self.enemy_attack_timer -= dt
+                if self.enemy_attack_timer <= 0:
+                    self.enemy_done_tiles.add(
+                        self.enemy_attacking_tile
+            )
+                    self.enemy_target = None
+                    self.enemy_attacking_tile = None
+            else:
+                self._move_enemy_towards(dt)
 
         # --- CHOOSE TARGET ---
         if self.state == "CHOOSE_TARGET":
@@ -717,7 +771,7 @@ class FarmAIController:
                     self.message = (
                         f"Online: o {target} bi chan, "
                         f"re-plan (lan {self.replan_count})")
-                    self.wait_time = 0.4
+                    self.wait_time = 0.15
                     return
                 self.done_tiles.add(target)
                 self.message = f"Bo qua {target}: khong co duong."
@@ -746,7 +800,7 @@ class FarmAIController:
                     self.message = (
                         f"Online: phat hien vat can tai {next_tile}, "
                         f"re-plan (lan {self.replan_count})")
-                    self.wait_time = 0.4
+                    self.wait_time = 0.15
                     return
 
             reached = self._set_player_direction_to(
@@ -792,7 +846,7 @@ class FarmAIController:
                 else:
                     self.message = f"Cuoc dat tai {action_tile}"
             self.state = self._next_cultivation_state(action_tile)
-            self.wait_time = 0.18 if self.state != "PLANT" else 0.30
+            self.wait_time = 0.15
             return
 
         if self.state == "PLANT":
@@ -808,7 +862,7 @@ class FarmAIController:
                 else:
                     self.message = f"Gieo {seed} tai {action_tile}"
             self.state = self._next_cultivation_state(action_tile)
-            self.wait_time = 0.18 if self.state != "WATER" else 0.30
+            self.wait_time = 0.15
             return
 
         if self.state == "WATER":
@@ -828,7 +882,7 @@ class FarmAIController:
 
     # ------------------------------------------------------ map overlays
     def _draw_map_overlays(self, surface, offset):
-        """Váº½ thĂ´ng tin thuáº­t toĂ¡n lĂªn map (explored nodes, scores, fog, enemy...)."""
+        """Vẽ thông tin thuật toán lên map (explored nodes, scores, fog, enemy...)."""
 
         for tile in self.farm_tiles:
             self._draw_task_tile_marker(surface, offset, tile)
@@ -848,31 +902,27 @@ class FarmAIController:
                 elif condition == "crow":
                     self._blit_tile_asset(surface, offset, tile, "black_worm", y_offset=2)
 
-        # --- Mode 1: BFS explored nodes (xanh dÆ°Æ¡ng nháº¡t) ---
+        # --- Mode 1: BFS explored nodes (xanh dương nhạt) ---
         if self.mode == 1 and self.bfs_explored:
             for tile in self.bfs_explored:
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
-                                   pygame.SRCALPHA)
+                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
                 s.fill(MODE_EXPLORE_FILLS[1])
-                surface.blit(s, (sx - TILE_SIZE // 2 + 2,
-                                 sy - TILE_SIZE // 2 + 2))
+                surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
 
-        # --- Mode 2: A* explored nodes (xanh lĂ¡ nháº¡t) ---
+        # --- Mode 2: A* explored nodes (xanh lá nhạt) ---
         if self.mode == 2 and self.astar_explored:
             for tile in self.astar_explored:
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
-                                   pygame.SRCALPHA)
+                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
                 s.fill(MODE_EXPLORE_FILLS[2])
-                surface.blit(s, (sx - TILE_SIZE // 2 + 2,
-                                 sy - TILE_SIZE // 2 + 2))
+                surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
 
-        # --- Mode 3: Hill Climbing scores trĂªn má»—i Ă´ ---
+        # --- Mode 3: Hill Climbing scores trên mỗi ô ---
         if self.mode == 3 and self.hc_scores:
             font_sm = pygame.font.Font(None, 20)
             for tile, score in self.hc_scores.items():
@@ -881,15 +931,12 @@ class FarmAIController:
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                # TĂ´ mĂ u theo score
                 ratio = max(0, min(1, (score + 50) / 100))
                 r = int(255 * (1 - ratio))
                 g = int(255 * ratio)
-                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
-                                   pygame.SRCALPHA)
+                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
                 s.fill((r, g, 80, 60))
-                surface.blit(s, (sx - TILE_SIZE // 2 + 2,
-                                 sy - TILE_SIZE // 2 + 2))
+                surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
                 txt = font_sm.render(f"{score:.0f}", True, Colors.SCORE_TEXT)
                 surface.blit(txt, (sx - 10, sy - 8))
 
@@ -902,26 +949,21 @@ class FarmAIController:
                 int(self.player.rect.centery - offset.y),
             )
             vision_px = int(self.vision_radius * TILE_SIZE)
-            pygame.draw.circle(fog, Colors.FOG_EDGE,
-                               center, vision_px + 34)
-            pygame.draw.circle(fog, Colors.FOG_MID,
-                               center, vision_px + 18)
+            pygame.draw.circle(fog, Colors.FOG_EDGE, center, vision_px + 34)
+            pygame.draw.circle(fog, Colors.FOG_MID, center, vision_px + 18)
             pygame.draw.circle(fog, Colors.FOG_CLEAR, center, vision_px)
             surface.blit(fog, (0, 0))
             self._draw_mist_effect(surface)
 
-            # Váº½ Ă´ block Ä‘Ă£ phĂ¡t hiá»‡n
             for tile in self.discovered_blocked:
                 self._blit_tile_asset(surface, offset, tile, "storm_debris")
                 world = self._tile_center(tile)
                 rect = pygame.Rect(0, 0, TILE_SIZE - 8, TILE_SIZE - 8)
-                rect.center = (int(world.x - offset.x),
-                                int(world.y - offset.y))
+                rect.center = (int(world.x - offset.x), int(world.y - offset.y))
                 font_sm = pygame.font.Font(None, 18)
                 txt = font_sm.render("BLOCK", True, Colors.BLOCK_LABEL)
                 surface.blit(txt, (rect.x + 4, rect.y + 20))
 
-            # Váº½ Ă´ block áº©n chÆ°a phĂ¡t hiá»‡n (nháº¹, debug)
         # --- Mode 5: CSP assignment labels (C/T) ---
         if self.mode == 5 and self.seed_plan:
             font_sm = pygame.font.Font(None, 22)
@@ -931,71 +973,108 @@ class FarmAIController:
                 sy = int(world.y - offset.y)
                 label = "C" if crop == "corn" else "T"
                 color = Colors.CSP_CORN if crop == "corn" else Colors.CSP_TOMATO
-                # Ná»n
-                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
-                                   pygame.SRCALPHA)
+                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
                 bg = Colors.CSP_CORN_BG if crop == "corn" else Colors.CSP_TOMATO_BG
                 s.fill(bg)
-                surface.blit(s, (sx - TILE_SIZE // 2 + 2,
-                                 sy - TILE_SIZE // 2 + 2))
+                surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
                 txt = font_sm.render(label, True, color)
                 surface.blit(txt, (sx - 5, sy - 8))
 
         # --- Mode 6: Enemy + enemy path ---
         if self.mode == 6 and self.enemy_tile:
-            world = self._tile_center(
-                (int(round(self.enemy_tile[0])),
-                 int(round(self.enemy_tile[1]))))
+            # 1. Tính toán tọa độ hiển thị (ex, ey) trượt mượt mà
+            world = self._tile_center((self.enemy_tile[0], self.enemy_tile[1]))
             ex = int(world.x - offset.x)
             ey = int(world.y - offset.y)
-            # ThĂ¢n enemy
+            
+            # 2. Vẽ thân Enemy (Quạ) + PROCEDURAL ANIMATION
             crow = self.visual_assets.get("crow")
             if crow:
-                crow_rect = crow.get_rect(center=(ex, ey - 4))
-                surface.blit(crow, crow_rect)
+                import math
+                y_offset = -4
+                angle = 0
+                
+                time_now = pygame.time.get_ticks() / 1000
+                if hasattr(self, 'enemy_path') and self.enemy_path: 
+                    # Đang bay: Nhấp nhô và nghiêng ngả
+                    y_offset -= abs(math.sin(time_now * 15)) * 8
+                    angle = math.sin(time_now * 10) * 12
+                elif self.enemy_attack_timer > 0:
+                    # Đang mổ cây: Gật gù liên tục
+                    angle = abs(math.sin(time_now * 25)) * 30 - 15 
+                
+                if angle != 0:
+                    rotated_crow = pygame.transform.rotate(crow, angle)
+                    crow_rect = rotated_crow.get_rect(center=(ex, ey + y_offset))
+                    surface.blit(rotated_crow, crow_rect)
+                else:
+                    crow_rect = crow.get_rect(center=(ex, ey + y_offset))
+                    surface.blit(crow, crow_rect)
             else:
                 pygame.draw.circle(surface, Colors.ENEMY_FALLBACK, (ex, ey), 20)
                 pygame.draw.circle(surface, Colors.ENEMY_FALLBACK_OUTLINE, (ex, ey), 20, 3)
-            # Label
+
+            # Label CROW
             font_sm = pygame.font.Font(None, 20)
             txt = font_sm.render("CROW", True, Colors.ENEMY)
             surface.blit(txt, (ex - 18, ey - 42))
 
-            # Enemy target line
+            # 3. Vẽ thanh Progress Bar (Đếm ngược 0.45s cân bằng với Robot)
+            if self.enemy_attack_timer > 0 and hasattr(self, 'enemy_attack_duration') and self.enemy_attack_duration > 0:
+                bar_w = TILE_SIZE - 10
+                bar_h = 6
+                ratio = 1.0 - (self.enemy_attack_timer / self.enemy_attack_duration)
+                fill = int(ratio * bar_w)
+                pygame.draw.rect(surface, (50, 50, 50), (ex - bar_w//2, ey + 15, bar_w, bar_h))
+                pygame.draw.rect(surface, Colors.ENEMY, (ex - bar_w//2, ey + 15, fill, bar_h))
+
+            # 4. Vẽ đường ngắm target của Enemy (chỉ đỏ)
             if self.enemy_target:
                 tw = self._tile_center(self.enemy_target)
                 tx = int(tw.x - offset.x)
                 ty = int(tw.y - offset.y)
-                pygame.draw.line(surface, Colors.ENEMY,
-                                 (ex, ey), (tx, ty), 2)
-                pygame.draw.circle(surface, Colors.ENEMY,
-                                   (tx, ty), 8, 2)
+                pygame.draw.line(surface, Colors.ENEMY, (ex, ey), (tx, ty), 2)
+                pygame.draw.circle(surface, Colors.ENEMY, (tx, ty), 8, 2)
 
-            # Ă” enemy Ä‘Ă£ chiáº¿m
+            # 5. Vẽ ô enemy đã chiếm (viền đỏ)
             for tile in self.enemy_done_tiles:
                 w = self._tile_center(tile)
                 rect = pygame.Rect(0, 0, TILE_SIZE - 6, TILE_SIZE - 6)
-                rect.center = (int(w.x - offset.x),
-                                int(w.y - offset.y))
-                pygame.draw.rect(surface, Colors.ENEMY_FALLBACK, rect, 3,
-                                 border_radius=4)
+                rect.center = (int(w.x - offset.x), int(w.y - offset.y))
+                pygame.draw.rect(surface, Colors.ENEMY_FALLBACK, rect, 3, border_radius=4)
                 original_condition = self._condition_for_tile(tile)
                 asset_key = self._condition_asset(original_condition)
                 self._blit_tile_asset(surface, offset, tile, asset_key, y_offset=-6)
                 self._blit_tile_asset(surface, offset, tile, "black_worm", y_offset=4)
 
-        # --- ÄÆ°á»ng Ä‘i chung (vĂ ng) ---
+        # --- Vẽ vùng bảo vệ 3x3 của Scarecrow ---
+        if self.mode == 6 and hasattr(self, 'scarecrows'):
+            for sx, sy in self.scarecrows:
+                world = self._tile_center((sx, sy))
+                rect = pygame.Rect(0, 0, TILE_SIZE * 3, TILE_SIZE * 3)
+                rect.center = (int(world.x - offset.x), int(world.y - offset.y))
+                
+                # Highlight màu xanh lá
+                s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                s.fill((100, 255, 100, 30)) 
+                pygame.draw.rect(s, (50, 200, 50, 100), s.get_rect(), 2)
+                surface.blit(s, rect.topleft)
+
+                # Chữ đánh dấu tâm
+                font_sm = pygame.font.Font(None, 20)
+                txt = font_sm.render("SCARECROW", True, (200, 255, 200))
+                surface.blit(txt, (rect.centerx - 40, rect.centery - 10))
+
+        # --- Đường đi chung (vàng) ---
         if self.path:
             points = []
             for tile in self.path:
                 world = self._tile_center(tile)
-                points.append((int(world.x - offset.x),
-                                int(world.y - offset.y)))
+                points.append((int(world.x - offset.x), int(world.y - offset.y)))
             if len(points) >= 2:
                 pygame.draw.lines(surface, Colors.PATH, False, points, 4)
             for p in points:
                 pygame.draw.circle(surface, Colors.PATH, p, 5)
-
     # ------------------------------------------------------------ panel
     def _draw_panel(self, surface):
         """Váº½ panel thĂ´ng tin thuáº­t toĂ¡n â€” riĂªng theo tá»«ng cáº¥p Ä‘á»™."""
@@ -1030,7 +1109,11 @@ class FarmAIController:
         if self.mode == 6:
             enemy_count = len(self.enemy_done_tiles)
             lines.append(("stat", f"  Enemy chiem: {enemy_count} o"))
-
+        if self.enemy_attacking_tile:
+            lines.append(
+            ("stat",
+         f"  Enemy dang pha: {self.enemy_attacking_tile}")
+    )
         lines.append(("sep", ""))
         lines.append(("hint", "Nhan phim 1-6 de doi khu nhiem vu"))
 

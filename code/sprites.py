@@ -138,15 +138,29 @@ class Tree(Generic):
 
     
     def create_fruit(self):
-        for pos in self.apple_pos:
-            if randint(0, 10) < 2:
-                x = pos[0] + self.rect.left
-                y = pos[1] + self.rect.top
-                Generic(
-                    pos = (x, y), 
-                    surf = self.apples_surf, 
-                    groups = [self.apple_sprites, self.groups()[0]],
-                    z = LAYERS['fruit'])
+        # Ensure at least 1 apple spawns, then random for rest
+        apple_positions = list(self.apple_pos)
+        # FIX: dam bao luon co it nhat 1 tao (ban dau random -> co the khong co tao nao)
+        if apple_positions:
+            # THEM MOI: luon spawn tao dau tien
+            pos = apple_positions[0]
+            x = pos[0] + self.rect.left
+            y = pos[1] + self.rect.top
+            Generic(
+                pos = (x, y), 
+                surf = self.apples_surf, 
+                groups = [self.apple_sprites, self.groups()[0]],
+                z = LAYERS['fruit'])
+            # Random spawn for remaining positions
+            for pos in apple_positions[1:]:
+                if randint(0, 10) < 3:  # Slightly higher spawn rate
+                    x = pos[0] + self.rect.left
+                    y = pos[1] + self.rect.top
+                    Generic(
+                        pos = (x, y), 
+                        surf = self.apples_surf, 
+                        groups = [self.apple_sprites, self.groups()[0]],
+                        z = LAYERS['fruit'])
                 
 
     def update(self, dt):

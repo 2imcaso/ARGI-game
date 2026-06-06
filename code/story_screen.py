@@ -145,7 +145,7 @@ def draw_wrapped_text(surface, text, font, color, x, y, max_width):
 
 
 class TypewriterScreen:
-    TEXT_SPEED = 0.025
+    TEXT_SPEED = 0.010  # CHINH: nhanh hon 2.5x so voi ban dau (0.025); text hien thi nhanh hon
     HINT_BLINK = 0.65
 
     def _init_typewriter(self, lines):
@@ -296,7 +296,7 @@ class EndingScreen(IntroScreen):
 
 
 class StoryPanel:
-    SHOW_TIME = 6.0
+    SHOW_TIME = 3.0  # CHINH: panel tu dong tat sau 3s thay vi 6s ban dau
 
     def __init__(self, mode):
         data = STORY_DATA.get(mode, STORY_DATA[1])

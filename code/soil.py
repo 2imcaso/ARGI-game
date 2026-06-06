@@ -40,6 +40,7 @@ class Plant(pygame.sprite.Sprite):
         self.max_age = len(self.frames) - 1
         self.grow_speed = GROW_SPEED[plant_type]
         self.harvestable = False
+        self.hitbox = None  # FIX: khong tao collision ngay; chi tao khi grow (dong bo voi player collision check)
 
         # sprite setup
         self.image = self.frames[self.age]
@@ -52,7 +53,8 @@ class Plant(pygame.sprite.Sprite):
         if self.check_watered(self.rect.center):
             self.age += self.grow_speed
 
-            if int(self.age) > 0:
+            # Add collision only once when plant starts visible growth
+            if int(self.age) > 0 and self.hitbox is None:  # FIX: chi tao hitbox 1 lan
                 self.z = LAYERS['main']
                 self.hitbox = self.rect.copy().inflate(-26, self.rect.height * 0.4)
 
@@ -60,7 +62,9 @@ class Plant(pygame.sprite.Sprite):
                 self.age = self.max_age
                 self.harvestable = True
 
-            self.image = self.frames[int(self.age)]
+            # FIX: guard tranh IndexError khi age vuot frames do floating point
+            if int(self.age) < len(self.frames):
+                self.image = self.frames[int(self.age)]
             self.rect = self.image.get_rect(midbottom = self.soil.rect.midbottom + pygame.math.Vector2(0, self.y_offset))
 
 
@@ -135,16 +139,18 @@ class SoilLayer:
     def water(self, target_pos):
         for soil_sprite in self.soil_sprites.sprites():
             if soil_sprite.rect.collidepoint(target_pos):
-                
-                # 1. add an entry to the soil grid -> 'W'
+                # Grid 'W' marks soil state (watered), not sprite presence
                 x = soil_sprite.rect.x // TILE_SIZE
                 y = soil_sprite.rect.y // TILE_SIZE
-                self.grid[y][x].append('W')
+                # FIX: check trung lap truoc khi append W
+                # (ban dau khong co check -> duplicate WaterTile cung o)
+                if 'W' not in self.grid[y][x]:
+                    self.grid[y][x].append('W')
 
-                # 2. create a water sprite
-                pos = soil_sprite.rect.topleft
-                surf = choice(self.water_surfs)
-                WaterTile(pos, surf, [self.all_sprites, self.water_sprites])
+                    # Tao water sprite cho visual
+                    pos = soil_sprite.rect.topleft
+                    surf = choice(self.water_surfs)
+                    WaterTile(pos, surf, [self.all_sprites, self.water_sprites])
 
     
     def water_all(self):
