@@ -16,23 +16,23 @@ class FarmAIController:
     Má»—i mode váº«n dĂ¹ng cĂ¹ng logic gá»‘c: Ä‘i tá»›i Ă´ Ä‘áº¥t -> cuá»‘c -> gieo háº¡t -> tÆ°á»›i.
     KhĂ¡c nhau á»Ÿ cĂ¡ch AI chá»n má»¥c tiĂªu / tĂ¬m Ä‘Æ°á»ng / gĂ¡n loáº¡i cĂ¢y.
 
-    Mode 1: BFS          â€“ Uninformed Search
-    Mode 2: A*           â€“ Informed Search
-    Mode 3: Hill Climbing â€“ Local Search
+    Mode 1: Uninformed Search
+    Mode 2: Informed Search
+    Mode 3: Local Search
     Mode 4: Online Search â€“ Uncertain Environment (fog-of-war)
     Mode 5: Backtracking  â€“ CSP
     Mode 6: Minimax       â€“ Adversarial Search
     """
 
     MODE_INFO = {
-        1: ("NGAY 1 - KHU 1: VUON TRUOC TRAI", "BFS",
-            "Robot chua biet gi: duyet deu theo lop de tim dat gan nhat",
+        1: ("NGAY 1 - KHU 1: VUON TRUOC TRAI", "Uninformed Search",
+            "Robot chua biet gi: dung nhom uninformed de tim dat gan nhat",
             "Khu khoi dong sach vat can, khong uu tien huong nao"),
-        2: ("NGAY 2 - KHU 2: LOI VAO NHA KHO", "A*  f(n)=g(n)+h(n)",
+        2: ("NGAY 2 - KHU 2: LOI VAO NHA KHO", "Informed Search",
             "Da biet dich va vat can: dung heuristic de di vong ngan hon",
             "Manh vo nha kho chan duong, can duong toi uu"),
-        3: ("NGAY 3 - KHU 3: VUON CAY PHIA DONG", "Hill Climbing",
-            "Chon cay co gia tri cham soc cao nhat trong tam voi",
+        3: ("NGAY 3 - KHU 3: VUON CAY PHIA DONG", "Local Search",
+            "Chon cay co gia tri cham soc cao nhat bang nhom local search",
             "Nhieu cay heo kho, tham lam cuc bo co the bi ket"),
         4: ("NGAY 4 - KHU 4: BAI DAT SUONG MU", "Online Replanning",
             "Chi thay 2 o xung quanh, vua di vua cap nhat va re-plan",
@@ -45,9 +45,14 @@ class FarmAIController:
             "AGRI-1 dau tri voi ke pha hoai tren cac o can bao ve"),
     }
 
+    ENEMY_MOVE_SPEED = 2.2
+    ENEMY_DESTROY_TIME = 1.5
+    ENEMY_RETARGET_DELAY = 0.08
+
     # ------------------------------------------------------------------ init
     def __init__(self, player, soil_layer, collision_sprites, farm_tiles,
-                 mode=2, hidden_blocks=None, enemy_spawn=None):
+                 mode=2, hidden_blocks=None, enemy_spawn=None,
+                 selected_algorithm=None):
         self.player = player
         self.soil_layer = soil_layer
         self.collision_sprites = collision_sprites
@@ -56,7 +61,8 @@ class FarmAIController:
         self.mode = mode
         info = self.MODE_INFO.get(mode, self.MODE_INFO[2])
         self.mode_name = info[0]
-        self.algorithm_name = info[1]
+        self.algorithm_group_name = info[1]
+        self.algorithm_name = selected_algorithm or self._default_algorithm(mode)
         self.mode_desc = info[2]
         self.difficulty_desc = info[3] if len(info) > 3 else ""
         self.farm_tiles = list(farm_tiles)
@@ -70,8 +76,12 @@ class FarmAIController:
         self.wait_time = 0.0
         self.counter = count()
         self.message = f"Khu {mode}: {self.algorithm_name}"
+        self.is_running = mode not in (1, 2, 3)
+        if not self.is_running:
+            self.message = "Chon thuat toan roi nhan START"
+        self.algorithm_buttons = {}
+        self.control_buttons = {}
         self.visual_assets = self._load_visual_assets()
-        self._init_render_cache()
         self.fog_time = 0.0
 
         # --- Thá»‘ng kĂª hiá»ƒn thá»‹ chung ---
@@ -149,25 +159,86 @@ class FarmAIController:
         self.enemy_retreat_target = None
         self.enemy_path = []
         self.enemy_done_tiles = set()
+        self.enemy_destroy_until = 0
+        self.enemy_retarget_timer = 0.0
         self.minimax_value = 0
         self.alpha_beta_info = {"alpha": "-âˆ", "beta": "+âˆ", "pruned": 0}
         if self.mode == 6:
-         if enemy_spawn is not None:
+            if enemy_spawn is not None:
+                # DĂ¹ng spawn cá»‘ Ä‘á»‹nh tá»« Level (gĂ³c pháº£i hĂ ng dÆ°á»›i)
                 self.enemy_tile = tuple(enemy_spawn)
-         elif self.farm_tiles:
+            elif self.farm_tiles:
+                # Fallback: tĂ­nh tá»« farm tiles
                 xs = [t[0] for t in self.farm_tiles]
                 ys = [t[1] for t in self.farm_tiles]
                 self.enemy_tile = (max(xs) + 3, max(ys) + 2)
 
-    # ===== Đồng bộ thời gian robot và quạ =====
-        self.action_duration = 0.15      # robot
-        self.enemy_action_duration = 0.15 # quạ
-        self.enemy_action_time = 0.0
-        # quạ phải mất thời gian phá cây
-        self.enemy_attack_timer = 0.0
-        self.enemy_attack_duration = 0.45  # bằng HOE + PLANT + WATER
-        self.enemy_attacking_tile = None
+    def _default_algorithm(self, mode):
+        options = algorithms.ALGORITHM_GROUPS.get(mode)
+        if options:
+            return options[0]
+        return self.MODE_INFO.get(mode, self.MODE_INFO[2])[1]
 
+    def selectable_algorithms(self):
+        return algorithms.ALGORITHM_GROUPS.get(self.mode, ())
+
+    def set_algorithm(self, algorithm_name):
+        options = self.selectable_algorithms()
+        if not options or algorithm_name not in options:
+            return False
+        self.algorithm_name = algorithm_name
+        self.message = f"Khu {self.mode}: {self.algorithm_name}"
+        self.stats = {}
+        self.path = []
+        self.current_target = None
+        self.state = "CHOOSE_TARGET"
+        self.bfs_explored.clear()
+        self.astar_explored.clear()
+        self.hc_scores.clear()
+        self.is_running = False
+        self.message = f"Da chon {algorithm_name}. Nhan START"
+        return True
+
+    def cycle_algorithm(self, step=1):
+        options = self.selectable_algorithms()
+        if not options:
+            return self.algorithm_name
+        index = (
+            options.index(self.algorithm_name)
+            if self.algorithm_name in options else 0
+        )
+        self.set_algorithm(options[(index + step) % len(options)])
+        return self.algorithm_name
+
+    def start(self):
+        if self.state == "DONE":
+            return
+        self.is_running = True
+        self.message = f"Dang chay {self.algorithm_name}"
+
+    def pause(self):
+        self.is_running = False
+        self.player.direction.update(0, 0)
+        self.message = "Tam dung"
+
+    def handle_panel_click(self, pos):
+        for algorithm_name, rect in self.algorithm_buttons.items():
+            if rect.collidepoint(pos):
+                self.set_algorithm(algorithm_name)
+                return "algorithm"
+
+        for action, rect in self.control_buttons.items():
+            if not rect.collidepoint(pos):
+                continue
+            if action == "start":
+                self.start()
+                return "start"
+            if action == "pause":
+                self.pause()
+                return "pause"
+            if action == "reset":
+                return "reset"
+        return None
     # -------------------------------------------------------- helpers chung
     def _tile_center(self, tile):
         x, y = tile
@@ -238,55 +309,6 @@ class FarmAIController:
                 assets[key] = pygame.transform.scale(image, (TILE_SIZE, TILE_SIZE))
         return assets
 
-    def _init_render_cache(self):
-        self.font_18 = pygame.font.Font(None, 18)
-        self.font_20 = pygame.font.Font(None, 20)
-        self.font_22 = pygame.font.Font(None, 22)
-        self.font_panel = pygame.font.Font(None, 22)
-        self.font_panel_title = pygame.font.Font(None, 26)
-        self.font_panel_small = pygame.font.Font(None, 20)
-
-        self.task_marker_surface = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-        marker_rect = pygame.Rect(5, 5, TILE_SIZE - 10, TILE_SIZE - 10)
-        pygame.draw.rect(
-            self.task_marker_surface, Colors.TASK_MARKER_FILL, marker_rect,
-            border_radius=6)
-        pygame.draw.rect(
-            self.task_marker_surface, Colors.TASK_MARKER_BORDER, marker_rect, 1,
-            border_radius=5)
-        corner = 10
-        color = Colors.TASK_MARKER_CORNER
-        pygame.draw.line(self.task_marker_surface, color, marker_rect.topleft,
-                         (marker_rect.left + corner, marker_rect.top), 2)
-        pygame.draw.line(self.task_marker_surface, color, marker_rect.topleft,
-                         (marker_rect.left, marker_rect.top + corner), 2)
-        pygame.draw.line(self.task_marker_surface, color, marker_rect.topright,
-                         (marker_rect.right - corner, marker_rect.top), 2)
-        pygame.draw.line(self.task_marker_surface, color, marker_rect.topright,
-                         (marker_rect.right, marker_rect.top + corner), 2)
-        pygame.draw.line(self.task_marker_surface, color, marker_rect.bottomleft,
-                         (marker_rect.left + corner, marker_rect.bottom), 2)
-        pygame.draw.line(self.task_marker_surface, color, marker_rect.bottomleft,
-                         (marker_rect.left, marker_rect.bottom - corner), 2)
-        pygame.draw.line(self.task_marker_surface, color, marker_rect.bottomright,
-                         (marker_rect.right - corner, marker_rect.bottom), 2)
-        pygame.draw.line(self.task_marker_surface, color, marker_rect.bottomright,
-                         (marker_rect.right, marker_rect.bottom - corner), 2)
-
-        self.explore_surfaces = {}
-        for mode, color in MODE_EXPLORE_FILLS.items():
-            surf = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
-            surf.fill(color)
-            self.explore_surfaces[mode] = surf
-
-        self.fog_surface = pygame.Surface(
-            pygame.display.get_surface().get_size(), pygame.SRCALPHA)
-        self.csp_surfaces = {}
-        for crop, bg in (("corn", Colors.CSP_CORN_BG), ("tomato", Colors.CSP_TOMATO_BG)):
-            surf = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
-            surf.fill(bg)
-            self.csp_surfaces[crop] = surf
-
     def _blit_tile_asset(self, surface, offset, tile, asset_key, y_offset=0):
         image = self.visual_assets.get(asset_key)
         if image is None:
@@ -349,7 +371,26 @@ class FarmAIController:
         world = self._tile_center(tile)
         sx = int(world.x - offset.x)
         sy = int(world.y - offset.y)
-        surface.blit(self.task_marker_surface, (sx - TILE_SIZE // 2, sy - TILE_SIZE // 2))
+        marker = pygame.Surface((TILE_SIZE - 10, TILE_SIZE - 10),
+                                pygame.SRCALPHA)
+        pygame.draw.rect(marker, Colors.TASK_MARKER_FILL, marker.get_rect(),
+                         border_radius=6)
+        surface.blit(marker, (sx - TILE_SIZE // 2 + 5,
+                              sy - TILE_SIZE // 2 + 5))
+        rect = pygame.Rect(0, 0, TILE_SIZE - 10, TILE_SIZE - 10)
+        rect.center = (sx, sy)
+        pygame.draw.rect(surface, Colors.TASK_MARKER_BORDER, rect, 1,
+                         border_radius=5)
+        corner = 10
+        color = Colors.TASK_MARKER_CORNER
+        pygame.draw.line(surface, color, rect.topleft, (rect.left + corner, rect.top), 2)
+        pygame.draw.line(surface, color, rect.topleft, (rect.left, rect.top + corner), 2)
+        pygame.draw.line(surface, color, rect.topright, (rect.right - corner, rect.top), 2)
+        pygame.draw.line(surface, color, rect.topright, (rect.right, rect.top + corner), 2)
+        pygame.draw.line(surface, color, rect.bottomleft, (rect.left + corner, rect.bottom), 2)
+        pygame.draw.line(surface, color, rect.bottomleft, (rect.left, rect.bottom - corner), 2)
+        pygame.draw.line(surface, color, rect.bottomright, (rect.right - corner, rect.bottom), 2)
+        pygame.draw.line(surface, color, rect.bottomright, (rect.right, rect.bottom - corner), 2)
 
     def _draw_mist_effect(self, surface):
         mist = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
@@ -445,7 +486,7 @@ class FarmAIController:
         self.current_target = None
         self.path = []
         self.state = "CHOOSE_TARGET"
-        self.wait_time = 0.15
+        self.wait_time = 0.45
 
     def _finish_pest_target(self, tile, condition):
         self.player.status = "down_idle"
@@ -457,7 +498,7 @@ class FarmAIController:
         self.current_target = None
         self.path = []
         self.state = "CHOOSE_TARGET"
-        self.wait_time = 0.15
+        self.wait_time = 0.45
 
     def _finish_cultivation_target(self, tile, message):
         self.message = message
@@ -465,7 +506,7 @@ class FarmAIController:
         self.current_target = None
         self.path = []
         self.state = "CHOOSE_TARGET"
-        self.wait_time = 0.15
+        self.wait_time = 0.35
 
     def _condition_label(self, condition):
         labels = {
@@ -484,27 +525,30 @@ class FarmAIController:
     # -------------------------------------------------------------- MODE 1
     def _bfs(self, start, goal):
         """Breadth-First Search â€” duyá»‡t theo lá»›p, khĂ´ng heuristic."""
-        blocked = self._blocked_tiles()
-        blocked.discard(start)
-        blocked.discard(goal)
-        path, explored, stats = algorithms.bfs(
-            start, goal, blocked, self._neighbors)
-        self.bfs_explored |= explored
-        stats["Nodes explored"] = len(self.bfs_explored)
-        self.stats = stats
-        return path
+        return self._search_path(start, goal, "BFS")
 
     # -------------------------------------------------------------- MODE 2
     def _astar(self, start, goal):
         """A* Search â€” f(n) = g(n) + h(n), heuristic Manhattan."""
+        return self._search_path(start, goal, "A*")
+
+    def _search_path(self, start, goal, algorithm_name=None):
         blocked = self._blocked_tiles()
         blocked.discard(start)
         blocked.discard(goal)
-        path, explored, fgh, stats = algorithms.astar(
-            start, goal, blocked, self._neighbors, self._heuristic,
+        name = algorithm_name or self.algorithm_name
+        path, explored, fgh, stats = algorithms.find_path_by_algorithm(
+            name, start, goal, blocked, self._neighbors, self._heuristic,
             self.counter)
         self.astar_current_fgh = fgh
-        self.astar_explored = explored
+        stats["Algorithm"] = name
+        if self.mode == 1:
+            self.bfs_explored |= explored
+            stats["Nodes explored"] = len(self.bfs_explored)
+        elif self.mode == 2:
+            self.astar_explored = explored
+        elif name == "A*":
+            self.astar_explored = explored
         self.stats = stats
         return path
 
@@ -521,16 +565,12 @@ class FarmAIController:
         2. XĂ©t cĂ¡c Ă´ ká» (neighbors) trong remaining.
         3. Chá»n Ă´ cĂ³ score cao nháº¥t. Náº¿u khĂ´ng tá»‘t hÆ¡n hiá»‡n táº¡i â†’ dá»«ng.
         """
-        current_best, current_score, self.hc_scores = (
-            algorithms.hill_climbing_choose(
-                remaining, start, self.dryness, self._heuristic))
+        current_best, current_score, self.hc_scores, self.stats = (
+            algorithms.local_search_choose(
+                self.algorithm_name, remaining, start, self.dryness,
+                self._heuristic))
         self.hc_current_score = current_score
         self.hc_best_neighbor_score = current_score
-        self.stats = {
-            "Current score": f"{current_score:.0f}",
-            "Target": f"{current_best}",
-            "Dryness": f"{self.dryness.get(current_best, 0)}%",
-        }
         return current_best
 
     # -------------------------------------------------------------- MODE 4
@@ -570,75 +610,113 @@ class FarmAIController:
         Player (MAX) chá»n Ă´ cĂ³ giĂ¡ trá»‹ cao nháº¥t.
         Enemy (MIN) giáº£ láº­p chá»n Ă´ gáº§n mĂ¬nh nháº¥t Ä‘á»ƒ tranh.
         """
-        best_tile, self.enemy_target, self.minimax_value, \
+        best_tile, predicted_enemy_target, self.minimax_value, \
             self.alpha_beta_info, self.stats = algorithms.minimax_choose(
                 remaining, player_start, self.enemy_tile,
                 self.enemy_done_tiles, self._care_value, self._heuristic,
                 self._is_living_crop)
+        if (not self.enemy_target and not self.enemy_retreat_target
+                and not self._enemy_is_destroying()):
+            self.enemy_target = predicted_enemy_target
         return best_tile
 
+    def _enemy_destroy_remaining(self):
+        if not self.enemy_destroy_until:
+            return 0.0
+        remaining_ms = self.enemy_destroy_until - pygame.time.get_ticks()
+        return max(0.0, remaining_ms / 1000)
+
+    def _enemy_is_destroying(self):
+        return self._enemy_destroy_remaining() > 0
+
+    def _enemy_remaining_targets(self):
+        return [t for t in self.farm_tiles
+                if t not in self.done_tiles
+                and t not in self.discovered_blocked
+                and t not in self.enemy_done_tiles
+                and t != self.current_target]
+
+    def _choose_enemy_target(self):
+        if not self.enemy_tile:
+            return
+        remaining = self._enemy_remaining_targets()
+        if not remaining:
+            self.enemy_target = None
+            return
+        self.enemy_target = min(
+            remaining, key=lambda tile: self._heuristic(self.enemy_tile, tile))
+
+    def _release_conflicting_locks(self):
+        if self.mode != 6:
+            return
+
+        if (self.current_target is not None
+                and self.enemy_target == self.current_target
+                and not self._enemy_is_destroying()):
+            self.enemy_target = None
+            self.enemy_retarget_timer = 0.0
+
+        if (self.enemy_target is not None
+                and self.current_target == self.enemy_target
+                and self.state in ("CHOOSE_TARGET", "MOVE")):
+            self.current_target = None
+            self.path = []
+            self.state = "CHOOSE_TARGET"
+            self.message = "Player re-plan vi qua da lock muc tieu"
+
+    def _update_enemy_strategy(self, dt):
+        if self.mode != 6:
+            return
+        if (self.enemy_target or self.enemy_retreat_target
+                or self._enemy_is_destroying()):
+            return
+        if self.enemy_retarget_timer > 0:
+            self.enemy_retarget_timer = max(0, self.enemy_retarget_timer - dt)
+            if self.enemy_retarget_timer > 0:
+                return
+        self._choose_enemy_target()
+
     def _move_enemy_towards(self, dt):
-       # ===== Anti-collision AI =====
-        if self.enemy_target and self.current_target:
-
-            if self.enemy_target == self.current_target:
-
-                robot_tile = self._world_to_tile(
-                    self.player.rect.center
-        )
-
-                candidates = [
-                 t for t in self.farm_tiles
-                 if t not in self.done_tiles
-                 and t not in self.enemy_done_tiles
-                 and t != self.current_target
-        ]
-
-                if candidates:
-
-                 def score(tile):
-
-                # quạ thích cây giá trị cao
-                     value = self._care_value(tile)
-
-                # nhưng tránh cây robot sắp tới
-                     robot_dist = self._heuristic(
-                         robot_tile,
-                         tile
-                )
-
-                     return value + robot_dist * 2
-
-                self.enemy_target = max(
-                 candidates,
-                 key=score
-            )
+        """Di chuyá»ƒn enemy dáº§n dáº§n tá»›i target."""
+        if not self.enemy_tile:
+            return
+        if (self.enemy_target is not None
+                and (self.enemy_target == self.current_target
+                     or self.enemy_target in self.done_tiles
+                     or self.enemy_target in self.enemy_done_tiles)
+                and not self._enemy_is_destroying()):
+            self.enemy_target = None
+            self.enemy_retarget_timer = 0.0
+            return
         target = self.enemy_target or self.enemy_retreat_target
         if not target:
             return
+
+        if self.enemy_destroy_until:
+            if not self._enemy_is_destroying() and self.enemy_target:
+                damaged_tile = self.enemy_target
+                self.enemy_done_tiles.add(damaged_tile)
+                self.enemy_tile = damaged_tile
+                self.enemy_target = None
+                self.enemy_destroy_until = 0
+                self.enemy_retarget_timer = self.ENEMY_RETARGET_DELAY
+            return
+
         ex, ey = self.enemy_tile
         tx, ty = target
-        speed = 12.5  # tiles per second (match player speed 800px/s)
-        step = speed * dt
+        step = self.ENEMY_MOVE_SPEED * dt
 
         dx = tx - ex
         dy = ty - ey
         dist = math.sqrt(dx * dx + dy * dy)
         if dist < 0.3:
-
+            # Enemy "Ä‘áº¿n" Ă´ target
             if self.enemy_retreat_target and not self.enemy_target:
                 self.enemy_tile = self.enemy_retreat_target
                 self.enemy_retreat_target = None
                 return
-            damaged_tile = self.enemy_target
-
-    # bắt đầu phá cây
-            if self.enemy_attacking_tile is None:
-                self.enemy_attacking_tile = damaged_tile
-                self.enemy_attack_timer = self.enemy_attack_duration
-                self.enemy_tile = damaged_tile
-                return
-
+            self.enemy_destroy_until = (
+                pygame.time.get_ticks() + int(self.ENEMY_DESTROY_TIME * 1000))
             return
 
         # Di chuyá»ƒn tá»«ng bÆ°á»›c nhá»
@@ -649,8 +727,8 @@ class FarmAIController:
 
     # -------------------------------------------------------- path dispatch
     def _path_for_mode(self, start, goal):
-        if self.mode == 1:
-            return self._bfs(start, goal)
+        if self.mode in (1, 2):
+            return self._search_path(start, goal)
         if self.mode == 4:
             return self._online_plan(start, goal)
         return self._astar(start, goal)
@@ -677,11 +755,12 @@ class FarmAIController:
         return best[1] if best else None
 
     # ---------------------------------------------------- player direction
-    def _set_player_direction_to(self, world_pos, dt):
+    def _set_player_direction_to(self, world_pos):
         """Di chuyá»ƒn player vá» world_pos. Tráº£ vá» True khi Ä‘Ă£ Ä‘áº¿n nÆ¡i."""
         delta = pygame.math.Vector2(world_pos) - self.player.pos
-        snap_distance = max(3, self.player.speed * dt * 1.25)
-        if delta.length() <= snap_distance:
+        # NgÆ°á»¡ng lá»›n hÆ¡n: 1 tile = 64px, player speed=200px/s
+        # Chá»‰ cáº§n náº±m trong 14px (< 1 bÆ°á»›c dt=0.07s) lĂ  coi nhÆ° Ä‘áº¿n
+        if delta.length() < 14:
             # Snap chĂ­nh xĂ¡c vĂ o center tile trĂ¡nh drift tĂ­ch lÅ©y
             self.player.pos.update(world_pos)
             self.player.rect.center = (round(world_pos.x), round(world_pos.y))
@@ -701,17 +780,23 @@ class FarmAIController:
         if self.mode == 4:
             self.fog_time += dt
 
+        if not self.is_running:
+            self.player.direction.update(0, 0)
+            return
+
         if self.wait_time > 0:
             self.wait_time -= dt
             self.player.direction.update(0, 0)
             # Mode 6: enemy váº«n di chuyá»ƒn khi player chá»
             if self.mode == 6:
+                self._update_enemy_strategy(dt)
                 self._move_enemy_towards(dt)
             return
 
         if self.state == "DONE":
             self.player.direction.update(0, 0)
             if self.mode == 6:
+                self._update_enemy_strategy(dt)
                 self._move_enemy_towards(dt)
             return
 
@@ -734,7 +819,7 @@ class FarmAIController:
                         self.path.pop(0)
                     self._stuck_pos = None
                     self._stuck_timer = 0.0
-                    self.wait_time = 0.15
+                    self.wait_time = 0.1
                     self.message = "Recover: skip tile bi ket"
                     return
             else:
@@ -743,25 +828,18 @@ class FarmAIController:
 
         # Mode 6: enemy di chuyá»ƒn liĂªn tá»¥c
         if self.mode == 6:
-
-    # đang phá cây
-            if self.enemy_attacking_tile is not None:
-                self.enemy_attack_timer -= dt
-                if self.enemy_attack_timer <= 0:
-                    self.enemy_done_tiles.add(
-                        self.enemy_attacking_tile
-            )
-                    self.enemy_target = None
-                    self.enemy_attacking_tile = None
-            else:
-                self._move_enemy_towards(dt)
+            self._release_conflicting_locks()
+            self._update_enemy_strategy(dt)
+            self._move_enemy_towards(dt)
+            self._release_conflicting_locks()
 
         # --- CHOOSE TARGET ---
         if self.state == "CHOOSE_TARGET":
             remaining = [t for t in self.farm_tiles
                          if t not in self.done_tiles
                          and t not in self.discovered_blocked
-                         and t not in self.enemy_done_tiles]
+                         and t not in self.enemy_done_tiles
+                         and (self.mode != 6 or t != self.enemy_target)]
             if not remaining:
                 self.state = "DONE"
                 done_count = len(self.done_tiles)
@@ -794,6 +872,12 @@ class FarmAIController:
                 return
 
             self.current_target = target
+            if self.mode == 6 and self.enemy_target == self.current_target:
+                self.current_target = None
+                self.path = []
+                self.state = "CHOOSE_TARGET"
+                self.message = "Player re-plan vi qua da lock muc tieu"
+                return
             self.path = self._path_for_mode(start, target)
 
             if not self.path and start != target:
@@ -802,7 +886,7 @@ class FarmAIController:
                     self.message = (
                         f"Online: o {target} bi chan, "
                         f"re-plan (lan {self.replan_count})")
-                    self.wait_time = 0.15
+                    self.wait_time = 0.4
                     return
                 self.done_tiles.add(target)
                 self.message = f"Bo qua {target}: khong co duong."
@@ -814,6 +898,13 @@ class FarmAIController:
 
         # --- MOVE ---
         if self.state == "MOVE":
+            if (self.mode == 6 and self.enemy_target is not None
+                    and self.current_target == self.enemy_target):
+                self.current_target = None
+                self.path = []
+                self.state = "CHOOSE_TARGET"
+                self.message = "Player re-plan vi qua da lock muc tieu"
+                return
             if not self.path:
                 self.state = self._state_after_arrival(self.current_target)
                 return
@@ -831,11 +922,11 @@ class FarmAIController:
                     self.message = (
                         f"Online: phat hien vat can tai {next_tile}, "
                         f"re-plan (lan {self.replan_count})")
-                    self.wait_time = 0.15
+                    self.wait_time = 0.4
                     return
 
             reached = self._set_player_direction_to(
-                self._tile_center(next_tile), dt)
+                self._tile_center(next_tile))
             if reached:
                 self.path.pop(0)
                 # Mode 4: tiáº¿p tá»¥c má»Ÿ rá»™ng táº§m nhĂ¬n khi di chuyá»ƒn
@@ -877,7 +968,7 @@ class FarmAIController:
                 else:
                     self.message = f"Cuoc dat tai {action_tile}"
             self.state = self._next_cultivation_state(action_tile)
-            self.wait_time = 0.15
+            self.wait_time = 0.18 if self.state != "PLANT" else 0.30
             return
 
         if self.state == "PLANT":
@@ -893,7 +984,7 @@ class FarmAIController:
                 else:
                     self.message = f"Gieo {seed} tai {action_tile}"
             self.state = self._next_cultivation_state(action_tile)
-            self.wait_time = 0.15
+            self.wait_time = 0.18 if self.state != "WATER" else 0.30
             return
 
         if self.state == "WATER":
@@ -913,7 +1004,7 @@ class FarmAIController:
 
     # ------------------------------------------------------ map overlays
     def _draw_map_overlays(self, surface, offset):
-        """Vẽ thông tin thuật toán lên map (explored nodes, scores, fog, enemy...)."""
+        """Váº½ thĂ´ng tin thuáº­t toĂ¡n lĂªn map (explored nodes, scores, fog, enemy...)."""
 
         for tile in self.farm_tiles:
             self._draw_task_tile_marker(surface, offset, tile)
@@ -933,281 +1024,282 @@ class FarmAIController:
                 elif condition == "crow":
                     self._blit_tile_asset(surface, offset, tile, "black_worm", y_offset=2)
 
-        # --- Mode 1: BFS explored nodes (xanh dương nhạt) ---
+        # --- Mode 1: BFS explored nodes (xanh dÆ°Æ¡ng nháº¡t) ---
         if self.mode == 1 and self.bfs_explored:
-            s = self.explore_surfaces[1]
             for tile in self.bfs_explored:
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
+                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
+                                   pygame.SRCALPHA)
+                s.fill(MODE_EXPLORE_FILLS[1])
+                surface.blit(s, (sx - TILE_SIZE // 2 + 2,
+                                 sy - TILE_SIZE // 2 + 2))
 
-        # --- Mode 2: A* explored nodes (xanh lá nhạt) ---
+        # --- Mode 2: A* explored nodes (xanh lĂ¡ nháº¡t) ---
         if self.mode == 2 and self.astar_explored:
-            s = self.explore_surfaces[2]
             for tile in self.astar_explored:
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
+                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
+                                   pygame.SRCALPHA)
+                s.fill(MODE_EXPLORE_FILLS[2])
+                surface.blit(s, (sx - TILE_SIZE // 2 + 2,
+                                 sy - TILE_SIZE // 2 + 2))
 
-        # --- Mode 3: Hill Climbing scores trên mỗi ô ---
+        # --- Mode 3: Hill Climbing scores trĂªn má»—i Ă´ ---
         if self.mode == 3 and self.hc_scores:
+            font_sm = pygame.font.Font(None, 20)
             for tile, score in self.hc_scores.items():
                 if tile in self.done_tiles:
                     continue
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
+                # TĂ´ mĂ u theo score
                 ratio = max(0, min(1, (score + 50) / 100))
                 r = int(255 * (1 - ratio))
                 g = int(255 * ratio)
-                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4), pygame.SRCALPHA)
+                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
+                                   pygame.SRCALPHA)
                 s.fill((r, g, 80, 60))
-                surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
-                txt = self.font_20.render(f"{score:.0f}", True, Colors.SCORE_TEXT)
+                surface.blit(s, (sx - TILE_SIZE // 2 + 2,
+                                 sy - TILE_SIZE // 2 + 2))
+                txt = font_sm.render(f"{score:.0f}", True, Colors.SCORE_TEXT)
                 surface.blit(txt, (sx - 10, sy - 8))
 
         # --- Mode 4: Fog-of-war ---
         if self.mode == 4:
-            fog = self.fog_surface
-            fog.fill((0, 0, 0, 0))
+            fog = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
             fog.fill(Colors.FOG_DARK)
             center = (
                 int(self.player.rect.centerx - offset.x),
                 int(self.player.rect.centery - offset.y),
             )
             vision_px = int(self.vision_radius * TILE_SIZE)
-            pygame.draw.circle(fog, Colors.FOG_EDGE, center, vision_px + 34)
-            pygame.draw.circle(fog, Colors.FOG_MID, center, vision_px + 18)
+            pygame.draw.circle(fog, Colors.FOG_EDGE,
+                               center, vision_px + 34)
+            pygame.draw.circle(fog, Colors.FOG_MID,
+                               center, vision_px + 18)
             pygame.draw.circle(fog, Colors.FOG_CLEAR, center, vision_px)
             surface.blit(fog, (0, 0))
             self._draw_mist_effect(surface)
 
+            # Váº½ Ă´ block Ä‘Ă£ phĂ¡t hiá»‡n
             for tile in self.discovered_blocked:
                 self._blit_tile_asset(surface, offset, tile, "storm_debris")
                 world = self._tile_center(tile)
                 rect = pygame.Rect(0, 0, TILE_SIZE - 8, TILE_SIZE - 8)
-                rect.center = (int(world.x - offset.x), int(world.y - offset.y))
-                txt = self.font_18.render("BLOCK", True, Colors.BLOCK_LABEL)
+                rect.center = (int(world.x - offset.x),
+                                int(world.y - offset.y))
+                font_sm = pygame.font.Font(None, 18)
+                txt = font_sm.render("BLOCK", True, Colors.BLOCK_LABEL)
                 surface.blit(txt, (rect.x + 4, rect.y + 20))
 
+            # Váº½ Ă´ block áº©n chÆ°a phĂ¡t hiá»‡n (nháº¹, debug)
         # --- Mode 5: CSP assignment labels (C/T) ---
         if self.mode == 5 and self.seed_plan:
+            font_sm = pygame.font.Font(None, 22)
             for tile, crop in self.seed_plan.items():
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
                 label = "C" if crop == "corn" else "T"
                 color = Colors.CSP_CORN if crop == "corn" else Colors.CSP_TOMATO
-                s = self.csp_surfaces.get(crop)
-                if s:
-                    surface.blit(s, (sx - TILE_SIZE // 2 + 2, sy - TILE_SIZE // 2 + 2))
-                txt = self.font_22.render(label, True, color)
+                # Ná»n
+                s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
+                                   pygame.SRCALPHA)
+                bg = Colors.CSP_CORN_BG if crop == "corn" else Colors.CSP_TOMATO_BG
+                s.fill(bg)
+                surface.blit(s, (sx - TILE_SIZE // 2 + 2,
+                                 sy - TILE_SIZE // 2 + 2))
+                txt = font_sm.render(label, True, color)
                 surface.blit(txt, (sx - 5, sy - 8))
 
         # --- Mode 6: Enemy + enemy path ---
         if self.mode == 6 and self.enemy_tile:
-            # 1. Tính toán tọa độ hiển thị (ex, ey) trượt mượt mà
-            world = self._tile_center((self.enemy_tile[0], self.enemy_tile[1]))
+            world = self._tile_center(
+                (int(round(self.enemy_tile[0])),
+                 int(round(self.enemy_tile[1]))))
             ex = int(world.x - offset.x)
             ey = int(world.y - offset.y)
-            
-            # 2. Vẽ thân Enemy (Quạ) + PROCEDURAL ANIMATION
+            # ThĂ¢n enemy
             crow = self.visual_assets.get("crow")
             if crow:
-                import math
-                y_offset = -4
-                angle = 0
-                
-                time_now = pygame.time.get_ticks() / 1000
-                if hasattr(self, 'enemy_path') and self.enemy_path: 
-                    # Đang bay: Nhấp nhô và nghiêng ngả
-                    y_offset -= abs(math.sin(time_now * 15)) * 8
-                    angle = math.sin(time_now * 10) * 12
-                elif self.enemy_attack_timer > 0:
-                    # Đang mổ cây: Gật gù liên tục
-                    angle = abs(math.sin(time_now * 25)) * 30 - 15 
-                
-                if angle != 0:
-                    rotated_crow = pygame.transform.rotate(crow, angle)
-                    crow_rect = rotated_crow.get_rect(center=(ex, ey + y_offset))
-                    surface.blit(rotated_crow, crow_rect)
-                else:
-                    crow_rect = crow.get_rect(center=(ex, ey + y_offset))
-                    surface.blit(crow, crow_rect)
+                crow_rect = crow.get_rect(center=(ex, ey - 4))
+                surface.blit(crow, crow_rect)
             else:
                 pygame.draw.circle(surface, Colors.ENEMY_FALLBACK, (ex, ey), 20)
                 pygame.draw.circle(surface, Colors.ENEMY_FALLBACK_OUTLINE, (ex, ey), 20, 3)
-
-            # Label CROW
-            txt = self.font_20.render("CROW", True, Colors.ENEMY)
+            # Label
+            font_sm = pygame.font.Font(None, 20)
+            txt = font_sm.render("CROW", True, Colors.ENEMY)
             surface.blit(txt, (ex - 18, ey - 42))
 
-            # 3. Vẽ thanh Progress Bar (Đếm ngược 0.45s cân bằng với Robot)
-            if self.enemy_attack_timer > 0 and hasattr(self, 'enemy_attack_duration') and self.enemy_attack_duration > 0:
-                bar_w = TILE_SIZE - 10
-                bar_h = 6
-                ratio = 1.0 - (self.enemy_attack_timer / self.enemy_attack_duration)
-                fill = int(ratio * bar_w)
-                pygame.draw.rect(surface, (50, 50, 50), (ex - bar_w//2, ey + 15, bar_w, bar_h))
-                pygame.draw.rect(surface, Colors.ENEMY, (ex - bar_w//2, ey + 15, fill, bar_h))
-
-            # 4. Vẽ đường ngắm target của Enemy (chỉ đỏ)
+            # Enemy target line
             if self.enemy_target:
                 tw = self._tile_center(self.enemy_target)
                 tx = int(tw.x - offset.x)
                 ty = int(tw.y - offset.y)
-                pygame.draw.line(surface, Colors.ENEMY, (ex, ey), (tx, ty), 2)
-                pygame.draw.circle(surface, Colors.ENEMY, (tx, ty), 8, 2)
+                pygame.draw.line(surface, Colors.ENEMY,
+                                 (ex, ey), (tx, ty), 2)
+                pygame.draw.circle(surface, Colors.ENEMY,
+                                   (tx, ty), 8, 2)
 
-            # 5. Vẽ ô enemy đã chiếm (viền đỏ)
+            # Ă” enemy Ä‘Ă£ chiáº¿m
             for tile in self.enemy_done_tiles:
                 w = self._tile_center(tile)
                 rect = pygame.Rect(0, 0, TILE_SIZE - 6, TILE_SIZE - 6)
-                rect.center = (int(w.x - offset.x), int(w.y - offset.y))
-                pygame.draw.rect(surface, Colors.ENEMY_FALLBACK, rect, 3, border_radius=4)
+                rect.center = (int(w.x - offset.x),
+                                int(w.y - offset.y))
+                pygame.draw.rect(surface, Colors.ENEMY_FALLBACK, rect, 3,
+                                 border_radius=4)
                 original_condition = self._condition_for_tile(tile)
                 asset_key = self._condition_asset(original_condition)
                 self._blit_tile_asset(surface, offset, tile, asset_key, y_offset=-6)
                 self._blit_tile_asset(surface, offset, tile, "black_worm", y_offset=4)
 
-        # --- Vẽ vùng bảo vệ 3x3 của Scarecrow ---
-        if self.mode == 6 and hasattr(self, 'scarecrows'):
-            for sx, sy in self.scarecrows:
-                world = self._tile_center((sx, sy))
-                rect = pygame.Rect(0, 0, TILE_SIZE * 3, TILE_SIZE * 3)
-                rect.center = (int(world.x - offset.x), int(world.y - offset.y))
-                
-                # Highlight màu xanh lá
-                s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-                s.fill((100, 255, 100, 30)) 
-                pygame.draw.rect(s, (50, 200, 50, 100), s.get_rect(), 2)
-                surface.blit(s, rect.topleft)
-
-                # Chữ đánh dấu tâm
-                txt = self.font_20.render("SCARECROW", True, (200, 255, 200))
-                surface.blit(txt, (rect.centerx - 40, rect.centery - 10))
-
-        # --- Đường đi chung (vàng) ---
+        # --- ÄÆ°á»ng Ä‘i chung (vĂ ng) ---
         if self.path:
             points = []
             for tile in self.path:
                 world = self._tile_center(tile)
-                points.append((int(world.x - offset.x), int(world.y - offset.y)))
+                points.append((int(world.x - offset.x),
+                                int(world.y - offset.y)))
             if len(points) >= 2:
                 pygame.draw.lines(surface, Colors.PATH, False, points, 4)
             for p in points:
                 pygame.draw.circle(surface, Colors.PATH, p, 5)
+
     # ------------------------------------------------------------ panel
     def _draw_panel(self, surface):
-        """Váº½ panel thĂ´ng tin thuáº­t toĂ¡n â€” riĂªng theo tá»«ng cáº¥p Ä‘á»™."""
-        font = self.font_panel
-        font_title = self.font_panel_title
-        font_small = self.font_panel_small
-
-        # --- Header ---
-        lines = []
-        lines.append(("title", f"SMART FARM AI ROBOT - KHU {self.mode}"))
-        lines.append(("subtitle", f"{self.mode_name}"))
-        lines.append(("difficulty",
-                       f"Do kho: {self.difficulty_desc}"))
-        lines.append(("algo", f"Thuat toan: {self.algorithm_name}"))
-        lines.append(("desc", self.mode_desc))
-        lines.append(("sep", ""))
-        lines.append(("state", f"Trang thai: {self.state}"))
-        lines.append(("msg", self.message))
-        if self.current_target is not None and self._has_condition(self.current_target):
-            lines.append(("action", f"Xu ly: {self._target_label(self.current_target)}"))
-        lines.append(("progress",
-                       f"Da xu ly: {len(self.done_tiles)}"
-                       f"/{len(self.farm_tiles)} nhiem vu"))
-
-        # --- Stats riĂªng mode ---
-        if self.stats:
-            lines.append(("sep", ""))
-            for key, val in self.stats.items():
-                lines.append(("stat", f"  {key}: {val}"))
-
-        # Mode 6: thĂªm enemy info
-        if self.mode == 6:
-            enemy_count = len(self.enemy_done_tiles)
-            lines.append(("stat", f"  Enemy chiem: {enemy_count} o"))
-        if self.enemy_attacking_tile:
-            lines.append(
-            ("stat",
-         f"  Enemy dang pha: {self.enemy_attacking_tile}")
-    )
-        lines.append(("sep", ""))
-        lines.append(("hint", "Nhan phim 1-6 de doi khu nhiem vu"))
-
-        # --- TĂ­nh kĂ­ch thÆ°á»›c panel ---
-        line_height = 20
-        panel_height = len(lines) * line_height + 25
-        panel_width = 520
-        panel = pygame.Rect(20, 20, panel_width, panel_height)
-
-        # Váº½ ná»n panel
-        panel_surf = pygame.Surface((panel_width, panel_height),
-                                    pygame.SRCALPHA)
-        panel_surf.fill(Colors.PANEL_BG)
-        surface.blit(panel_surf, (20, 20))
-
-        # Viá»n panel theo mode color
+        """Draw the left control panel with algorithm selection and run buttons."""
+        font = pygame.font.Font(None, 22)
+        font_title = pygame.font.Font(None, 26)
+        font_small = pygame.font.Font(None, 20)
         border_color = MODE_COLORS.get(self.mode, (200, 200, 200))
+
+        panel_width = 390
+        panel_height = 600 if self.mode in (1, 2, 3) else 360
+        panel = pygame.Rect(20, 20, panel_width, panel_height)
+        panel_surf = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
+        panel_surf.fill(Colors.PANEL_BG)
+        surface.blit(panel_surf, panel.topleft)
         pygame.draw.rect(surface, border_color, panel, 2, border_radius=8)
 
-        # --- Render text ---
-        y = 32
-        for line_type, text in lines:
-            if line_type == "sep":
-                pygame.draw.line(surface, Colors.PANEL_SEPARATOR,
-                                 (35, y + 5), (panel_width, y + 5))
-                y += line_height
-                continue
+        self.algorithm_buttons = {}
+        self.control_buttons = {}
 
-            if line_type == "title":
-                color = border_color
-                f = font_title
-            elif line_type == "subtitle":
-                color = Colors.TEXT_SUBTITLE
-                f = font
-            elif line_type == "difficulty":
-                color = Colors.TEXT_DIFFICULTY
-                f = font_small
-            elif line_type == "algo":
-                color = border_color
-                f = font
-            elif line_type == "hint":
-                color = Colors.TEXT_MUTED
-                f = font_small
-            elif line_type == "stat":
-                color = Colors.TEXT_STAT
-                f = font_small
-            elif line_type == "action":
-                color = Colors.TEXT_WARNING
-                f = font_small
-            elif line_type == "progress":
-                color = Colors.TEXT_SUCCESS
-                f = font
+        def draw_text(text, x, y, color=Colors.TEXT_PRIMARY, used_font=None):
+            txt = (used_font or font).render(text, True, color)
+            surface.blit(txt, (x, y))
+            return y + txt.get_height() + 6
+
+        def draw_button(key, rect, text, selected=False, danger=False):
+            if danger:
+                fill = (110, 52, 52, 220)
+            elif selected:
+                fill = (*border_color, 210)
             else:
-                color = Colors.TEXT_PRIMARY
-                f = font
+                fill = (38, 42, 54, 230)
+            text_color = (15, 18, 22) if selected else Colors.TEXT_PRIMARY
+            pygame.draw.rect(surface, fill, rect, border_radius=6)
+            pygame.draw.rect(surface, border_color, rect, 1, border_radius=6)
+            label = font_small.render(text, True, text_color)
+            surface.blit(label, label.get_rect(center=rect.center))
+            return rect
 
-            txt = f.render(text, True, color)
-            surface.blit(txt, (35, y))
-            y += line_height
+        x = panel.x + 15
+        y = panel.y + 14
+        y = draw_text(f"KHU {self.mode}", x, y, border_color, font_title)
+        y = draw_text(self.mode_name, x, y, Colors.TEXT_SUBTITLE, font_small)
+        y += 4
 
-        # --- Progress bar ---
+        if self.mode in (1, 2, 3):
+            y = draw_text("NHOM THUAT TOAN", x, y, Colors.TEXT_MUTED, font_small)
+            y = draw_text(self.algorithm_group_name, x, y, border_color, font)
+            y += 6
+            y = draw_text("CHON THUAT TOAN", x, y, Colors.TEXT_MUTED, font_small)
+
+            options = self.selectable_algorithms()
+            button_w = 170
+            button_h = 34
+            gap = 8
+            for index, algorithm_name in enumerate(options):
+                col = index % 2
+                row = index // 2
+                rect = pygame.Rect(
+                    x + col * (button_w + gap), y + row * (button_h + gap),
+                    button_w, button_h)
+                self.algorithm_buttons[algorithm_name] = draw_button(
+                    algorithm_name, rect, algorithm_name,
+                    selected=algorithm_name == self.algorithm_name)
+            y += ((len(options) + 1) // 2) * (button_h + gap) + 8
+
+            pygame.draw.line(surface, Colors.PANEL_SEPARATOR,
+                             (x, y), (panel.right - 15, y))
+            y += 12
+            y = draw_text("DIEU KHIEN", x, y, Colors.TEXT_MUTED, font_small)
+            start_rect = pygame.Rect(x, y, 108, 36)
+            pause_rect = pygame.Rect(x + 116, y, 108, 36)
+            reset_rect = pygame.Rect(x + 232, y, 108, 36)
+            self.control_buttons["start"] = draw_button(
+                "start", start_rect, "START", selected=self.is_running)
+            self.control_buttons["pause"] = draw_button(
+                "pause", pause_rect, "PAUSE", selected=not self.is_running)
+            self.control_buttons["reset"] = draw_button(
+                "reset", reset_rect, "RESET", danger=True)
+            y += 50
+        else:
+            y = draw_text(f"Thuat toan: {self.algorithm_name}", x, y,
+                          border_color, font)
+            y += 8
+
+        pygame.draw.line(surface, Colors.PANEL_SEPARATOR,
+                         (x, y), (panel.right - 15, y))
+        y += 12
+        status = "Dang chay" if self.is_running else "Cho START"
+        if self.state == "DONE":
+            status = "Hoan thanh"
+        y = draw_text(f"Trang thai: {status}", x, y, Colors.TEXT_PRIMARY, font)
+        y = draw_text(self.message, x, y, Colors.TEXT_SUBTITLE, font_small)
+        if self.current_target is not None and self._has_condition(self.current_target):
+            y = draw_text(f"Xu ly: {self._target_label(self.current_target)}",
+                          x, y, Colors.TEXT_WARNING, font_small)
+
         total = max(len(self.farm_tiles), 1)
         done = len(self.done_tiles)
-        bar_x = 35
-        bar_y = y - 5
-        bar_w = panel_width - 40
-        bar_h = 8
-        pygame.draw.rect(surface, (40, 40, 60),
-                         (bar_x, bar_y, bar_w, bar_h), border_radius=4)
-        fill_w = int(bar_w * done / total)
+        y += 4
+        y = draw_text(f"Tien do: {done}/{len(self.farm_tiles)} nhiem vu",
+                      x, y, Colors.TEXT_SUCCESS, font)
+        bar_rect = pygame.Rect(x, y + 2, panel_width - 30, 9)
+        pygame.draw.rect(surface, (40, 40, 60), bar_rect, border_radius=4)
+        fill_w = int(bar_rect.width * done / total)
         if fill_w > 0:
-            pygame.draw.rect(surface, border_color,
-                             (bar_x, bar_y, fill_w, bar_h), border_radius=4)
+            fill_rect = pygame.Rect(bar_rect.x, bar_rect.y, fill_w, bar_rect.height)
+            pygame.draw.rect(surface, border_color, fill_rect, border_radius=4)
+        y += 26
+
+        if self.mode == 6:
+            enemy_count = len(self.enemy_done_tiles)
+            y = draw_text(f"Enemy chiem: {enemy_count} o",
+                          x, y, Colors.TEXT_WARNING, font_small)
+            destroy_remaining = self._enemy_destroy_remaining()
+            if destroy_remaining > 0:
+                y = draw_text(f"Enemy pha cay: {destroy_remaining:.1f}s",
+                              x, y, Colors.TEXT_WARNING, font_small)
+
+        if self.stats:
+            y = draw_text("THONG KE", x, y, Colors.TEXT_MUTED, font_small)
+            for key, val in list(self.stats.items())[:7]:
+                y = draw_text(f"{key}: {val}", x, y, Colors.TEXT_STAT, font_small)
+
+        if self.mode in (1, 2, 3):
+            hint = "Click nut hoac dung Q/E de doi thuat toan"
+        else:
+            hint = "Nhan phim 1-6 de doi khu nhiem vu"
+        draw_text(hint, x, panel.bottom - 30, Colors.TEXT_MUTED, font_small)
+
+
+

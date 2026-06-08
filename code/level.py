@@ -15,12 +15,13 @@ from soil import SoilLayer
 from sky import Rain, Sky
 from menu import Menu
 from ai_controller import FarmAIController
-from design_tokens import Colors
+from design_tokens import Colors, MODE_COLORS
+import algorithms
 
 class Level:
 	HOUSE_SHIFT_TILES = (0, 5)
 	HOUSE_ORIGINAL_BOUNDS = (20, 21, 27, 26)  # left, top, right, bottom in TMX tiles
-	SOLID_DECORATION_KINDS = {'sign', 'stake', 'stump', 'storm_debris', 'crow_damage'}
+	SOLID_DECORATION_KINDS = {'sign', 'stake', 'stump', 'stump_small', 'bush', 'mushroom', 'storm_debris', 'crow_damage'}
 	COMPACT_DECORATION_KINDS = {'path', 'mist', 'puddle'}
 	OVERVIEW_DURATION = 3.0
 	OVERVIEW_PADDING_TILES = 3
@@ -32,10 +33,10 @@ class Level:
 	AREA_BOARD_TILES = {
 		1: (11, 14),
 		2: (24, 14),
-		3: (29, 20),
+		3: (32, 22),
 		4: (10, 26),
-		5: (17, 27),
-		6: (28, 27),
+		5: (21, 27),
+		6: (30, 28),
 	}
 
 	# ----------------------------------------------------------------
@@ -63,34 +64,56 @@ class Level:
 		# Day 2 - A*: warehouse lane, with storm debris blocking the route.
 		2: {
 			'area_name': 'Khu 2 - Loi vao nha kho',
-			'spawn_tile': (18, 17),
-			'obstacles': [(22,16),(21,17),(21,18),(22,18),(23,18)],
+			'spawn_tile': (18, 18),
+			'obstacles': [
+				(19,15),(20,15),(21,15),(22,15),(23,15),(24,15),(25,15),(26,15),
+				(19,21),(20,21),(21,21),(22,21),(23,21),(24,21),(25,21),(26,21),
+				(21,16),(21,17),(21,18),
+				(23,18),(23,19),(23,20),
+				(25,16),(25,17),(25,18),
+			],
+			'obstacle_kinds': {
+				(19,15): 'fallen_log', (20,15): 'storm_debris',
+				(21,15): 'rock_pile', (22,15): 'bush',
+				(23,15): 'storm_debris', (24,15): 'broken_crate',
+				(25,15): 'fallen_log', (26,15): 'storm_debris',
+				(19,21): 'storm_debris', (20,21): 'stump_small',
+				(21,21): 'broken_crate', (22,21): 'rock_pile',
+				(23,21): 'fallen_log', (24,21): 'storm_debris',
+				(25,21): 'bush', (26,21): 'rock_pile',
+				(21,16): 'fallen_log', (21,17): 'bush', (21,18): 'rock_pile',
+				(23,18): 'broken_crate', (23,19): 'stump_small', (23,20): 'storm_debris',
+				(25,16): 'rock_pile', (25,17): 'fallen_log', (25,18): 'broken_crate',
+			},
 			'tiles': [
-				(24,16),(25,16),(24,20),(25,20),
-				(24,17),(25,17),(26,17),(27,17),
-				(24,18),(25,18),(26,18),(27,18),
-				(24,19),(25,19),(26,19),(27,19),
+				(28,16),(29,16),(30,16),(31,16),
+				(27,17),(28,17),(29,17),(30,17),(31,17),
+				(27,18),(28,18),(29,18),(30,18),(31,18),
+				(27,19),(28,19),(29,19),(30,19),(31,19),
+				(28,20),(29,20),(30,20),(31,20),
 			],
 			'decorations': [
-				('storm_debris', 20, 15), ('storm_debris', 23, 20),
-				('puddle', 26, 20),
-				('sign', 28, 15),
+				('sign', 18, 16),
+				('puddle', 20, 19), ('puddle', 27, 21), ('puddle', 32, 18),
+				('bush', 19, 17), ('stump_small', 32, 17),
+				('stake', 27, 16), ('stake', 32, 16),
+				('flower', 32, 20),
 			],
 		},
 		# Day 3 - Hill Climbing: separated east orchard triage.
 		3: {
 			'area_name': 'Khu 3 - Vuon cay phia dong',
-			'spawn_tile': (35, 25),
+			'spawn_tile': (35, 26),
 			'obstacles': [],
 			'tiles': [
-				(29,22),(30,22),(31,22),(32,22),(33,22),(34,22),
 				(29,23),(30,23),(31,23),(32,23),(33,23),(34,23),
 				(29,24),(30,24),(31,24),(32,24),(33,24),(34,24),
 				(29,25),(30,25),(31,25),(32,25),(33,25),(34,25),
+				(29,26),(30,26),(31,26),(32,26),(33,26),(34,26),
 			],
 			'decorations': [
-				('puddle', 28, 22), ('flower', 35, 23),
-				('stake', 28, 21), ('stake', 35, 21),
+				('puddle', 28, 23), ('flower', 35, 24),
+				('stake', 28, 22), ('stake', 35, 22),
 			],
 		},
 		# Day 4 - Online Search: south-west fog field.
@@ -114,35 +137,35 @@ class Level:
 		# Day 5 - CSP Backtracking: central replant grid.
 		5: {
 			'area_name': 'Khu 5 - O quy hoach trung tam',
-			'spawn_tile': (16, 31),
+			'spawn_tile': (20, 31),
 			'obstacles': [],
 			'tiles': [
-				(17,29),(18,29),(19,29),(20,29),
-				(17,30),(18,30),(19,30),(20,30),
-				(17,31),(18,31),(19,31),(20,31),
-				(17,32),(18,32),(19,32),(20,32),
+				(21,29),(22,29),(23,29),(24,29),
+				(21,30),(22,30),(23,30),(24,30),
+				(21,31),(22,31),(23,31),(24,31),
+				(21,32),(22,32),(23,32),(24,32),
 			],
 			'decorations': [
-				('stake', 16, 29), ('stake', 21, 29),
-				('stake', 16, 33), ('stake', 21, 33),
-				('sign', 16, 30),
+				('stake', 20, 29), ('stake', 25, 29),
+				('stake', 20, 33), ('stake', 25, 33),
+				('sign', 20, 30),
 			],
 		},
 		# Day 6 - Minimax: south-east protected rows.
 		6: {
 			'area_name': 'Khu 6 - Hang cay can bao ve',
-			'spawn_tile': (27, 32),
+			'spawn_tile': (29, 32),
 			'obstacles': [],
 			'tiles': [
-				(28,29),(29,29),(30,29),(31,29),(32,29),(33,29),
-				(28,30),(29,30),(30,30),(31,30),(32,30),(33,30),
-				(28,31),(29,31),(30,31),(31,31),(32,31),(33,31),
-				(28,32),(29,32),(30,32),(31,32),(32,32),(33,32),
+				(30,29),(31,29),(32,29),(33,29),(34,29),(35,29),
+				(30,30),(31,30),(32,30),(33,30),(34,30),(35,30),
+				(30,31),(31,31),(32,31),(33,31),(34,31),(35,31),
+				(30,32),(31,32),(32,32),(33,32),(34,32),(35,32),
 			],
-			'enemy_spawn': (36, 32),
+			'enemy_spawn': (38, 32),
 			'decorations': [
-				('crow', 35, 29), ('crow_damage', 34, 33),
-				('sign', 27, 29), ('stump', 36, 33),
+				('crow', 37, 29), ('crow_damage', 36, 33),
+				('sign', 29, 29), ('stump', 38, 33),
 			],
 		},
 	}
@@ -151,10 +174,6 @@ class Level:
 
 		# get the display surface
 		self.display_surface = pygame.display.get_surface()
-		self.storm_tint = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-		self.storm_tint.fill(Colors.STORM_TINT)
-		self.fog_sky_tint = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-		self.fog_sky_tint.fill(Colors.FOG_SKY_TINT)
 
 		# sprite groups
 		self.all_sprites = CameraGroup()
@@ -176,6 +195,11 @@ class Level:
 		self.setup()
 		self.overlay = Overlay(self.player)
 		self.current_mode = 1
+		self.selected_algorithms = {
+			1: algorithms.UNINFORMED_ALGORITHMS[0],
+			2: algorithms.INFORMED_ALGORITHMS[-1],
+			3: algorithms.LOCAL_ALGORITHMS[1],
+		}
 
 		# Khá»Ÿi táº¡o mode 1
 		self._init_mode(1)
@@ -402,6 +426,27 @@ class Level:
 			tiles.update(cfg['tiles'])
 		return sorted(tiles)
 
+	def _make_area_ground_surface(self, mode):
+		surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+		mode_color = MODE_COLORS.get(mode, (210, 180, 120))
+		pygame.draw.rect(surf, (118, 78, 42, 88), (5, 5, 54, 54), border_radius=7)
+		pygame.draw.rect(surf, (164, 112, 62, 58), (10, 10, 44, 44), border_radius=5)
+		pygame.draw.rect(surf, (*mode_color, 96), (6, 6, 52, 52), 2, border_radius=7)
+		pygame.draw.line(surf, (85, 54, 31, 56), (13, 47), (49, 15), 2)
+		pygame.draw.line(surf, (198, 152, 92, 48), (16, 16), (46, 48), 2)
+		return surf
+
+	def _create_all_area_ground_visuals(self):
+		for mode, cfg in self.MODE_CONFIGS.items():
+			surf = self._make_area_ground_surface(mode)
+			for tx, ty in cfg['tiles']:
+				ground = Generic(
+					(tx * TILE_SIZE, ty * TILE_SIZE),
+					surf.copy(),
+					self.all_sprites,
+					z=LAYERS['soil'])
+				self.dynamic_decorations.append(ground)
+
 	def _calculate_overview_rect(self):
 		points = []
 		for cfg in self.MODE_CONFIGS.values():
@@ -450,6 +495,7 @@ class Level:
 		self.dynamic_decorations.clear()
 
 	def _create_world_decorations(self):
+		self._create_all_area_ground_visuals()
 		for mode in self.MODE_CONFIGS:
 			self._create_mode_obstacles(mode)
 			self._create_mode_decorations(mode)
@@ -469,6 +515,9 @@ class Level:
 			'crow_damage': 'graphics/ai_visuals/crow_damage.png',
 			'flower': 'graphics/objects/sunflower.png',
 			'stump': 'graphics/objects/stump_medium.png',
+			'stump_small': 'graphics/objects/stump_small.png',
+			'bush': 'graphics/objects/bush.png',
+			'mushroom': 'graphics/objects/mushroom.png',
 		}
 		if kind in asset_paths:
 			image = self._load_scaled_asset(asset_paths[kind])
@@ -496,6 +545,25 @@ class Level:
 			pygame.draw.rect(surf, Colors.WOOD, (30, 18, 5, 34))
 			pygame.draw.rect(surf, Colors.STAKE_TOP, (27, 12, 11, 8))
 			pygame.draw.rect(surf, Colors.WOOD_DARK, (27, 12, 11, 8), 1)
+			return surf, LAYERS['main']
+		if kind == 'fallen_log':
+			pygame.draw.ellipse(surf, Colors.WOOD_DARK, (6, 25, 52, 20))
+			pygame.draw.ellipse(surf, Colors.WOOD, (8, 21, 48, 20))
+			pygame.draw.line(surf, Colors.WOOD_DARK, (15, 29), (47, 29), 3)
+			pygame.draw.circle(surf, Colors.WOOD_SIGN, (14, 31), 7, 2)
+			pygame.draw.circle(surf, Colors.WOOD_SIGN, (49, 30), 6, 2)
+			return surf, LAYERS['main']
+		if kind == 'rock_pile':
+			pygame.draw.circle(surf, Colors.DEBRIS_MID, (25, 35), 15)
+			pygame.draw.circle(surf, Colors.DEBRIS, (38, 31), 13)
+			pygame.draw.circle(surf, Colors.DEBRIS_DARK, (18, 27), 10)
+			pygame.draw.rect(surf, Colors.DEBRIS_OUTLINE, (11, 20, 40, 28), 2, border_radius=8)
+			return surf, LAYERS['main']
+		if kind == 'broken_crate':
+			pygame.draw.rect(surf, Colors.WOOD, (13, 18, 38, 32), border_radius=3)
+			pygame.draw.rect(surf, Colors.WOOD_DARK, (13, 18, 38, 32), 3, border_radius=3)
+			pygame.draw.line(surf, Colors.WOOD_DARK, (16, 22), (48, 47), 4)
+			pygame.draw.line(surf, Colors.WOOD_SIGN, (19, 45), (47, 20), 3)
 			return surf, LAYERS['main']
 
 		# sign
@@ -550,21 +618,16 @@ class Level:
 
 	def _create_mode_obstacles(self, mode):
 		cfg = self.MODE_CONFIGS.get(mode, {})
+		obstacle_kinds = cfg.get('obstacle_kinds', {})
 		for tile in cfg.get('obstacles', []):
 			tx, ty = tile
 			pos = (tx * TILE_SIZE, ty * TILE_SIZE)
-			surf = self._load_scaled_asset('graphics/ai_visuals/storm_debris.png')
-			if surf is None:
-				surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-				pygame.draw.rect(surf, Colors.DEBRIS, (4, 4, 56, 56), border_radius=10)
-				pygame.draw.rect(surf, Colors.DEBRIS_OUTLINE, (4, 4, 56, 56), 3, border_radius=10)
-				pygame.draw.circle(surf, Colors.DEBRIS_DARK, (22, 26), 7)
-				pygame.draw.circle(surf, Colors.DEBRIS_MID, (40, 38), 5)
-				pygame.draw.circle(surf, Colors.DEBRIS_SHADOW, (32, 18), 4)
+			kind = obstacle_kinds.get(tile, 'storm_debris')
+			surf, layer = self._make_decor_surface(kind)
 			obstacle = Generic(
 				pos, surf,
 				[self.all_sprites, self.collision_sprites],
-				z=LAYERS['main'])
+				z=layer)
 			self.dynamic_obstacles.append(obstacle)
 
 	def _create_mode_decorations(self, mode):
@@ -648,7 +711,8 @@ class Level:
 			self.player, self.soil_layer, self.collision_sprites,
 			self.farm_tiles, mode=mode,
 			hidden_blocks=hidden_blocks,
-			enemy_spawn=enemy_spawn)
+			enemy_spawn=enemy_spawn,
+			selected_algorithm=self.selected_algorithms.get(mode))
 		if show_overview:
 			self._start_overview()
 		else:
@@ -662,13 +726,35 @@ class Level:
 		self._init_mode(mode, show_overview=show_overview)
 
 		mode_names = {
-			1: 'BFS', 2: 'A*', 3: 'Hill Climbing',
+			1: self.selected_algorithms.get(1, 'BFS'),
+			2: self.selected_algorithms.get(2, 'A*'),
+			3: self.selected_algorithms.get(3, 'Hill Best'),
 			4: 'Online Search', 5: 'CSP Backtracking', 6: 'Minimax'
 		}
 		area_name = self.MODE_CONFIGS[mode].get('area_name', f'Khu {mode}')
 		pygame.display.set_caption(
 			f'Smart Farm AI Robot - {area_name}: '
 			f'{mode_names.get(mode, "")}')
+
+	def cycle_algorithm(self, step=1):
+		if self.current_mode not in (1, 2, 3) or not hasattr(self, 'ai'):
+			return None
+		name = self.ai.cycle_algorithm(step)
+		self.selected_algorithms[self.current_mode] = name
+		area_name = self.MODE_CONFIGS[self.current_mode].get(
+			'area_name', f'Khu {self.current_mode}')
+		pygame.display.set_caption(
+			f'Smart Farm AI Robot - {area_name}: {name}')
+		return name
+
+	def handle_ui_click(self, pos):
+		if not hasattr(self, 'ai'):
+			return False
+		action = self.ai.handle_panel_click(pos)
+		if action == 'reset':
+			self._init_mode(self.current_mode)
+			return True
+		return action is not None
 
 	
 	def player_add(self, item):
@@ -727,9 +813,6 @@ class Level:
 		# updates
 		if self.shop_active:
 			self.menu.update()
-			# Disable player/AI when shop is open
-			self.player.direction.update(0, 0)
-			self.player.status = 'down_idle'
 		else:
 			if not self.overview_active:
 				self.ai.update(dt)
@@ -747,9 +830,13 @@ class Level:
 		if self.use_day_night:
 			self.sky.display(dt)
 		else:
-			self.display_surface.blit(self.storm_tint, (0, 0))
+			storm_tint = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+			storm_tint.fill(Colors.STORM_TINT)
+			self.display_surface.blit(storm_tint, (0, 0))
 		if self.current_mode == 4:
-			self.display_surface.blit(self.fog_sky_tint, (0, 0))
+			fog_sky = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+			fog_sky.fill(Colors.FOG_SKY_TINT)
+			self.display_surface.blit(fog_sky, (0, 0))
 
 		# transition overlay
 		if self.player.sleep:
@@ -788,24 +875,27 @@ class CameraGroup(pygame.sprite.Group):
 			self.offset.x = player.rect.centerx - SCREEN_WIDTH / 2
 			self.offset.y = player.rect.centery - SCREEN_HEIGHT / 2
 
-		visible_area = self.display_surface.get_rect().inflate(TILE_SIZE * 2, TILE_SIZE * 2)
-		sorted_sprites = sorted(
-			self.sprites(),
-			key=lambda sprite: (sprite.z, sprite.rect.centery))
-		for sprite in sorted_sprites:
-			offset_rect = sprite.rect.copy()
-			screen_center = (
-				(offset_rect.centerx - self.offset.x) * self.zoom,
-				(offset_rect.centery - self.offset.y) * self.zoom)
-			if self.zoom == 1.0:
-				offset_rect.center = screen_center
-				if visible_area.colliderect(offset_rect):
-					self.display_surface.blit(sprite.image, offset_rect)
-			else:
-				width = max(1, int(sprite.image.get_width() * self.zoom))
-				height = max(1, int(sprite.image.get_height() * self.zoom))
-				draw_rect = pygame.Rect(0, 0, width, height)
-				draw_rect.center = screen_center
-				if visible_area.colliderect(draw_rect):
-					image = pygame.transform.smoothscale(sprite.image, (width, height))
-					self.display_surface.blit(image, draw_rect)
+		for layer in LAYERS.values():
+			for sprite in sorted(self.sprites(), key = lambda sprite: sprite.rect.centery):
+				if sprite.z == layer:
+					offset_rect = sprite.rect.copy()
+					screen_center = (
+						(offset_rect.centerx - self.offset.x) * self.zoom,
+						(offset_rect.centery - self.offset.y) * self.zoom)
+					if self.zoom == 1.0:
+						offset_rect.center = screen_center
+						self.display_surface.blit(sprite.image, offset_rect)
+					else:
+						width = max(1, int(sprite.image.get_width() * self.zoom))
+						height = max(1, int(sprite.image.get_height() * self.zoom))
+						image = pygame.transform.smoothscale(sprite.image, (width, height))
+						draw_rect = image.get_rect(center=screen_center)
+						self.display_surface.blit(image, draw_rect)
+
+
+
+
+
+
+
+

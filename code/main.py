@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 
 os.chdir(os.path.dirname(__file__))
@@ -33,9 +33,9 @@ class Game:
         self.state = "day_transition"
 
         mode_names = {
-            1: "BFS",
-            2: "A*",
-            3: "Hill Climbing",
+            1: self.level.selected_algorithms.get(1, "BFS"),
+            2: self.level.selected_algorithms.get(2, "A*"),
+            3: self.level.selected_algorithms.get(3, "Hill Best"),
             4: "Online Search",
             5: "CSP Backtracking",
             6: "Minimax",
@@ -77,7 +77,14 @@ class Game:
             self.ending_screen.handle_event(event)
             return
 
-        if self.state != "game" or event.type != pygame.KEYDOWN:
+        if self.state != "game":
+            return
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.level.handle_ui_click(event.pos):
+                return
+
+        if event.type != pygame.KEYDOWN:
             return
 
         if self.story_panel and self.story_panel.visible:
@@ -85,9 +92,10 @@ class Game:
 
         if pygame.K_1 <= event.key <= pygame.K_6:
             self.start_day(event.key - pygame.K_0)
-        elif event.key == pygame.K_m:
-            # Toggle between AI control and manual control
-            self.level.player.auto_control = not self.level.player.auto_control
+        elif event.key == pygame.K_q and self.mode in (1, 2, 3):
+            self.level.cycle_algorithm(-1)
+        elif event.key == pygame.K_e and self.mode in (1, 2, 3):
+            self.level.cycle_algorithm(1)
         elif event.key == pygame.K_e:
             self.show_ending()
 
@@ -113,14 +121,8 @@ class Game:
                 pygame.quit()
                 sys.exit()
             if self.ending_screen.restart:
-                # FIX: reset day du state tranh leak sang session moi
-                # (ban dau chi reset intro_screen va state)
                 self.intro_screen = IntroScreen(self.screen)
-                self.day_screen = None
-                self.ending_screen = None
-                self.story_panel = None
                 self.state = "intro"
-                self.mode = 1
             return
 
         self.level.run(dt)
@@ -130,7 +132,7 @@ class Game:
 
     def run(self):
         while True:
-            dt = self.clock.tick(60) / 1000  # FIX: typo 10006->1000; cap 60fps tranh dt spike
+            dt = self.clock.tick() / 1000
             for event in pygame.event.get():
                 self.handle_event(event)
             self.update_and_draw(dt)
@@ -140,3 +142,4 @@ class Game:
 if __name__ == "__main__":
     game = Game()
     game.run()
+
