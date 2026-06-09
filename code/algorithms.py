@@ -3,6 +3,8 @@ import heapq
 import random
 
 
+INF = float("inf")
+
 UNINFORMED_ALGORITHMS = ("BFS", "DFS", "IDS", "UCS")
 INFORMED_ALGORITHMS = ("Greedy", "IDSA", "A*")
 LOCAL_ALGORITHMS = ("Hill", "Hill Best", "Stochastic", "Restart Hill")
@@ -78,7 +80,7 @@ def dfs(start, goal, blocked, neighbors):
                 "Stack max": len(visited),
             }
 
-        for next_tile in neighbors(current, blocked):
+        for next_tile in reversed(list(neighbors(current, blocked))):
             if next_tile not in visited:
                 visited.add(next_tile)
                 came_from[next_tile] = current
@@ -109,9 +111,9 @@ def _depth_limited_search(start, goal, blocked, neighbors, limit):
             cutoff = True
             continue
 
-        for next_tile in neighbors(current, blocked):
+        for next_tile in reversed(list(neighbors(current, blocked))):
             next_depth = depth + 1
-            if next_depth < best_depth.get(next_tile, 10**9):
+            if next_depth < best_depth.get(next_tile, INF):
                 best_depth[next_tile] = next_depth
                 came_from[next_tile] = current
                 stack.append((next_tile, next_depth))
@@ -150,7 +152,7 @@ def ucs(start, goal, blocked, neighbors, counter):
 
     while open_set:
         cost, _, current = heapq.heappop(open_set)
-        if cost > best_cost.get(current, 10**9):
+        if cost > best_cost.get(current, INF):
             continue
         explored.add(current)
 
@@ -164,7 +166,7 @@ def ucs(start, goal, blocked, neighbors, counter):
 
         for next_tile in neighbors(current, blocked):
             next_cost = cost + 1
-            if next_cost < best_cost.get(next_tile, 10**9):
+            if next_cost < best_cost.get(next_tile, INF):
                 best_cost[next_tile] = next_cost
                 came_from[next_tile] = current
                 heapq.heappush(open_set, (next_cost, next(counter), next_tile))
@@ -181,10 +183,14 @@ def astar(start, goal, blocked, neighbors, heuristic, counter):
     came_from = {}
     g_score = {start: 0}
     explored = set()
+    closed = set()
 
     while open_set:
         f_score, _, current = heapq.heappop(open_set)
+        if current in closed:
+            continue
         explored.add(current)
+        closed.add(current)
 
         if current == goal:
             path = reconstruct_path(came_from, current)
@@ -200,7 +206,9 @@ def astar(start, goal, blocked, neighbors, heuristic, counter):
 
         for next_tile in neighbors(current, blocked):
             tentative_g = g_score[current] + 1
-            if tentative_g < g_score.get(next_tile, 10**9):
+            if next_tile in closed:
+                continue
+            if tentative_g < g_score.get(next_tile, INF):
                 came_from[next_tile] = current
                 g_score[next_tile] = tentative_g
                 h = heuristic(next_tile, goal)
@@ -260,7 +268,7 @@ def idastar(start, goal, blocked, neighbors, heuristic):
         if current == goal:
             return f_score, list(path[1:])
 
-        next_bound = 10**9
+        next_bound = INF
         ordered_neighbors = sorted(
             neighbors(current, blocked),
             key=lambda tile: heuristic(tile, goal))
@@ -278,7 +286,7 @@ def idastar(start, goal, blocked, neighbors, heuristic):
             visited.remove(next_tile)
         return next_bound, None
 
-    while limit < 200:
+    while limit < INF:
         next_limit, path = search([start], 0, limit, {start})
         if path is not None:
             return path, total_explored, {
@@ -286,7 +294,7 @@ def idastar(start, goal, blocked, neighbors, heuristic):
                 "Path length": len(path),
                 "f limit": limit,
             }
-        if next_limit == 10**9:
+        if next_limit == INF:
             break
         limit = next_limit
 
@@ -325,6 +333,339 @@ def find_path_by_algorithm(algorithm, start, goal, blocked, neighbors,
     path, explored, fgh, stats = astar(
         start, goal, blocked, neighbors, heuristic, counter)
     return path, explored, fgh, stats
+
+
+def _nearest_goal_heuristic(tile, goals, heuristic):
+    if not goals:
+        return 0
+    return min(heuristic(tile, goal) for goal in goals)
+
+
+def bfs_to_any_goal(start, goals, blocked, neighbors):
+    goals = set(goals)
+    queue = deque([start])
+    came_from = {}
+    visited = {start}
+    explored = set()
+
+    while queue:
+        current = queue.popleft()
+        explored.add(current)
+
+        if current in goals:
+            path = reconstruct_path(came_from, current)
+            return path, current, explored, {
+                "Nodes explored": len(explored),
+                "Path length": len(path),
+                "Queue max": len(visited),
+            }
+
+        for next_tile in neighbors(current, blocked):
+            if next_tile not in visited:
+                visited.add(next_tile)
+                came_from[next_tile] = current
+                queue.append(next_tile)
+
+    return [], None, explored, {
+        "Nodes explored": len(explored),
+        "Path length": 0,
+        "Queue max": len(visited),
+    }
+
+
+def dfs_to_any_goal(start, goals, blocked, neighbors):
+    goals = set(goals)
+    stack = [start]
+    came_from = {}
+    visited = {start}
+    explored = set()
+
+    while stack:
+        current = stack.pop()
+        explored.add(current)
+
+        if current in goals:
+            path = reconstruct_path(came_from, current)
+            return path, current, explored, {
+                "Nodes explored": len(explored),
+                "Path length": len(path),
+                "Stack max": len(visited),
+            }
+
+        for next_tile in reversed(list(neighbors(current, blocked))):
+            if next_tile not in visited:
+                visited.add(next_tile)
+                came_from[next_tile] = current
+                stack.append(next_tile)
+
+    return [], None, explored, {
+        "Nodes explored": len(explored),
+        "Path length": 0,
+        "Stack max": len(visited),
+    }
+
+
+def _depth_limited_search_to_any_goal(start, goals, blocked, neighbors, limit):
+    goals = set(goals)
+    stack = [(start, 0)]
+    came_from = {}
+    best_depth = {start: 0}
+    explored = set()
+    cutoff = False
+
+    while stack:
+        current, depth = stack.pop()
+        explored.add(current)
+
+        if current in goals:
+            return reconstruct_path(came_from, current), current, explored, False
+
+        if depth >= limit:
+            cutoff = True
+            continue
+
+        for next_tile in reversed(list(neighbors(current, blocked))):
+            next_depth = depth + 1
+            if next_depth < best_depth.get(next_tile, INF):
+                best_depth[next_tile] = next_depth
+                came_from[next_tile] = current
+                stack.append((next_tile, next_depth))
+
+    return [], None, explored, cutoff
+
+
+def ids_to_any_goal(start, goals, blocked, neighbors, max_depth=200):
+    total_explored = set()
+    for limit in range(max_depth + 1):
+        path, target, explored, cutoff = _depth_limited_search_to_any_goal(
+            start, goals, blocked, neighbors, limit)
+        total_explored |= explored
+        if target is not None:
+            return path, target, total_explored, {
+                "Nodes explored": len(total_explored),
+                "Path length": len(path),
+                "Depth limit": limit,
+            }
+        if not cutoff:
+            break
+
+    return [], None, total_explored, {
+        "Nodes explored": len(total_explored),
+        "Path length": 0,
+        "Depth limit": max_depth,
+    }
+
+
+def ucs_to_any_goal(start, goals, blocked, neighbors, counter):
+    goals = set(goals)
+    open_set = []
+    heapq.heappush(open_set, (0, next(counter), start))
+    came_from = {}
+    best_cost = {start: 0}
+    explored = set()
+
+    while open_set:
+        cost, _, current = heapq.heappop(open_set)
+        if cost > best_cost.get(current, INF):
+            continue
+        explored.add(current)
+
+        if current in goals:
+            path = reconstruct_path(came_from, current)
+            return path, current, explored, {
+                "Nodes explored": len(explored),
+                "Path length": len(path),
+                "Cost": cost,
+            }
+
+        for next_tile in neighbors(current, blocked):
+            next_cost = cost + 1
+            if next_cost < best_cost.get(next_tile, INF):
+                best_cost[next_tile] = next_cost
+                came_from[next_tile] = current
+                heapq.heappush(open_set, (next_cost, next(counter), next_tile))
+
+    return [], None, explored, {
+        "Nodes explored": len(explored),
+        "Path length": 0,
+    }
+
+
+def greedy_to_any_goal(start, goals, blocked, neighbors, heuristic, counter):
+    goals = set(goals)
+    open_set = []
+    heapq.heappush(
+        open_set,
+        (_nearest_goal_heuristic(start, goals, heuristic), next(counter), start))
+    came_from = {}
+    visited = {start}
+    explored = set()
+
+    while open_set:
+        priority, _, current = heapq.heappop(open_set)
+        explored.add(current)
+
+        if current in goals:
+            path = reconstruct_path(came_from, current)
+            return path, current, explored, {
+                "Nodes explored": len(explored),
+                "Path length": len(path),
+                "h(n)": priority,
+            }
+
+        for next_tile in neighbors(current, blocked):
+            if next_tile not in visited:
+                visited.add(next_tile)
+                came_from[next_tile] = current
+                heapq.heappush(
+                    open_set,
+                    (_nearest_goal_heuristic(next_tile, goals, heuristic),
+                     next(counter), next_tile))
+
+    return [], None, explored, {
+        "Nodes explored": len(explored),
+        "Path length": 0,
+    }
+
+
+def astar_to_any_goal(start, goals, blocked, neighbors, heuristic, counter):
+    goals = set(goals)
+    open_set = []
+    start_h = _nearest_goal_heuristic(start, goals, heuristic)
+    heapq.heappush(open_set, (start_h, next(counter), start))
+    came_from = {}
+    g_score = {start: 0}
+    explored = set()
+    closed = set()
+
+    while open_set:
+        f_score, _, current = heapq.heappop(open_set)
+        if current in closed:
+            continue
+        explored.add(current)
+        closed.add(current)
+
+        if current in goals:
+            path = reconstruct_path(came_from, current)
+            g = g_score[current]
+            h = 0
+            return path, current, explored, (g + h, g, h), {
+                "Nodes explored": len(explored),
+                "Path length": len(path),
+                "f(n)": f"{g + h}",
+                "g(n)": f"{g}",
+                "h(n)": f"{h}",
+            }
+
+        for next_tile in neighbors(current, blocked):
+            tentative_g = g_score[current] + 1
+            if next_tile in closed:
+                continue
+            if tentative_g < g_score.get(next_tile, INF):
+                came_from[next_tile] = current
+                g_score[next_tile] = tentative_g
+                h = _nearest_goal_heuristic(next_tile, goals, heuristic)
+                heapq.heappush(
+                    open_set,
+                    (tentative_g + h, next(counter), next_tile))
+
+    return [], None, explored, (0, 0, 0), {
+        "Nodes explored": len(explored),
+        "Path length": 0,
+    }
+
+
+def idastar_to_any_goal(start, goals, blocked, neighbors, heuristic):
+    goals = set(goals)
+    limit = _nearest_goal_heuristic(start, goals, heuristic)
+    total_explored = set()
+
+    def search(path, g_score, bound, visited):
+        current = path[-1]
+        h = _nearest_goal_heuristic(current, goals, heuristic)
+        f_score = g_score + h
+        if f_score > bound:
+            return f_score, None
+        total_explored.add(current)
+        if current in goals:
+            return f_score, list(path[1:])
+
+        next_bound = INF
+        ordered_neighbors = sorted(
+            neighbors(current, blocked),
+            key=lambda tile: _nearest_goal_heuristic(tile, goals, heuristic))
+        for next_tile in ordered_neighbors:
+            if next_tile in visited:
+                continue
+            visited.add(next_tile)
+            path.append(next_tile)
+            result_bound, result_path = search(
+                path, g_score + 1, bound, visited)
+            if result_path is not None:
+                return result_bound, result_path
+            next_bound = min(next_bound, result_bound)
+            path.pop()
+            visited.remove(next_tile)
+        return next_bound, None
+
+    while limit < INF:
+        next_limit, path = search([start], 0, limit, {start})
+        if path is not None:
+            target = path[-1] if path else start
+            return path, target, total_explored, {
+                "Nodes explored": len(total_explored),
+                "Path length": len(path),
+                "f limit": limit,
+            }
+        if next_limit == INF:
+            break
+        limit = next_limit
+
+    return [], None, total_explored, {
+        "Nodes explored": len(total_explored),
+        "Path length": 0,
+        "f limit": limit,
+    }
+
+
+def find_path_to_any_goal_by_algorithm(algorithm, start, goals, blocked,
+                                       neighbors, heuristic, counter):
+    goals = set(goals)
+    if not goals:
+        return [], None, set(), (0, 0, 0), {
+            "Nodes explored": 0,
+            "Path length": 0,
+        }
+    if algorithm == "BFS":
+        path, target, explored, stats = bfs_to_any_goal(
+            start, goals, blocked, neighbors)
+        return path, target, explored, (0, 0, 0), stats
+    if algorithm == "DFS":
+        path, target, explored, stats = dfs_to_any_goal(
+            start, goals, blocked, neighbors)
+        return path, target, explored, (0, 0, 0), stats
+    if algorithm == "IDS":
+        path, target, explored, stats = ids_to_any_goal(
+            start, goals, blocked, neighbors)
+        return path, target, explored, (0, 0, 0), stats
+    if algorithm == "UCS":
+        path, target, explored, stats = ucs_to_any_goal(
+            start, goals, blocked, neighbors, counter)
+        return path, target, explored, (0, 0, 0), stats
+    if algorithm == "Greedy":
+        path, target, explored, stats = greedy_to_any_goal(
+            start, goals, blocked, neighbors, heuristic, counter)
+        h = _nearest_goal_heuristic(start, goals, heuristic)
+        return path, target, explored, (h, 0, h), stats
+    if algorithm == "IDSA":
+        path, target, explored, stats = idastar_to_any_goal(
+            start, goals, blocked, neighbors, heuristic)
+        h = _nearest_goal_heuristic(start, goals, heuristic)
+        return path, target, explored, (len(path) + h, len(path), h), stats
+
+    path, target, explored, fgh, stats = astar_to_any_goal(
+        start, goals, blocked, neighbors, heuristic, counter)
+    return path, target, explored, fgh, stats
 
 
 def hill_score(tile, start, dryness, heuristic):

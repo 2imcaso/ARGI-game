@@ -68,10 +68,16 @@ class FarmAIController:
         self.farm_tiles = list(farm_tiles)
         self.rows = len(self.soil_layer.grid)
         self.cols = len(self.soil_layer.grid[0]) if self.rows else 0
+        self.spawn_tile = self._world_to_tile(self.player.rect.center)
+        self.walkable_tiles = self._build_walkable_tiles()
 
         self.state = "CHOOSE_TARGET"
         self.current_target = None
         self.path = []
+        self.chosen_target_path = None
+        self.dfs_walk = None
+        self.dfs_walk_index = 0
+        self.dfs_explored_order = []
         self.done_tiles = set()
         self.wait_time = 0.0
         self.counter = count()
@@ -190,6 +196,10 @@ class FarmAIController:
         self.message = f"Khu {self.mode}: {self.algorithm_name}"
         self.stats = {}
         self.path = []
+        self.chosen_target_path = None
+        self.dfs_walk = None
+        self.dfs_walk_index = 0
+        self.dfs_explored_order = []
         self.current_target = None
         self.state = "CHOOSE_TARGET"
         self.bfs_explored.clear()
@@ -269,11 +279,46 @@ class FarmAIController:
             blocked |= self.hidden_blocked
         return blocked
 
+    def _build_walkable_tiles(self):
+        if self.mode != 1 or not self.farm_tiles:
+            return None
+
+        farm_set = set(self.farm_tiles)
+        nearest = min(
+            farm_set,
+            key=lambda tile: self._heuristic(self.spawn_tile, tile))
+        walkable = set(farm_set)
+        walkable.add(self.spawn_tile)
+
+        x, y = self.spawn_tile
+        target_x, target_y = nearest
+        step_x = 1 if target_x >= x else -1
+        while x != target_x:
+            walkable.add((x, y))
+            x += step_x
+        step_y = 1 if target_y >= y else -1
+        while y != target_y:
+            walkable.add((x, y))
+            y += step_y
+        walkable.add(nearest)
+        return walkable
+
     def _neighbors(self, tile, blocked):
         x, y = tile
-        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
             if 0 <= nx < self.cols and 0 <= ny < self.rows \
-                    and (nx, ny) not in blocked:
+                    and (nx, ny) not in blocked \
+                    and (self.walkable_tiles is None
+                         or (nx, ny) in self.walkable_tiles):
+                yield (nx, ny)
+
+    def _dfs_traversal_neighbors(self, tile, blocked):
+        x, y = tile
+        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+            if 0 <= nx < self.cols and 0 <= ny < self.rows \
+                    and (nx, ny) not in blocked \
+                    and (self.walkable_tiles is None
+                         or (nx, ny) in self.walkable_tiles):
                 yield (nx, ny)
 
     @staticmethod
@@ -552,6 +597,85 @@ class FarmAIController:
         self.stats = stats
         return path
 
+    def _search_first_target(self, start, goals):
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        for goal in goals:
+            blocked.discard(goal)
+        path, target, explored, fgh, stats = (
+            algorithms.find_path_to_any_goal_by_algorithm(
+                self.algorithm_name, start, goals, blocked,
+                self._neighbors, self._heuristic, self.counter))
+        self.astar_current_fgh = fgh
+        stats["Algorithm"] = self.algorithm_name
+        stats["Target"] = f"{target}"
+        if self.mode == 1:
+            self.bfs_explored |= explored
+            stats["Nodes explored"] = len(self.bfs_explored)
+        elif self.mode == 2:
+            self.astar_explored = explored
+        self.stats = stats
+        self.chosen_target_path = path if target is not None else None
+        return target
+
+    def _build_dfs_walk(self, start):
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        for goal in self.farm_tiles:
+            blocked.discard(goal)
+
+        visited = set()
+        walk = [start]
+        explored_order = []
+
+        def visit(tile):
+            visited.add(tile)
+            explored_order.append(tile)
+            for next_tile in self._dfs_traversal_neighbors(tile, blocked):
+                if next_tile in visited:
+                    continue
+                walk.append(next_tile)
+                visit(next_tile)
+                walk.append(tile)
+
+        visit(start)
+        self.dfs_walk = walk
+        self.dfs_walk_index = 0
+        self.dfs_explored_order = explored_order
+
+    def _dfs_traversal_choose(self, remaining, start):
+        if self.dfs_walk is None:
+            self._build_dfs_walk(start)
+
+        if self.dfs_walk[self.dfs_walk_index] != start:
+            try:
+                self.dfs_walk_index = self.dfs_walk.index(
+                    start, self.dfs_walk_index)
+            except ValueError:
+                self._build_dfs_walk(start)
+
+        path = []
+        remaining_set = set(remaining)
+        for index in range(self.dfs_walk_index + 1, len(self.dfs_walk)):
+            tile = self.dfs_walk[index]
+            path.append(tile)
+            if tile in remaining_set:
+                self.dfs_walk_index = index
+                self.chosen_target_path = path
+                explored = set(self.dfs_walk[:index + 1])
+                self.bfs_explored |= explored
+                self.stats = {
+                    "Nodes explored": len(self.bfs_explored),
+                    "Path length": len(path),
+                    "Stack max": len(self.dfs_explored_order),
+                    "Algorithm": "DFS",
+                    "Target": f"{tile}",
+                }
+                return tile
+
+        self.chosen_target_path = None
+        return None
+
     # -------------------------------------------------------------- MODE 3
     def _hill_score(self, tile, start):
         """HĂ m Ä‘Ă¡nh giĂ¡ cá»¥c bá»™: dryness cao = Æ°u tiĂªn, xa = trá»« Ä‘iá»ƒm."""
@@ -738,18 +862,18 @@ class FarmAIController:
             return self._hill_climbing_choose(remaining, start)
         if self.mode == 6:
             return self._minimax_choose(remaining, start)
+        if self.mode == 1 and self.algorithm_name == "DFS":
+            return self._dfs_traversal_choose(remaining, start)
+        if self.mode in (1, 2):
+            return self._search_first_target(start, remaining)
 
-        # Mode 1,2,4,5: Æ°u tiĂªn má»¥c tiĂªu gáº§n trÆ°á»›c, rá»“i má»›i xĂ©t má»©c Ä‘á»™ cáº§n chÄƒm sĂ³c.
+        # Mode 4,5: giu hanh vi demo rieng, chon muc tieu gan truoc.
         best = None
         for tile in remaining:
             path = self._path_for_mode(start, tile)
             if path or start == tile:
                 distance = len(path)
-                if self.mode in (4, 5):
-                    priority = 0
-                else:
-                    priority = self._care_value(tile)
-                sort_key = (distance, -priority, tile)
+                sort_key = (distance, tile)
                 if best is None or sort_key < best[0]:
                     best = (sort_key, tile)
         return best[1] if best else None
@@ -878,7 +1002,11 @@ class FarmAIController:
                 self.state = "CHOOSE_TARGET"
                 self.message = "Player re-plan vi qua da lock muc tieu"
                 return
-            self.path = self._path_for_mode(start, target)
+            if self.chosen_target_path is not None:
+                self.path = self.chosen_target_path
+                self.chosen_target_path = None
+            else:
+                self.path = self._path_for_mode(start, target)
 
             if not self.path and start != target:
                 if self.mode == 4:
@@ -1300,6 +1428,3 @@ class FarmAIController:
         else:
             hint = "Nhan phim 1-6 de doi khu nhiem vu"
         draw_text(hint, x, panel.bottom - 30, Colors.TEXT_MUTED, font_small)
-
-
-
