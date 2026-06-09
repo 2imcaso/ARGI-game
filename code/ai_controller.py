@@ -314,7 +314,7 @@ class FarmAIController:
 
     def _dfs_traversal_neighbors(self, tile, blocked):
         x, y = tile
-        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+        for nx, ny in ((x, y + 1), (x - 1, y), (x + 1, y), (x, y - 1)):
             if 0 <= nx < self.cols and 0 <= ny < self.rows \
                     and (nx, ny) not in blocked \
                     and (self.walkable_tiles is None
@@ -324,6 +324,13 @@ class FarmAIController:
     @staticmethod
     def _heuristic(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def _step_cost(self, current, next_tile):
+        if self.mode != 2 or next_tile not in self.farm_tiles:
+            return 1
+        dryness = self.dryness.get(next_tile, 50)
+        dryness_bonus = max(0, min(dryness, 100)) / 100.0
+        return 1 + (1 - dryness_bonus)
 
     def _reconstruct(self, came_from, current):
         path = [current]
@@ -584,7 +591,7 @@ class FarmAIController:
         name = algorithm_name or self.algorithm_name
         path, explored, fgh, stats = algorithms.find_path_by_algorithm(
             name, start, goal, blocked, self._neighbors, self._heuristic,
-            self.counter)
+            self.counter, self._step_cost)
         self.astar_current_fgh = fgh
         stats["Algorithm"] = name
         if self.mode == 1:
@@ -605,7 +612,8 @@ class FarmAIController:
         path, target, explored, fgh, stats = (
             algorithms.find_path_to_any_goal_by_algorithm(
                 self.algorithm_name, start, goals, blocked,
-                self._neighbors, self._heuristic, self.counter))
+                self._neighbors, self._heuristic, self.counter,
+                self._step_cost))
         self.astar_current_fgh = fgh
         stats["Algorithm"] = self.algorithm_name
         stats["Target"] = f"{target}"

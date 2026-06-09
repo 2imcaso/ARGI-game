@@ -31,6 +31,10 @@ def reconstruct_path(came_from, current):
     return path[1:]
 
 
+def unit_step_cost(current, next_tile):
+    return 1
+
+
 def bfs(start, goal, blocked, neighbors):
     queue = deque([start])
     came_from = {}
@@ -80,7 +84,7 @@ def dfs(start, goal, blocked, neighbors):
                 "Stack max": len(visited),
             }
 
-        for next_tile in reversed(list(neighbors(current, blocked))):
+        for next_tile in neighbors(current, blocked):
             if next_tile not in visited:
                 visited.add(next_tile)
                 came_from[next_tile] = current
@@ -111,7 +115,7 @@ def _depth_limited_search(start, goal, blocked, neighbors, limit):
             cutoff = True
             continue
 
-        for next_tile in reversed(list(neighbors(current, blocked))):
+        for next_tile in neighbors(current, blocked):
             next_depth = depth + 1
             if next_depth < best_depth.get(next_tile, INF):
                 best_depth[next_tile] = next_depth
@@ -143,7 +147,7 @@ def ids(start, goal, blocked, neighbors, max_depth=200):
     }
 
 
-def ucs(start, goal, blocked, neighbors, counter):
+def ucs(start, goal, blocked, neighbors, counter, step_cost=unit_step_cost):
     open_set = []
     heapq.heappush(open_set, (0, next(counter), start))
     came_from = {}
@@ -165,7 +169,7 @@ def ucs(start, goal, blocked, neighbors, counter):
             }
 
         for next_tile in neighbors(current, blocked):
-            next_cost = cost + 1
+            next_cost = cost + step_cost(current, next_tile)
             if next_cost < best_cost.get(next_tile, INF):
                 best_cost[next_tile] = next_cost
                 came_from[next_tile] = current
@@ -306,7 +310,7 @@ def idastar(start, goal, blocked, neighbors, heuristic):
 
 
 def find_path_by_algorithm(algorithm, start, goal, blocked, neighbors,
-                           heuristic, counter):
+                           heuristic, counter, step_cost=unit_step_cost):
     if algorithm == "BFS":
         path, explored, stats = bfs(start, goal, blocked, neighbors)
         return path, explored, (0, 0, 0), stats
@@ -317,7 +321,8 @@ def find_path_by_algorithm(algorithm, start, goal, blocked, neighbors,
         path, explored, stats = ids(start, goal, blocked, neighbors)
         return path, explored, (0, 0, 0), stats
     if algorithm == "UCS":
-        path, explored, stats = ucs(start, goal, blocked, neighbors, counter)
+        path, explored, stats = ucs(
+            start, goal, blocked, neighbors, counter, step_cost)
         return path, explored, (0, 0, 0), stats
     if algorithm == "Greedy":
         path, explored, stats = greedy(
@@ -392,7 +397,7 @@ def dfs_to_any_goal(start, goals, blocked, neighbors):
                 "Stack max": len(visited),
             }
 
-        for next_tile in reversed(list(neighbors(current, blocked))):
+        for next_tile in neighbors(current, blocked):
             if next_tile not in visited:
                 visited.add(next_tile)
                 came_from[next_tile] = current
@@ -424,7 +429,7 @@ def _depth_limited_search_to_any_goal(start, goals, blocked, neighbors, limit):
             cutoff = True
             continue
 
-        for next_tile in reversed(list(neighbors(current, blocked))):
+        for next_tile in neighbors(current, blocked):
             next_depth = depth + 1
             if next_depth < best_depth.get(next_tile, INF):
                 best_depth[next_tile] = next_depth
@@ -456,7 +461,8 @@ def ids_to_any_goal(start, goals, blocked, neighbors, max_depth=200):
     }
 
 
-def ucs_to_any_goal(start, goals, blocked, neighbors, counter):
+def ucs_to_any_goal(start, goals, blocked, neighbors, counter,
+                    step_cost=unit_step_cost):
     goals = set(goals)
     open_set = []
     heapq.heappush(open_set, (0, next(counter), start))
@@ -479,7 +485,7 @@ def ucs_to_any_goal(start, goals, blocked, neighbors, counter):
             }
 
         for next_tile in neighbors(current, blocked):
-            next_cost = cost + 1
+            next_cost = cost + step_cost(current, next_tile)
             if next_cost < best_cost.get(next_tile, INF):
                 best_cost[next_tile] = next_cost
                 came_from[next_tile] = current
@@ -629,7 +635,8 @@ def idastar_to_any_goal(start, goals, blocked, neighbors, heuristic):
 
 
 def find_path_to_any_goal_by_algorithm(algorithm, start, goals, blocked,
-                                       neighbors, heuristic, counter):
+                                       neighbors, heuristic, counter,
+                                       step_cost=unit_step_cost):
     goals = set(goals)
     if not goals:
         return [], None, set(), (0, 0, 0), {
@@ -650,7 +657,7 @@ def find_path_to_any_goal_by_algorithm(algorithm, start, goals, blocked,
         return path, target, explored, (0, 0, 0), stats
     if algorithm == "UCS":
         path, target, explored, stats = ucs_to_any_goal(
-            start, goals, blocked, neighbors, counter)
+            start, goals, blocked, neighbors, counter, step_cost)
         return path, target, explored, (0, 0, 0), stats
     if algorithm == "Greedy":
         path, target, explored, stats = greedy_to_any_goal(
