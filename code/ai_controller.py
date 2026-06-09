@@ -623,8 +623,7 @@ class FarmAIController:
         path, target, explored, fgh, stats = (
             algorithms.find_path_to_any_goal_by_algorithm(
                 self.algorithm_name, start, goals, blocked,
-                self._neighbors, self._search_heuristic, self.counter,
-                self._step_cost))
+                self._neighbors, self._search_heuristic, self.counter))
         self.astar_current_fgh = fgh
         stats["Algorithm"] = self.algorithm_name
         stats["Target"] = f"{target}"

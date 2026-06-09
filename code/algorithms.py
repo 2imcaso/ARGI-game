@@ -635,8 +635,7 @@ def idastar_to_any_goal(start, goals, blocked, neighbors, heuristic):
 
 
 def find_path_to_any_goal_by_algorithm(algorithm, start, goals, blocked,
-                                       neighbors, heuristic, counter,
-                                       step_cost=unit_step_cost):
+                                       neighbors, heuristic, counter):
     goals = set(goals)
     if not goals:
         return [], None, set(), (0, 0, 0), {
@@ -657,7 +656,7 @@ def find_path_to_any_goal_by_algorithm(algorithm, start, goals, blocked,
         return path, target, explored, (0, 0, 0), stats
     if algorithm == "UCS":
         path, target, explored, stats = ucs_to_any_goal(
-            start, goals, blocked, neighbors, counter, step_cost)
+            start, goals, blocked, neighbors, counter)
         return path, target, explored, (0, 0, 0), stats
     if algorithm == "Greedy":
         path, target, explored, stats = greedy_to_any_goal(
