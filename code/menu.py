@@ -17,11 +17,9 @@ class Menu:
         self.space = 10
         self.padding = 8
 
-        # entries: separate item and seed lists for clarity
-        # FIX: tach ro items vs seeds thay vi dung sell_border magic number
-        self.items = list(self.player.item_inventory.keys())
-        self.seeds = list(self.player.seed_inventory.keys())
-        self.options = self.items + self.seeds
+        # entries
+        self.options = list(self.player.item_inventory.keys()) + list(self.player.seed_inventory.keys())
+        self.sell_border = len(self.player.item_inventory) - 1
         self.setup()
 
         # movement
@@ -81,15 +79,16 @@ class Menu:
             if keys[pygame.K_SPACE]:
                 self.timer.activate()
 
+                # get item 
                 current_item = self.options[self.index]
 
-                # Sell item
-                if self.index < len(self.items):
+                # sell
+                if self.index <= self.sell_border:
                     if self.player.item_inventory[current_item] > 0:
                         self.player.item_inventory[current_item] -= 1
                         self.player.money += SALE_PRICES[current_item]
 
-                # Buy seed
+                # buy
                 else:
                     seed_price = PURCHASE_PRICES[current_item]
                     if self.player.money >= seed_price:
@@ -105,9 +104,7 @@ class Menu:
             self.index = 0
 
 
-    # FIX: them text_index vao signature;
-    # ban dau dung text_index trong body nhung khong truyen vao -> NameError
-    def show_entry(self, text_surf, amount, top, selected, text_index=0):
+    def show_entry(self, text_surf, amount, top, selected):
         
         # background
         bg_rect = pygame.Rect(self.main_rect.left, top, self.width, text_surf.get_height() + (self.padding * 2))
@@ -125,7 +122,7 @@ class Menu:
         # selected
         if selected:
             pygame.draw.rect(self.display_surface, 'black', bg_rect, 4, 4)
-            if text_index < len(self.items):  # FIX: dung len(items) thay sell_border magic number
+            if self.index <= self.sell_border: # sell
                 pos_rect = self.sell_text.get_rect(midleft = (self.main_rect.left + 200, bg_rect.centery))
                 self.display_surface.blit(self.sell_text, pos_rect)
             else: # buy
@@ -141,5 +138,4 @@ class Menu:
             top = self.main_rect.top + text_index * (text_surf.get_height() + (self.padding * 2) + self.space)
             amount_list = list(self.player.item_inventory.values()) + list(self.player.seed_inventory.values())
             amount = amount_list[text_index]
-            # FIX: truyen text_index vao show_entry (can cho sell/buy label)
-            self.show_entry(text_surf, amount, top, self.index == text_index, text_index)
+            self.show_entry(text_surf, amount, top, self.index == text_index)

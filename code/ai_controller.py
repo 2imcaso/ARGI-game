@@ -325,6 +325,9 @@ class FarmAIController:
     def _heuristic(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
+    def _search_heuristic(self, a, b):
+        return self._heuristic(a, b)
+
     def _step_cost(self, current, next_tile):
         if self.mode != 2 or next_tile not in self.farm_tiles:
             return 1
@@ -590,10 +593,18 @@ class FarmAIController:
         blocked.discard(goal)
         name = algorithm_name or self.algorithm_name
         path, explored, fgh, stats = algorithms.find_path_by_algorithm(
-            name, start, goal, blocked, self._neighbors, self._heuristic,
+            name, start, goal, blocked, self._neighbors, self._search_heuristic,
             self.counter, self._step_cost)
         self.astar_current_fgh = fgh
         stats["Algorithm"] = name
+        if self.mode == 2 and goal in self.farm_tiles:
+            g = self.dryness.get(goal, 50)
+            h = self._heuristic(start, goal)
+            self.astar_current_fgh = (g + h, g, h)
+            stats["f(n)"] = f"{g + h}"
+            stats["g(n)"] = f"{g}"
+            stats["h(n)"] = f"{h}"
+            stats["Dryness goal"] = f"{g}%"
         if self.mode == 1:
             self.bfs_explored |= explored
             stats["Nodes explored"] = len(self.bfs_explored)
@@ -612,7 +623,7 @@ class FarmAIController:
         path, target, explored, fgh, stats = (
             algorithms.find_path_to_any_goal_by_algorithm(
                 self.algorithm_name, start, goals, blocked,
-                self._neighbors, self._heuristic, self.counter,
+                self._neighbors, self._search_heuristic, self.counter,
                 self._step_cost))
         self.astar_current_fgh = fgh
         stats["Algorithm"] = self.algorithm_name
@@ -872,6 +883,13 @@ class FarmAIController:
             return self._minimax_choose(remaining, start)
         if self.mode == 1 and self.algorithm_name == "DFS":
             return self._dfs_traversal_choose(remaining, start)
+        if self.mode == 2:
+            return max(
+                remaining,
+                key=lambda tile: (
+                    self.dryness.get(tile, 0),
+                    -self._heuristic(start, tile),
+                    tile))
         if self.mode in (1, 2):
             return self._search_first_target(start, remaining)
 
