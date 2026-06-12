@@ -35,9 +35,9 @@ class Game:
         mode_names = {
             1: self.level.selected_algorithms.get(1, "BFS"),
             2: self.level.selected_algorithms.get(2, "A*"),
-            3: self.level.selected_algorithms.get(3, "Hill Best"),
-            4: "Online Search",
-            5: "CSP Backtracking",
+            3: self.level.selected_algorithms.get(3, "Hill Climbing"),
+            4: self.level.selected_algorithms.get(4, "Online A*"),
+            5: self.level.selected_algorithms.get(5, "Backtrack"),
             6: "Minimax",
         }
         area_names = {
@@ -92,9 +92,9 @@ class Game:
 
         if pygame.K_1 <= event.key <= pygame.K_6:
             self.start_day(event.key - pygame.K_0)
-        elif event.key == pygame.K_q and self.mode in (1, 2, 3):
+        elif event.key == pygame.K_q and self.mode in (1, 2, 3, 4, 5):
             self.level.cycle_algorithm(-1)
-        elif event.key == pygame.K_e and self.mode in (1, 2, 3):
+        elif event.key == pygame.K_e and self.mode in (1, 2, 3, 4, 5):
             self.level.cycle_algorithm(1)
         elif event.key == pygame.K_e:
             self.show_ending()

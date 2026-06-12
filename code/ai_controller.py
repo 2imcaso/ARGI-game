@@ -1,4 +1,4 @@
-﻿from itertools import count
+from itertools import count
 import math
 import os
 import random
@@ -52,6 +52,7 @@ class FarmAIController:
     # ------------------------------------------------------------------ init
     def __init__(self, player, soil_layer, collision_sprites, farm_tiles,
                  mode=2, hidden_blocks=None, enemy_spawn=None,
+                 terrain_costs=None, extra_walkable_tiles=None,
                  selected_algorithm=None):
         self.player = player
         self.soil_layer = soil_layer
@@ -66,6 +67,8 @@ class FarmAIController:
         self.mode_desc = info[2]
         self.difficulty_desc = info[3] if len(info) > 3 else ""
         self.farm_tiles = list(farm_tiles)
+        self.terrain_costs = dict(terrain_costs or {})
+        self.extra_walkable_tiles = set(extra_walkable_tiles or [])
         self.rows = len(self.soil_layer.grid)
         self.cols = len(self.soil_layer.grid[0]) if self.rows else 0
         self.spawn_tile = self._world_to_tile(self.player.rect.center)
@@ -75,6 +78,7 @@ class FarmAIController:
         self.current_target = None
         self.path = []
         self.chosen_target_path = None
+        self.stop_after_current_target = False
         self.dfs_walk = None
         self.dfs_walk_index = 0
         self.dfs_explored_order = []
@@ -100,29 +104,39 @@ class FarmAIController:
         self.astar_explored = set()
         self.astar_current_fgh = (0, 0, 0)  # (f, g, h) má»›i nháº¥t
 
-        # --- Mode 3 (Hill Climbing): dryness duoc gan co chu dich ---
-        # Cum gan spawn: dryness thap. Cum xa spawn: dryness cao.
-        self.dryness = {}
+        # Fixed mode-3 sensor map used by the original demo.
         if self.mode == 3 and self.farm_tiles:
-            spawn_tile = self._world_to_tile(self.player.rect.center)
-            dists = [(self._heuristic(spawn_tile, t), t) for t in self.farm_tiles]
-            dists.sort()
-            n = len(dists)
-            near_count = max(1, n // 3)
-            for i, (_, t) in enumerate(dists):
-                if i < near_count:
-                    self.dryness[t] = random.randint(30, 45)
-                elif i >= n - near_count:
-                    self.dryness[t] = random.randint(70, 95)
-                else:
-                    self.dryness[t] = random.randint(46, 69)
+            self.dryness = {
+                (33, 24): 40,
+                (33, 25): 43,
+                (33, 26): 46,
+                (32, 26): 49,
+                (31, 26): 52,
+                (30, 26): 55,
+                (29, 26): 58,
+                (29, 25): 68,
+                (29, 24): 66,
+                (30, 24): 65,
+                (30, 23): 68,
+                (30, 22): 71,
+                (31, 22): 69,
+                (32, 22): 67,
+                (33, 22): 65,
+            }
+            for tile in (
+                    (33, 23), (32, 23), (32, 24), (32, 25),
+                    (31, 23), (31, 24), (31, 25),
+                    (30, 25), (29, 22), (29, 23)):
+                self.dryness[tile] = 5
         else:
             self.dryness = {tile: random.randint(30, 95) for tile in self.farm_tiles}
 
         self.hc_scores = {}  # tile -> score, Ä‘á»ƒ váº½ lĂªn map
         self.hc_current_score = 0
         self.hc_best_neighbor_score = 0
+        self.anneal_temperature = 80.0
         self.tile_conditions = self._build_tile_conditions()
+        self.danger_level = self._build_danger_levels()
 
         # --- Mode 4 (Online Search): fog-of-war ---
         self.hidden_blocked = set()
@@ -183,7 +197,8 @@ class FarmAIController:
         options = algorithms.ALGORITHM_GROUPS.get(mode)
         if options:
             return options[0]
-        return self.MODE_INFO.get(mode, self.MODE_INFO[2])[1]
+        defaults = {4: "Online A*", 5: "Backtrack", 6: "Minimax"}
+        return defaults.get(mode, "BFS")
 
     def selectable_algorithms(self):
         return algorithms.ALGORITHM_GROUPS.get(self.mode, ())
@@ -202,11 +217,18 @@ class FarmAIController:
         self.dfs_explored_order = []
         self.current_target = None
         self.state = "CHOOSE_TARGET"
+        self.stop_after_current_target = False
         self.bfs_explored.clear()
         self.astar_explored.clear()
         self.hc_scores.clear()
+        self.anneal_temperature = 80.0
         self.is_running = False
         self.message = f"Da chon {algorithm_name}. Nhan START"
+
+        if self.mode == 5:
+            self.done_tiles.clear()
+            self.seed_plan = self._solve_csp_crop_plan()
+
         return True
 
     def cycle_algorithm(self, step=1):
@@ -283,24 +305,22 @@ class FarmAIController:
         if self.mode != 1 or not self.farm_tiles:
             return None
 
-        farm_set = set(self.farm_tiles)
-        nearest = min(
-            farm_set,
-            key=lambda tile: self._heuristic(self.spawn_tile, tile))
-        walkable = set(farm_set)
+        walkable = set(self.farm_tiles)
         walkable.add(self.spawn_tile)
+        walkable.update(self.extra_walkable_tiles)
+        walkable.update(self.terrain_costs.keys())
 
-        x, y = self.spawn_tile
-        target_x, target_y = nearest
-        step_x = 1 if target_x >= x else -1
-        while x != target_x:
-            walkable.add((x, y))
-            x += step_x
-        step_y = 1 if target_y >= y else -1
-        while y != target_y:
-            walkable.add((x, y))
-            y += step_y
-        walkable.add(nearest)
+        for target_x, target_y in self.farm_tiles:
+            x, y = self.spawn_tile
+            step_x = 1 if target_x >= x else -1
+            while x != target_x:
+                walkable.add((x, y))
+                x += step_x
+            step_y = 1 if target_y >= y else -1
+            while y != target_y:
+                walkable.add((x, y))
+                y += step_y
+            walkable.add((target_x, target_y))
         return walkable
 
     def _neighbors(self, tile, blocked):
@@ -328,12 +348,38 @@ class FarmAIController:
     def _search_heuristic(self, a, b):
         return self._heuristic(a, b)
 
+    def _ucs_task_cost(self, tile):
+        condition = self._condition_for_tile(tile)
+        action_time = {
+            "critical": 2.0,
+            "dry": 2.0,
+            "pest": 3.5,
+            "crow": 3.5,
+            "replant": 4.0,
+            "dead": 5.0,
+        }
+        rescue_value = {
+            "critical": 1.4,
+            "pest": 1.0,
+            "crow": 1.0,
+            "dry": 0.4,
+            "replant": 0.0,
+            "dead": 0.0,
+        }
+        dryness = max(0, min(self.dryness.get(tile, 50), 100)) / 100.0
+        living_pressure = 0.4 * dryness if condition in (
+            "critical", "dry", "pest", "crow") else 0
+        return max(
+            0.5,
+            action_time.get(condition, 2.5)
+            - rescue_value.get(condition, 0)
+            - living_pressure)
+
     def _step_cost(self, current, next_tile):
-        if self.mode != 2 or next_tile not in self.farm_tiles:
-            return 1
-        dryness = self.dryness.get(next_tile, 50)
-        dryness_bonus = max(0, min(dryness, 100)) / 100.0
-        return 1 + (1 - dryness_bonus)
+        terrain_cost = self.terrain_costs.get(next_tile, 0)
+        if self.mode == 1 and next_tile in self.farm_tiles:
+            return 1 + terrain_cost + self._ucs_task_cost(next_tile)
+        return 1 + terrain_cost
 
     def _reconstruct(self, came_from, current):
         path = [current]
@@ -348,6 +394,7 @@ class FarmAIController:
         asset_names = {
             "dry_plant": "dry_plant.png",
             "urgent_plant": "urgent_plant.png",
+            "storm_damaged_plant": "storm_damaged_plant.png",
             "healthy_plant": "healthy_plant.png",
             "dead_plant": "dead_plant.png",
             "storm_debris": "storm_debris.png",
@@ -382,9 +429,13 @@ class FarmAIController:
 
         for index, tile in enumerate(self.farm_tiles):
             dryness = self.dryness.get(tile, 50)
-            if dryness >= 88:
+            if dryness >= 88 and self.mode != 3:
                 conditions[tile] = "dead"
-            elif self.mode == 2 or dryness >= 65:
+            elif self.mode == 2 and dryness >= 70:
+                conditions[tile] = "critical"
+            elif self.mode == 2 and index % 4 == 0:
+                conditions[tile] = "pest"
+            elif dryness >= 65:
                 conditions[tile] = "critical"
             elif index % 5 == 0 and self.mode in (1, 3):
                 conditions[tile] = "pest"
@@ -405,6 +456,20 @@ class FarmAIController:
         }
         return priorities.get(self._condition_for_tile(tile), 0)
 
+    def _build_danger_levels(self):
+        priorities = {
+            "dry": 4,
+            "pest": 3,
+            "crow": 3,
+            "critical": 2,
+            "dead": 1,
+            "replant": 1,
+        }
+        levels = {}
+        for tile in self.farm_tiles:
+            levels[tile] = priorities.get(self._condition_for_tile(tile), 0)
+        return levels
+
     def _care_value(self, tile):
         return self._condition_priority(tile) + self.dryness.get(tile, 50) / 10.0
 
@@ -413,7 +478,9 @@ class FarmAIController:
             return "dead_plant"
         if condition == "crow":
             return "crow_damage"
-        if condition in ("critical", "pest", "replant"):
+        if condition == "critical":
+            return "storm_damaged_plant"
+        if condition in ("pest", "replant"):
             return "urgent_plant"
         return "dry_plant"
 
@@ -540,7 +607,8 @@ class FarmAIController:
         self.done_tiles.add(tile)
         self.current_target = None
         self.path = []
-        self.state = "CHOOSE_TARGET"
+        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
+        self.stop_after_current_target = False
         self.wait_time = 0.45
 
     def _finish_pest_target(self, tile, condition):
@@ -552,7 +620,8 @@ class FarmAIController:
         self.done_tiles.add(tile)
         self.current_target = None
         self.path = []
-        self.state = "CHOOSE_TARGET"
+        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
+        self.stop_after_current_target = False
         self.wait_time = 0.45
 
     def _finish_cultivation_target(self, tile, message):
@@ -560,7 +629,8 @@ class FarmAIController:
         self.done_tiles.add(tile)
         self.current_target = None
         self.path = []
-        self.state = "CHOOSE_TARGET"
+        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
+        self.stop_after_current_target = False
         self.wait_time = 0.35
 
     def _condition_label(self, condition):
@@ -598,16 +668,16 @@ class FarmAIController:
         self.astar_current_fgh = fgh
         stats["Algorithm"] = name
         if self.mode == 2 and goal in self.farm_tiles:
-            g = self.dryness.get(goal, 50)
+            g = self.danger_level.get(goal, 1)
             h = self._heuristic(start, goal)
             self.astar_current_fgh = (g + h, g, h)
             stats["f(n)"] = f"{g + h}"
             stats["g(n)"] = f"{g}"
             stats["h(n)"] = f"{h}"
-            stats["Dryness goal"] = f"{g}%"
+            stats["Color priority"] = f"{g}"
+            stats["Dryness goal"] = f"{self.dryness.get(goal, 50)}%"
         if self.mode == 1:
-            self.bfs_explored |= explored
-            stats["Nodes explored"] = len(self.bfs_explored)
+            self.bfs_explored = set(explored)
         elif self.mode == 2:
             self.astar_explored = explored
         elif name == "A*":
@@ -623,13 +693,12 @@ class FarmAIController:
         path, target, explored, fgh, stats = (
             algorithms.find_path_to_any_goal_by_algorithm(
                 self.algorithm_name, start, goals, blocked,
-                self._neighbors, self._search_heuristic, self.counter))
+                self._neighbors, self.counter, self._step_cost))
         self.astar_current_fgh = fgh
         stats["Algorithm"] = self.algorithm_name
         stats["Target"] = f"{target}"
         if self.mode == 1:
-            self.bfs_explored |= explored
-            stats["Nodes explored"] = len(self.bfs_explored)
+            self.bfs_explored = set(explored)
         elif self.mode == 2:
             self.astar_explored = explored
         self.stats = stats
@@ -681,9 +750,9 @@ class FarmAIController:
                 self.dfs_walk_index = index
                 self.chosen_target_path = path
                 explored = set(self.dfs_walk[:index + 1])
-                self.bfs_explored |= explored
+                self.bfs_explored = explored
                 self.stats = {
-                    "Nodes explored": len(self.bfs_explored),
+                    "Nodes explored": len(explored),
                     "Path length": len(path),
                     "Stack max": len(self.dfs_explored_order),
                     "Algorithm": "DFS",
@@ -696,21 +765,251 @@ class FarmAIController:
 
     # -------------------------------------------------------------- MODE 3
     def _hill_score(self, tile, start):
-        """HĂ m Ä‘Ă¡nh giĂ¡ cá»¥c bá»™: dryness cao = Æ°u tiĂªn, xa = trá»« Ä‘iá»ƒm."""
+        """Local state value: higher dryness means higher priority."""
         return algorithms.hill_score(
             tile, start, self.dryness, self._heuristic)
 
-    def _hill_climbing_choose(self, remaining, start):
-        """Steepest-ascent hill climbing: chá»n neighbor tá»‘t nháº¥t liĂªn tá»¥c.
+    def _local_scores(self):
+        scores = {
+            tile: self._hill_score(tile, self.spawn_tile)
+            for tile in self.farm_tiles
+        }
+        self.hc_scores = scores
+        return scores
 
-        1. Báº¯t Ä‘áº§u tá»« Ă´ gáº§n nháº¥t (initial state).
-        2. XĂ©t cĂ¡c Ă´ ká» (neighbors) trong remaining.
-        3. Chá»n Ă´ cĂ³ score cao nháº¥t. Náº¿u khĂ´ng tá»‘t hÆ¡n hiá»‡n táº¡i â†’ dá»«ng.
-        """
+    def _nearest_remaining(self, remaining, start):
+        return min(remaining, key=lambda tile: (self._heuristic(start, tile), tile))
+
+    def _remaining_neighbors(self, remaining, center):
+        return [
+            tile for tile in remaining
+            if abs(tile[0] - center[0]) + abs(tile[1] - center[1]) == 1
+        ]
+
+    def _set_local_stats(self, algorithm, target, score, extra=None):
+        stats = {
+            "Local algorithm": algorithm,
+            "Current score": f"{score:.0f}",
+            "Target": f"{target}" if target is not None else "None",
+            "Dryness": (
+                f"{self.dryness.get(target, 0)}%"
+                if target is not None else "0%"),
+        }
+        if extra:
+            stats.update(extra)
+        self.stats = stats
+        self.hc_current_score = score
+        self.hc_best_neighbor_score = score
+
+    def _hill_climbing_step_choose(self, remaining, start):
+        """Hill Climbing tung buoc: gan nhat truoc, sau do leo sang lang gieng tot hon."""
+        scores = self._local_scores()
+
+        if start not in self.dryness:
+            target = self._nearest_remaining(remaining, start)
+            current_score = scores.get(target, 0)
+            self._set_local_stats("Hill Climbing", target, current_score, {
+                "Hill steps": 0,
+                "Trace": [target],
+                "Start rule": "Nearest target first",
+            })
+            return target
+
+        current_score = scores.get(start, 0)
+        neighbors = self._remaining_neighbors(remaining, start)
+        better_neighbors = [
+            tile for tile in neighbors
+            if scores.get(tile, 0) > current_score
+        ]
+        if not better_neighbors:
+            self._set_local_stats("Hill Climbing", None, current_score, {
+                "Hill steps": 0,
+                "Trace": [start],
+                "Stop rule": "No better neighbor",
+                "Remaining tiles": len(remaining),
+                "Coverage": f"{len(self.done_tiles)}/{len(self.farm_tiles)}",
+                "Suggestion": "Use Restart Hill for full coverage",
+            })
+            self.state = "DONE"
+            return None
+
+        target = max(
+            better_neighbors,
+            key=lambda tile: (scores.get(tile, 0), -self._heuristic(start, tile), tile))
+        target_score = scores.get(target, 0)
+        self._set_local_stats("Hill Climbing", target, target_score, {
+            "Hill steps": 1,
+            "Trace": [start, target],
+            "Stop rule": "Move to best better neighbor",
+        })
+        return target
+
+    def _climb_from_tile(self, start_tile, remaining, scores):
+        current = start_tile
+        trace = [current]
+        current_score = scores.get(current, 0)
+        while True:
+            neighbors = [
+                tile for tile in self._remaining_neighbors(remaining, current)
+                if tile != current and scores.get(tile, 0) > current_score
+            ]
+            if not neighbors:
+                return current, current_score, trace
+            current = max(
+                neighbors,
+                key=lambda tile: (scores.get(tile, 0), -self._heuristic(current, tile), tile))
+            current_score = scores.get(current, 0)
+            trace.append(current)
+
+    def _restart_hill_choose(self, remaining, start):
+        """Restart Hill: leo nhu Hill, neu ket thi khoi dong lai o muc tieu khac."""
+        scores = self._local_scores()
+        if start not in self.dryness:
+            target = self._nearest_remaining(remaining, start)
+            self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
+                "Start rule": "Nearest target first",
+                "Restarts": 0,
+                "Trace": [target],
+            })
+            return target
+
+        current_score = scores.get(start, 0)
+        better_neighbors = [
+            tile for tile in self._remaining_neighbors(remaining, start)
+            if scores.get(tile, 0) > current_score
+        ]
+        if better_neighbors:
+            target = max(
+                better_neighbors,
+                key=lambda tile: (scores.get(tile, 0),
+                                  -self._heuristic(start, tile), tile))
+            self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
+                "Restarts": 0,
+                "Trace": [start, target],
+                "Rule": "Continue current hill",
+            })
+            return target
+
+        target = max(
+            remaining,
+            key=lambda tile: (scores.get(tile, 0), -self._heuristic(start, tile), tile))
+        self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
+            "Restarts": 1,
+            "Trace": [target],
+            "Rule": "Restart after local optimum",
+        })
+        return target
+
+    def _local_beam_step_choose(self, remaining, start, beam_width=3):
+        """Local Beam: giu k ung vien, sinh tat ca lang gieng, chon k tot nhat."""
+        scores = self._local_scores()
+        if start not in self.dryness:
+            beam = sorted(
+                remaining,
+                key=lambda tile: (self._heuristic(start, tile), -scores.get(tile, 0), tile)
+            )[:beam_width]
+        else:
+            seed = self._remaining_neighbors(remaining, start)
+            if not seed:
+                seed = list(remaining)
+            beam = sorted(
+                seed,
+                key=lambda tile: (-scores.get(tile, 0), self._heuristic(start, tile), tile)
+            )[:beam_width]
+
+        children = []
+        for tile in beam:
+            children.extend(self._remaining_neighbors(remaining, tile))
+        pool = set(beam) | set(children)
+        next_beam = sorted(
+            pool,
+            key=lambda tile: (-scores.get(tile, 0), self._heuristic(start, tile), tile)
+        )[:max(1, min(beam_width, len(pool)))]
+        target = next_beam[0] if next_beam else None
+        target_score = scores.get(target, 0) if target is not None else 0
+        self._set_local_stats("Local Beam", target, target_score, {
+            "Beam width": beam_width,
+            "Beam": f"{next_beam}",
+            "Generated": len(children),
+            "Rule": "Best of global successor beam",
+        })
+        return target
+
+    def _annealing_step_choose(self, remaining, start):
+        """Simulated Annealing: chon lang gieng, chap nhan buoc te hon theo nhiet do."""
+        scores = self._local_scores()
+        if start not in self.dryness:
+            target = self._nearest_remaining(remaining, start)
+            self._set_local_stats("Annealing", target, scores.get(target, 0), {
+                "Start rule": "Nearest target first",
+                "Temperature": f"{self.anneal_temperature:.1f}",
+            })
+            return target
+
+        neighbors = self._remaining_neighbors(remaining, start)
+        if not neighbors:
+            self._set_local_stats("Annealing", None, scores.get(start, 0), {
+                "Stop rule": "No neighbor state",
+                "Temperature": f"{self.anneal_temperature:.1f}",
+            })
+            self.state = "DONE"
+            return None
+
+        current_score = scores.get(start, 0)
+        ordered = list(neighbors)
+        random.shuffle(ordered)
+        accepted = None
+        accepted_delta = 0
+        accepted_worse = False
+        for candidate in ordered:
+            delta = scores.get(candidate, 0) - current_score
+            if delta >= 0:
+                accepted = candidate
+                accepted_delta = delta
+                break
+            probability = math.exp(delta / max(self.anneal_temperature, 0.001))
+            if random.random() < probability:
+                accepted = candidate
+                accepted_delta = delta
+                accepted_worse = True
+                break
+
+        self.anneal_temperature = max(0.1, self.anneal_temperature * 0.90)
+        if accepted is None:
+            self._set_local_stats("Annealing", None, current_score, {
+                "Rejected": len(ordered),
+                "Temperature": f"{self.anneal_temperature:.1f}",
+                "Stop rule": "No accepted neighbor",
+            })
+            self.state = "DONE"
+            return None
+
+        self._set_local_stats("Annealing", accepted, scores.get(accepted, 0), {
+            "Delta": f"{accepted_delta:.0f}",
+            "Accepted worse": "yes" if accepted_worse else "no",
+            "Temperature": f"{self.anneal_temperature:.1f}",
+        })
+        return accepted
+
+    def _local_search_choose(self, remaining, start):
+        """Chon muc tieu bang thuat toan local search dang duoc chon."""
+        if self.algorithm_name == "Hill Climbing":
+            return self._hill_climbing_step_choose(remaining, start)
+        if self.algorithm_name == "Restart Hill":
+            return self._restart_hill_choose(remaining, start)
+        if self.algorithm_name == "Local Beam":
+            return self._local_beam_step_choose(remaining, start)
+        if self.algorithm_name == "Annealing":
+            return self._annealing_step_choose(remaining, start)
+
         current_best, current_score, self.hc_scores, self.stats = (
             algorithms.local_search_choose(
                 self.algorithm_name, remaining, start, self.dryness,
                 self._heuristic))
+        trace = self.stats.get("Trace")
+        if self.algorithm_name == "Hill Climbing" and trace:
+            self.chosen_target_path = list(trace)
+            self.stop_after_current_target = True
         self.hc_current_score = current_score
         self.hc_best_neighbor_score = current_score
         return current_best
@@ -727,22 +1026,74 @@ class FarmAIController:
         """Online Search: chá»‰ biáº¿t váº­t cáº£n Ä‘Ă£ khĂ¡m phĂ¡, phĂ¡t hiá»‡n thĂªm khi Ä‘i."""
         if goal in self.discovered_blocked:
             return []
-        path = self._astar(start, goal)
+
+        if self.algorithm_name in (
+                "Belief A*", "Belief Init-Goal A*", "AND-OR Search"):
+            blocked = self._blocked_tiles()
+            blocked.discard(start)
+            blocked.discard(goal)
+            initial_belief = {
+                (x, y)
+                for y in range(self.rows)
+                for x in range(self.cols)
+                if (x, y) not in self.explored_tiles
+                and (self.walkable_tiles is None
+                     or (x, y) in self.walkable_tiles)
+            }
+            if self.algorithm_name == "AND-OR Search":
+                path, explored, belief_stats = algorithms.and_or_search(
+                    start, goal, blocked, initial_belief, self._neighbors,
+                    self._search_heuristic, self.counter
+                )
+            elif self.algorithm_name == "Belief Init-Goal A*":
+                possible_starts = {start}
+                possible_starts.update(
+                    tile for tile in self._neighbors(start, blocked)
+                    if tile not in self.explored_tiles
+                )
+                possible_goals = {goal}
+                possible_goals.update(self._neighbors(goal, blocked))
+                path, explored, _, chosen_goal, belief_stats = (
+                    algorithms.belief_init_goal_astar(
+                        possible_starts, possible_goals, blocked,
+                        initial_belief, self._neighbors,
+                        self._search_heuristic, self.counter,
+                        preferred_start=start
+                    )
+                )
+                if chosen_goal is not None and chosen_goal != goal:
+                    if goal in self._neighbors(chosen_goal, blocked):
+                        path.append(goal)
+                        belief_stats["Path length"] = len(path)
+                        belief_stats["Resolved goal"] = goal
+            else:
+                path, explored, belief_stats = algorithms.belief_astar(
+                    start, goal, blocked, initial_belief, self._neighbors,
+                    self._search_heuristic, self.counter
+                )
+            self.astar_explored = explored
+        else:
+            path = self._astar(start, goal)
+            belief_stats = {}
+
         total_explored = len(self.explored_tiles)
         total_map = self.rows * self.cols
         self.stats = {
+            "Algorithm": self.algorithm_name,
             "Explored tiles": f"{total_explored}",
             "Map coverage": f"{total_explored * 100 // max(total_map, 1)}%",
             "Replanned": f"{self.replan_count} lan",
             "Hidden blocks": f"{len(self.hidden_blocked - self.discovered_blocked)} chua biet",
         }
+        self.stats.update(belief_stats)
         return path
 
     # -------------------------------------------------------------- MODE 5
     def _solve_csp_crop_plan(self):
         """CSP Backtracking: gĂ¡n corn/tomato sao cho 2 Ă´ ká» khĂ¡c loáº¡i."""
-        assignment, self.csp_steps, self.stats = (
-            algorithms.solve_csp_crop_plan(self.farm_tiles))
+        assignment, self.csp_steps, self.stats = algorithms.solve_csp_crop_plan(
+            self.farm_tiles, algorithm=self.algorithm_name
+        )
         return assignment
 
     # -------------------------------------------------------------- MODE 6
@@ -877,20 +1228,18 @@ class FarmAIController:
 
     def _choose_target(self, remaining, start):
         if self.mode == 3:
-            return self._hill_climbing_choose(remaining, start)
+            return self._local_search_choose(remaining, start)
         if self.mode == 6:
             return self._minimax_choose(remaining, start)
-        if self.mode == 1 and self.algorithm_name == "DFS":
-            return self._dfs_traversal_choose(remaining, start)
+        if self.mode == 1:
+            return self._search_first_target(start, remaining)
         if self.mode == 2:
             return max(
                 remaining,
                 key=lambda tile: (
-                    self.dryness.get(tile, 0),
+                    self.danger_level.get(tile, 1),
                     -self._heuristic(start, tile),
                     tile))
-        if self.mode in (1, 2):
-            return self._search_first_target(start, remaining)
 
         # Mode 4,5: giu hanh vi demo rieng, chon muc tieu gan truoc.
         best = None
@@ -1017,7 +1366,12 @@ class FarmAIController:
             target = self._choose_target(remaining, start)
             if target is None:
                 self.state = "DONE"
-                self.message = "Khong tim duoc muc tieu hop le."
+                if self.mode == 3:
+                    self.message = (
+                        f"{self.algorithm_name} dung: "
+                        "khong co buoc local hop le tiep theo.")
+                else:
+                    self.message = "Khong tim duoc muc tieu hop le."
                 return
 
             self.current_target = target
@@ -1201,7 +1555,7 @@ class FarmAIController:
                 surface.blit(s, (sx - TILE_SIZE // 2 + 2,
                                  sy - TILE_SIZE // 2 + 2))
 
-        # --- Mode 3: Hill Climbing scores trĂªn má»—i Ă´ ---
+        # --- Mode 3: Local Search scores trĂªn má»—i Ă´ ---
         if self.mode == 3 and self.hc_scores:
             font_sm = pygame.font.Font(None, 20)
             for tile, score in self.hc_scores.items():
@@ -1334,7 +1688,8 @@ class FarmAIController:
         border_color = MODE_COLORS.get(self.mode, (200, 200, 200))
 
         panel_width = 390
-        panel_height = 600 if self.mode in (1, 2, 3) else 360
+        selectable_modes = (1, 2, 3, 4, 5)
+        panel_height = 600 if self.mode in selectable_modes else 360
         panel = pygame.Rect(20, 20, panel_width, panel_height)
         panel_surf = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
         panel_surf.fill(Colors.PANEL_BG)
@@ -1369,7 +1724,7 @@ class FarmAIController:
         y = draw_text(self.mode_name, x, y, Colors.TEXT_SUBTITLE, font_small)
         y += 4
 
-        if self.mode in (1, 2, 3):
+        if self.mode in selectable_modes:
             y = draw_text("NHOM THUAT TOAN", x, y, Colors.TEXT_MUTED, font_small)
             y = draw_text(self.algorithm_group_name, x, y, border_color, font)
             y += 6

@@ -1,4 +1,4 @@
-﻿from random import randint
+from random import randint
 
 import os
 import xml.etree.ElementTree as ET
@@ -22,7 +22,7 @@ class Level:
 	HOUSE_SHIFT_TILES = (0, 5)
 	HOUSE_ORIGINAL_BOUNDS = (20, 21, 27, 26)  # left, top, right, bottom in TMX tiles
 	SOLID_DECORATION_KINDS = {'sign', 'stake', 'stump', 'stump_small', 'bush', 'mushroom', 'storm_debris', 'crow_damage'}
-	COMPACT_DECORATION_KINDS = {'path', 'mist', 'puddle'}
+	COMPACT_DECORATION_KINDS = {'path', 'mist', 'puddle', 'mud'}
 	OVERVIEW_DURATION = 3.0
 	OVERVIEW_PADDING_TILES = 3
 	MAP_LINKS = (
@@ -36,7 +36,7 @@ class Level:
 		3: (32, 22),
 		4: (10, 26),
 		5: (21, 27),
-		6: (30, 28),
+		6: (30, 27),
 	}
 
 	# ----------------------------------------------------------------
@@ -51,14 +51,23 @@ class Level:
 			'area_name': 'Khu 1 - Vuon truoc trai',
 			'spawn_tile': (10, 18),
 			'obstacles': [],
+			'terrain_costs': {
+				(12,18): 12,
+				(14,16): 8,
+				(15,19): 10,
+			},
+			'extra_walkable_tiles': [
+				(10,17),(11,17),
+			],
 			'tiles': [
-				(13,16),(14,16),(15,16),(16,16),
-				(12,17),(13,17),(14,17),(15,17),
-				(12,18),(13,18),(14,18),(15,18),
-				(12,19),(13,19),(14,19),(15,19),
+				(12,15),(13,15),(14,15),(15,15),(16,15),
+				(12,16),(13,16),(14,16),(15,16),(16,16),
+				(12,17),(13,17),(14,17),(15,17),(16,17),
+				(12,18),(13,18),(14,18),(15,18),(16,18),
+				(12,19),(13,19),(14,19),(15,19),(16,19),
 			],
 			'decorations': [
-				('sign', 11, 16), ('flower', 16, 15),
+				('sign', 11, 16), ('flower', 17, 15),
 			],
 		},
 		# Day 2 - A*: warehouse lane, with storm debris blocking the route.
@@ -86,11 +95,11 @@ class Level:
 				(25,16): 'rock_pile', (25,17): 'fallen_log', (25,18): 'broken_crate',
 			},
 			'tiles': [
-				(28,16),(29,16),(30,16),(31,16),
+				(27,16),(28,16),(29,16),(30,16),(31,16),
 				(27,17),(28,17),(29,17),(30,17),(31,17),
 				(27,18),(28,18),(29,18),(30,18),(31,18),
 				(27,19),(28,19),(29,19),(30,19),(31,19),
-				(28,20),(29,20),(30,20),(31,20),
+				(27,20),(28,20),(29,20),(30,20),(31,20),
 			],
 			'decorations': [
 				('sign', 18, 16),
@@ -100,20 +109,22 @@ class Level:
 				('flower', 32, 20),
 			],
 		},
-		# Day 3 - Hill Climbing: separated east orchard triage.
+		# Day 3 - Local Search: east orchard 5x5, no obstacles.
 		3: {
 			'area_name': 'Khu 3 - Vuon cay phia dong',
-			'spawn_tile': (35, 26),
+			'spawn_tile': (34, 24),
 			'obstacles': [],
 			'tiles': [
-				(29,23),(30,23),(31,23),(32,23),(33,23),(34,23),
-				(29,24),(30,24),(31,24),(32,24),(33,24),(34,24),
-				(29,25),(30,25),(31,25),(32,25),(33,25),(34,25),
-				(29,26),(30,26),(31,26),(32,26),(33,26),(34,26),
+				(29,22),(30,22),(31,22),(32,22),(33,22),
+				(29,23),(30,23),(31,23),(32,23),(33,23),
+				(29,24),(30,24),(31,24),(32,24),(33,24),
+				(29,25),(30,25),(31,25),(32,25),(33,25),
+				(29,26),(30,26),(31,26),(32,26),(33,26),
 			],
 			'decorations': [
-				('puddle', 28, 23), ('flower', 35, 24),
-				('stake', 28, 22), ('stake', 35, 22),
+				('puddle', 28, 24),
+				('flower', 35, 23),
+				('stake', 28, 21), ('stake', 35, 21),
 			],
 		},
 		# Day 4 - Online Search: south-west fog field.
@@ -137,35 +148,37 @@ class Level:
 		# Day 5 - CSP Backtracking: central replant grid.
 		5: {
 			'area_name': 'Khu 5 - O quy hoach trung tam',
-			'spawn_tile': (20, 31),
+			'spawn_tile': (20, 30),
 			'obstacles': [],
 			'tiles': [
-				(21,29),(22,29),(23,29),(24,29),
-				(21,30),(22,30),(23,30),(24,30),
-				(21,31),(22,31),(23,31),(24,31),
-				(21,32),(22,32),(23,32),(24,32),
+				(21,28),(22,28),(23,28),(24,28),(25,28),
+				(21,29),(22,29),(23,29),(24,29),(25,29),
+				(21,30),(22,30),(23,30),(24,30),(25,30),
+				(21,31),(22,31),(23,31),(24,31),(25,31),
+				(21,32),(22,32),(23,32),(24,32),(25,32),
 			],
 			'decorations': [
-				('stake', 20, 29), ('stake', 25, 29),
-				('stake', 20, 33), ('stake', 25, 33),
-				('sign', 20, 30),
+				('stake', 20, 28), ('stake', 26, 28),
+				('stake', 20, 33), ('stake', 26, 33),
+				('sign', 20, 29),
 			],
 		},
 		# Day 6 - Minimax: south-east protected rows.
 		6: {
 			'area_name': 'Khu 6 - Hang cay can bao ve',
-			'spawn_tile': (29, 32),
+			'spawn_tile': (29, 31),
 			'obstacles': [],
 			'tiles': [
-				(30,29),(31,29),(32,29),(33,29),(34,29),(35,29),
-				(30,30),(31,30),(32,30),(33,30),(34,30),(35,30),
-				(30,31),(31,31),(32,31),(33,31),(34,31),(35,31),
-				(30,32),(31,32),(32,32),(33,32),(34,32),(35,32),
+				(30,28),(31,28),(32,28),(33,28),(34,28),
+				(30,29),(31,29),(32,29),(33,29),(34,29),
+				(30,30),(31,30),(32,30),(33,30),(34,30),
+				(30,31),(31,31),(32,31),(33,31),(34,31),
+				(30,32),(31,32),(32,32),(33,32),(34,32),
 			],
-			'enemy_spawn': (38, 32),
+			'enemy_spawn': (38, 31),
 			'decorations': [
-				('crow', 37, 29), ('crow_damage', 36, 33),
-				('sign', 29, 29), ('stump', 38, 33),
+				('crow', 37, 28), ('crow_damage', 36, 32),
+				('sign', 29, 28), ('stump', 38, 32),
 			],
 		},
 	}
@@ -199,6 +212,8 @@ class Level:
 			1: algorithms.UNINFORMED_ALGORITHMS[0],
 			2: algorithms.INFORMED_ALGORITHMS[-1],
 			3: algorithms.LOCAL_ALGORITHMS[1],
+			4: algorithms.ONLINE_ALGORITHMS[0],
+			5: algorithms.CSP_ALGORITHMS[0],
 		}
 
 		# Khá»Ÿi táº¡o mode 1
@@ -375,6 +390,10 @@ class Level:
 		self.soil_layer.create_hit_rects()
 		return farm_tiles
 
+	def _task_tiles_for_config(self, cfg):
+		blocked_tasks = set(cfg.get('terrain_costs', {}).keys())
+		return [tile for tile in cfg['tiles'] if tile not in blocked_tasks]
+
 	def _area_anchor(self, mode):
 		tiles = self.MODE_CONFIGS[mode]['tiles']
 		x = round(sum(tile[0] for tile in tiles) / len(tiles))
@@ -424,6 +443,7 @@ class Level:
 		tiles = set(self.link_tiles)
 		for cfg in self.MODE_CONFIGS.values():
 			tiles.update(cfg['tiles'])
+			tiles.update(cfg.get('terrain_costs', {}).keys())
 		return sorted(tiles)
 
 	def _make_area_ground_surface(self, mode):
@@ -439,13 +459,26 @@ class Level:
 	def _create_all_area_ground_visuals(self):
 		for mode, cfg in self.MODE_CONFIGS.items():
 			surf = self._make_area_ground_surface(mode)
-			for tx, ty in cfg['tiles']:
+			tiles = set(cfg['tiles'])
+			tiles.update(cfg.get('terrain_costs', {}).keys())
+			for tx, ty in tiles:
 				ground = Generic(
 					(tx * TILE_SIZE, ty * TILE_SIZE),
 					surf.copy(),
 					self.all_sprites,
 					z=LAYERS['soil'])
 				self.dynamic_decorations.append(ground)
+
+	def _create_terrain_cost_visuals(self):
+		for cfg in self.MODE_CONFIGS.values():
+			for tx, ty in cfg.get('terrain_costs', {}):
+				surf, layer = self._make_decor_surface('mud')
+				terrain = Generic(
+					(tx * TILE_SIZE, ty * TILE_SIZE),
+					surf,
+					self.all_sprites,
+					z=layer)
+				self.dynamic_decorations.append(terrain)
 
 	def _calculate_overview_rect(self):
 		points = []
@@ -496,6 +529,7 @@ class Level:
 
 	def _create_world_decorations(self):
 		self._create_all_area_ground_visuals()
+		self._create_terrain_cost_visuals()
 		for mode in self.MODE_CONFIGS:
 			self._create_mode_obstacles(mode)
 			self._create_mode_decorations(mode)
@@ -511,6 +545,7 @@ class Level:
 	def _make_decor_surface(self, kind):
 		asset_paths = {
 			'storm_debris': 'graphics/ai_visuals/storm_debris.png',
+			'mud': 'graphics/ai_visuals/mud.png',
 			'crow': 'graphics/ai_visuals/crow.png',
 			'crow_damage': 'graphics/ai_visuals/crow_damage.png',
 			'flower': 'graphics/objects/sunflower.png',
@@ -541,6 +576,11 @@ class Level:
 			pygame.draw.rect(surf, Colors.PATH_DECOR_DARK, (38, 32, 8, 4))
 			pygame.draw.rect(surf, Colors.PATH_DECOR_HIGHLIGHT, (48, 29, 6, 4))
 			return surf, LAYERS['soil']
+		if kind == 'mud':
+			pygame.draw.ellipse(surf, Colors.MUD, (7, 18, 50, 30))
+			pygame.draw.ellipse(surf, Colors.MUD_LIGHT, (17, 24, 18, 7))
+			pygame.draw.ellipse(surf, Colors.MUD_DARK, (28, 34, 20, 6))
+			return surf, LAYERS['soil water']
 		if kind == 'stake':
 			pygame.draw.rect(surf, Colors.WOOD, (30, 18, 5, 34))
 			pygame.draw.rect(surf, Colors.STAKE_TOP, (27, 12, 11, 8))
@@ -686,7 +726,7 @@ class Level:
 
 		# Tao ca 6 khu tren cung world de nguoi choi thay ban do lien ket.
 		self.create_farm_from_tiles(self._all_demo_tiles())
-		self.farm_tiles = list(cfg['tiles'])
+		self.farm_tiles = self._task_tiles_for_config(cfg)
 
 		# Tao vat can/trang tri cua tat ca khu, giu AI chi xu ly khu dang chon.
 		self._create_world_decorations()
@@ -705,6 +745,8 @@ class Level:
 		hidden_blocks = cfg.get('hidden_blocks', None)
 		# Enemy spawn cho mode 6
 		enemy_spawn = cfg.get('enemy_spawn', None)
+		terrain_costs = cfg.get('terrain_costs', {})
+		extra_walkable_tiles = cfg.get('extra_walkable_tiles', [])
 
 		# Khá»Ÿi táº¡o AI
 		self.ai = FarmAIController(
@@ -712,6 +754,8 @@ class Level:
 			self.farm_tiles, mode=mode,
 			hidden_blocks=hidden_blocks,
 			enemy_spawn=enemy_spawn,
+			terrain_costs=terrain_costs,
+			extra_walkable_tiles=extra_walkable_tiles,
 			selected_algorithm=self.selected_algorithms.get(mode))
 		if show_overview:
 			self._start_overview()
@@ -728,8 +772,10 @@ class Level:
 		mode_names = {
 			1: self.selected_algorithms.get(1, 'BFS'),
 			2: self.selected_algorithms.get(2, 'A*'),
-			3: self.selected_algorithms.get(3, 'Hill Best'),
-			4: 'Online Search', 5: 'CSP Backtracking', 6: 'Minimax'
+			3: self.selected_algorithms.get(3, 'Hill Climbing'),
+			4: self.selected_algorithms.get(4, 'Online A*'),
+			5: self.selected_algorithms.get(5, 'Backtrack'),
+			6: 'Minimax'
 		}
 		area_name = self.MODE_CONFIGS[mode].get('area_name', f'Khu {mode}')
 		pygame.display.set_caption(
@@ -737,7 +783,7 @@ class Level:
 			f'{mode_names.get(mode, "")}')
 
 	def cycle_algorithm(self, step=1):
-		if self.current_mode not in (1, 2, 3) or not hasattr(self, 'ai'):
+		if self.current_mode not in (1, 2, 3, 4, 5) or not hasattr(self, 'ai'):
 			return None
 		name = self.ai.cycle_algorithm(step)
 		self.selected_algorithms[self.current_mode] = name
