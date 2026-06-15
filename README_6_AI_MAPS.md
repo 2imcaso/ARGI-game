@@ -8,7 +8,7 @@ Game dung cung mot nong trai Pydew, nhung 6 man cu da duoc thay bang 6 ngay sau 
 | --- | --- | --- | --- | --- |
 | 1 | Vuon truoc trai | Bat dau lai tu dau, robot chua co ban do va tim khu dat gan nhat | Uninformed Search | BFS |
 | 2 | Loi vao nha kho | Manh vo nha kho/da chan duong, robot da biet dich va vat can | Informed Search | A* |
-| 3 | Vuon cay phia dong | Qua nhieu cay can cuu, phai chon cay uu tien trong thoi gian ngan | Local Search | Hill Climbing |
+| 3 | Vuon cay phia dong | Qua nhieu cay can cuu, phai chon cay uu tien trong thoi gian ngan | Local Search | Local Beam / Hill Climbing / Annealing |
 | 4 | Bai dat suong mu | Suong mu sau bao, chi thay 3 o xung quanh va vat can an | Online/Partial Observability | Online Search |
 | 5 | O quy hoach trung tam | Quy hoach lai vuon, ngo va ca chua khong duoc ke nhau | Constraint Satisfaction | CSP Backtracking |
 | 6 | Hang cay can bao ve | Ke pha hoai tranh den cac o cay de pha | Adversarial Search | Minimax / Alpha-Beta |
@@ -17,7 +17,7 @@ Game dung cung mot nong trai Pydew, nhung 6 man cu da duoc thay bang 6 ngay sau 
 
 - `1`: Ngay 1 - BFS
 - `2`: Ngay 2 - A*
-- `3`: Ngay 3 - Hill Climbing
+- `3`: Ngay 3 - Local Search
 - `4`: Ngay 4 - Online Search
 - `5`: Ngay 5 - CSP Backtracking
 - `6`: Ngay 6 - Minimax / Alpha-Beta
@@ -32,9 +32,9 @@ AGRI-1 vua khoi dong sau bao, chua co ban do va khong biet nen uu tien huong nao
 
 Robot da biet bo cuc nong trai, nhung manh vo nha kho tao vat can tren duong. A* dung `f(n)=g(n)+h(n)` va heuristic Manhattan de di vong ngan hon thay vi duyet mu.
 
-### Ngay 3 - Khu vuon cay phia dong - Hill Climbing
+### Ngay 3 - Khu vuon cay phia dong - Local Search
 
-Nhieu cay co muc do kho/heo khac nhau. Robot chon muc tieu co score cham soc cao trong vung lan can, minh hoa hanh vi tham lam cuc bo va kha nang bi ket o cuc tri cuc bo.
+Nhieu cay co muc do kho/heo khac nhau. Robot dung cac bien the local search nhu local beam, hill climbing va simulated annealing de toi uu thu tu xu ly toan bo cay con lai, roi thuc hien muc tieu dau tien trong ke hoach tot nhat.
 
 ### Ngay 4 - Khu bai dat suong mu - Online Search
 
@@ -50,7 +50,7 @@ Mot ke pha hoai tranh den cac o cay de lam hong cay vua trong. AGRI-1 dung minim
 
 ## File chinh
 
-- `code/algorithms.py`: cac thuat toan rieng: BFS, A*, Hill Climbing, Online vision update, CSP Backtracking, Minimax.
+- `code/algorithms.py`: cac thuat toan rieng: BFS, A*, Local Search, Online vision update, CSP Backtracking, Minimax.
 - `code/ai_controller.py`: dieu phoi robot, animation, panel thong tin va visualization.
 - `code/level.py`: cau hinh 6 khu moi, spawn, farm tiles, obstacles, hidden blocks va enemy spawn.
 - `code/main.py`: vong lap Pygame va phim 1-6 de doi khu.

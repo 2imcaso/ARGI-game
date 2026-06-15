@@ -44,10 +44,20 @@ class FarmAIController:
             "Bao ve cay khi doi thu cung toi pha: gia su doi thu choi toi uu",
             "AGRI-1 dau tri voi ke pha hoai tren cac o can bao ve"),
     }
+    OBJECTIVE_INFO = {
+        1: ("Khoi phuc toan bo khu dat", "o dat"),
+        2: ("Cuu toan bo cay nguy cap", "cay"),
+        3: ("Cham soc toan bo vuon cay", "cay"),
+        4: ("Khao sat va xu ly toan bo khu suong", "o"),
+        5: ("Hoan thanh toan bo so do gieo trong", "o trong"),
+        6: ("Bao ve cang nhieu cay cang tot", "cay"),
+    }
 
     ENEMY_MOVE_SPEED = 2.2
     ENEMY_DESTROY_TIME = 1.5
     ENEMY_RETARGET_DELAY = 0.08
+    IDS_ITERATION_DELAY = 0.65
+    IDSA_ITERATION_DELAY = 0.65
 
     # ------------------------------------------------------------------ init
     def __init__(self, player, soil_layer, collision_sprites, farm_tiles,
@@ -82,6 +92,20 @@ class FarmAIController:
         self.dfs_walk = None
         self.dfs_walk_index = 0
         self.dfs_explored_order = []
+        self.ids_depth_limit = 0
+        self.ids_search_timer = 0.0
+        self.ids_search_start = None
+        self.ids_search_goals = set()
+        self.ids_search_blocked = set()
+        self.ids_total_expansions = 0
+        self.ids_unique_explored = set()
+        self.idsa_f_limit = 0
+        self.idsa_search_timer = 0.0
+        self.idsa_search_start = None
+        self.idsa_search_goal = None
+        self.idsa_search_blocked = set()
+        self.idsa_total_expansions = 0
+        self.idsa_unique_explored = set()
         self.done_tiles = set()
         self.wait_time = 0.0
         self.counter = count()
@@ -215,6 +239,8 @@ class FarmAIController:
         self.dfs_walk = None
         self.dfs_walk_index = 0
         self.dfs_explored_order = []
+        self._reset_ids_search()
+        self._reset_idsa_search()
         self.current_target = None
         self.state = "CHOOSE_TARGET"
         self.stop_after_current_target = False
@@ -647,6 +673,58 @@ class FarmAIController:
     def _target_label(self, tile):
         return self._condition_label(self._condition_for_tile(tile))
 
+    def _target_summary(self, tile):
+        labels = {
+            "dry": "Cay kho",
+            "critical": "Cay nguy cap",
+            "pest": "Cay sau benh",
+            "crow": "Cay bi qua pha",
+            "dead": "Cay chet",
+            "replant": "O can gieo",
+        }
+        condition = self._condition_for_tile(tile)
+        return f"{tile} - {labels.get(condition, 'O can xu ly')}"
+
+    def _objective_snapshot(self):
+        """Return one progress format shared by every game mode."""
+        total = len(self.farm_tiles)
+        completed = len(self.done_tiles)
+        blocked = len(self.discovered_blocked) if self.mode == 4 else 0
+        lost = len(self.enemy_done_tiles) if self.mode == 6 else 0
+        resolved = min(total, completed + blocked + lost)
+        objective, unit = self.OBJECTIVE_INFO.get(
+            self.mode, ("Hoan thanh toan bo khu vuc", "nhiem vu"))
+
+        if self.state == "IDS_SEARCH":
+            current = (
+                f"IDS depth {self.ids_depth_limit} "
+                f"tu {self.ids_search_start}")
+        elif self.state == "IDSA_SEARCH":
+            current = (
+                f"IDSA f-limit {self.idsa_f_limit} "
+                f"toi {self.idsa_search_goal}")
+        elif self.current_target is None:
+            current = "Chua chon"
+        elif self._has_condition(self.current_target):
+            current = self._target_summary(self.current_target)
+        else:
+            current = f"O {self.current_target}"
+
+        if self.state == "DONE":
+            current = "Da hoan tat"
+
+        return {
+            "title": objective,
+            "unit": unit,
+            "total": total,
+            "completed": completed,
+            "blocked": blocked,
+            "lost": lost,
+            "resolved": resolved,
+            "remaining": max(0, total - resolved),
+            "current": current,
+        }
+
     # -------------------------------------------------------------- MODE 1
     def _bfs(self, start, goal):
         """Breadth-First Search â€” duyá»‡t theo lá»›p, khĂ´ng heuristic."""
@@ -704,6 +782,153 @@ class FarmAIController:
         self.stats = stats
         self.chosen_target_path = path if target is not None else None
         return target
+
+    def _reset_ids_search(self):
+        self.ids_depth_limit = 0
+        self.ids_search_timer = 0.0
+        self.ids_search_start = None
+        self.ids_search_goals = set()
+        self.ids_search_blocked = set()
+        self.ids_total_expansions = 0
+        self.ids_unique_explored = set()
+
+    def _begin_ids_search(self, start, goals):
+        self._reset_ids_search()
+        self.ids_search_start = start
+        self.ids_search_goals = set(goals)
+        self.ids_search_blocked = self._blocked_tiles()
+        self.ids_search_blocked.discard(start)
+        for goal in goals:
+            self.ids_search_blocked.discard(goal)
+        self.state = "IDS_SEARCH"
+        self.player.direction.update(0, 0)
+        self.message = f"IDS: bat dau lai tu {start}, depth limit 0"
+
+    def _update_ids_search(self, dt):
+        self.player.direction.update(0, 0)
+        if self.ids_search_timer > 0:
+            self.ids_search_timer = max(0, self.ids_search_timer - dt)
+            return
+
+        path, target, explored, cutoff = (
+            algorithms.depth_limited_search_to_any_goal(
+                self.ids_search_start,
+                self.ids_search_goals,
+                self.ids_search_blocked,
+                self._neighbors,
+                self.ids_depth_limit))
+
+        # Show only this iteration so every larger limit visibly restarts.
+        self.bfs_explored = set(explored)
+        self.ids_unique_explored.update(explored)
+        self.ids_total_expansions += len(explored)
+        self.stats = {
+            "Algorithm": "IDS",
+            "Depth limit": self.ids_depth_limit,
+            "Restart from": f"{self.ids_search_start}",
+            "This iteration": len(explored),
+            "Total expansions": self.ids_total_expansions,
+            "Unique explored": len(self.ids_unique_explored),
+            "Target": f"{target}",
+        }
+
+        if target is not None:
+            self.current_target = target
+            self.path = path
+            self.state = "MOVE"
+            self.message = (
+                f"IDS tim thay {target} o depth {self.ids_depth_limit}")
+            self.ids_search_timer = 0.0
+            return
+
+        if not cutoff:
+            self.state = "DONE"
+            self.message = "IDS: khong con node de duyet"
+            return
+
+        finished_limit = self.ids_depth_limit
+        self.ids_depth_limit += 1
+        self.ids_search_timer = self.IDS_ITERATION_DELAY
+        self.message = (
+            f"IDS limit {finished_limit} chua thay; "
+            f"quay lai {self.ids_search_start}, tang len "
+            f"{self.ids_depth_limit}")
+
+    def _reset_idsa_search(self):
+        self.idsa_f_limit = 0
+        self.idsa_search_timer = 0.0
+        self.idsa_search_start = None
+        self.idsa_search_goal = None
+        self.idsa_search_blocked = set()
+        self.idsa_total_expansions = 0
+        self.idsa_unique_explored = set()
+
+    def _begin_idsa_search(self, start, goal):
+        self._reset_idsa_search()
+        self.idsa_search_start = start
+        self.idsa_search_goal = goal
+        self.idsa_f_limit = 1
+        self.idsa_search_blocked = self._blocked_tiles()
+        self.idsa_search_blocked.discard(start)
+        self.idsa_search_blocked.discard(goal)
+        self.current_target = goal
+        self.state = "IDSA_SEARCH"
+        self.player.direction.update(0, 0)
+        self.message = (
+            f"IDSA: bat dau lai tu {start}, f-limit "
+            f"{self.idsa_f_limit}")
+
+    def _update_idsa_search(self, dt):
+        self.player.direction.update(0, 0)
+        if self.idsa_search_timer > 0:
+            self.idsa_search_timer = max(0, self.idsa_search_timer - dt)
+            return
+
+        next_limit, path, explored, hit_depth_guard = (
+            algorithms.idastar_iteration(
+                self.idsa_search_start,
+                self.idsa_search_goal,
+                self.idsa_search_blocked,
+                self._neighbors,
+                self._search_heuristic,
+                self.idsa_f_limit))
+
+        self.astar_explored = set(explored)
+        self.idsa_unique_explored.update(explored)
+        self.idsa_total_expansions += len(explored)
+        self.stats = {
+            "Algorithm": "IDSA",
+            "f limit": self.idsa_f_limit,
+            "Restart from": f"{self.idsa_search_start}",
+            "This iteration": len(explored),
+            "Total expansions": self.idsa_total_expansions,
+            "Unique explored": len(self.idsa_unique_explored),
+            "Target": f"{self.idsa_search_goal}",
+        }
+        if hit_depth_guard:
+            self.stats["Stopped by guard"] = "yes"
+
+        if path is not None:
+            self.path = path
+            self.state = "MOVE"
+            self.message = (
+                f"IDSA tim thay {self.idsa_search_goal} voi "
+                f"f-limit {self.idsa_f_limit}")
+            self.idsa_search_timer = 0.0
+            return
+
+        if next_limit == algorithms.INF:
+            self.state = "DONE"
+            self.message = "IDSA: khong con node de duyet"
+            return
+
+        finished_limit = self.idsa_f_limit
+        self.idsa_f_limit += 1
+        self.idsa_search_timer = self.IDSA_ITERATION_DELAY
+        self.message = (
+            f"IDSA f-limit {finished_limit} chua thay; "
+            f"quay lai {self.idsa_search_start}, tang len "
+            f"{self.idsa_f_limit}")
 
     def _build_dfs_walk(self, start):
         blocked = self._blocked_tiles()
@@ -1298,6 +1523,14 @@ class FarmAIController:
                 self._move_enemy_towards(dt)
             return
 
+        if self.state == "IDS_SEARCH":
+            self._update_ids_search(dt)
+            return
+
+        if self.state == "IDSA_SEARCH":
+            self._update_idsa_search(dt)
+            return
+
         # --- Stuck detection: náº¿u Ä‘ang MOVE mĂ  position khĂ´ng Ä‘á»•i > 1.5s ---
         if self.state == "MOVE":
             cur_pos = (round(self.player.pos.x), round(self.player.pos.y))
@@ -1363,6 +1596,10 @@ class FarmAIController:
             if self.mode == 4:
                 self._expand_vision(start)
 
+            if self.mode == 1 and self.algorithm_name == "IDS":
+                self._begin_ids_search(start, remaining)
+                return
+
             target = self._choose_target(remaining, start)
             if target is None:
                 self.state = "DONE"
@@ -1372,6 +1609,10 @@ class FarmAIController:
                         "khong co buoc local hop le tiep theo.")
                 else:
                     self.message = "Khong tim duoc muc tieu hop le."
+                return
+
+            if self.mode == 2 and self.algorithm_name == "IDSA":
+                self._begin_idsa_search(start, target)
                 return
 
             self.current_target = target
@@ -1689,7 +1930,7 @@ class FarmAIController:
 
         panel_width = 390
         selectable_modes = (1, 2, 3, 4, 5)
-        panel_height = 600 if self.mode in selectable_modes else 360
+        panel_height = 680 if self.mode in selectable_modes else 430
         panel = pygame.Rect(20, 20, panel_width, panel_height)
         panel_surf = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
         panel_surf.fill(Colors.PANEL_BG)
@@ -1767,32 +2008,41 @@ class FarmAIController:
         pygame.draw.line(surface, Colors.PANEL_SEPARATOR,
                          (x, y), (panel.right - 15, y))
         y += 12
+        objective = self._objective_snapshot()
         status = "Dang chay" if self.is_running else "Cho START"
         if self.state == "DONE":
             status = "Hoan thanh"
-        y = draw_text(f"Trang thai: {status}", x, y, Colors.TEXT_PRIMARY, font)
-        y = draw_text(self.message, x, y, Colors.TEXT_SUBTITLE, font_small)
-        if self.current_target is not None and self._has_condition(self.current_target):
-            y = draw_text(f"Xu ly: {self._target_label(self.current_target)}",
-                          x, y, Colors.TEXT_WARNING, font_small)
-
-        total = max(len(self.farm_tiles), 1)
-        done = len(self.done_tiles)
-        y += 4
-        y = draw_text(f"Tien do: {done}/{len(self.farm_tiles)} nhiem vu",
-                      x, y, Colors.TEXT_SUCCESS, font)
+        y = draw_text(f"MUC TIEU: {objective['title']}",
+                      x, y, Colors.TEXT_PRIMARY, font)
+        y = draw_text(f"Trang thai: {status}", x, y, Colors.TEXT_SUBTITLE,
+                      font_small)
+        y = draw_text(
+            f"TIEN DO: {objective['resolved']}/{objective['total']} "
+            f"{objective['unit']} da giai quyet",
+            x, y, Colors.TEXT_SUCCESS, font)
         bar_rect = pygame.Rect(x, y + 2, panel_width - 30, 9)
         pygame.draw.rect(surface, (40, 40, 60), bar_rect, border_radius=4)
-        fill_w = int(bar_rect.width * done / total)
+        total = max(objective["total"], 1)
+        fill_w = int(bar_rect.width * objective["resolved"] / total)
         if fill_w > 0:
             fill_rect = pygame.Rect(bar_rect.x, bar_rect.y, fill_w, bar_rect.height)
             pygame.draw.rect(surface, border_color, fill_rect, border_radius=4)
-        y += 26
+        y += 20
+
+        y = draw_text(f"DANG XU LY: {objective['current']}",
+                      x, y, Colors.TEXT_WARNING, font_small)
+
+        if self.mode == 4 and objective["blocked"]:
+            y = draw_text(
+                f"Da phat hien: {objective['blocked']} o bi chan",
+                x, y, Colors.TEXT_WARNING, font_small)
 
         if self.mode == 6:
-            enemy_count = len(self.enemy_done_tiles)
-            y = draw_text(f"Enemy chiem: {enemy_count} o",
-                          x, y, Colors.TEXT_WARNING, font_small)
+            y = draw_text(
+                f"Bao ve: {objective['completed']} | "
+                f"Bi pha: {objective['lost']} | "
+                f"Con lai: {objective['remaining']}",
+                x, y, Colors.TEXT_WARNING, font_small)
             destroy_remaining = self._enemy_destroy_remaining()
             if destroy_remaining > 0:
                 y = draw_text(f"Enemy pha cay: {destroy_remaining:.1f}s",
@@ -1800,7 +2050,10 @@ class FarmAIController:
 
         if self.stats:
             y = draw_text("THONG KE", x, y, Colors.TEXT_MUTED, font_small)
+            stats_bottom = panel.bottom - 42
             for key, val in list(self.stats.items())[:7]:
+                if y + font_small.get_height() + 6 > stats_bottom:
+                    break
                 y = draw_text(f"{key}: {val}", x, y, Colors.TEXT_STAT, font_small)
 
         if self.mode in (1, 2, 3):

@@ -297,9 +297,10 @@ def greedy(start, goal, blocked, neighbors, heuristic, counter):
     }
 
 
-def idastar(start, goal, blocked, neighbors, heuristic, max_depth=900):
-    limit = heuristic(start, goal)
-    total_explored = set()
+def idastar_iteration(start, goal, blocked, neighbors, heuristic, bound,
+                      max_depth=900):
+    """Run one IDA* f-bound iteration for time-based visualization."""
+    explored = set()
     depth_limited = False
 
     def search(path, g_score, bound, visited):
@@ -311,7 +312,7 @@ def idastar(start, goal, blocked, neighbors, heuristic, max_depth=900):
         if len(path) >= max_depth:
             depth_limited = True
             return INF, None
-        total_explored.add(current)
+        explored.add(current)
         if current == goal:
             return f_score, list(path[1:])
 
@@ -333,8 +334,20 @@ def idastar(start, goal, blocked, neighbors, heuristic, max_depth=900):
             visited.remove(next_tile)
         return next_bound, None
 
+    next_bound, path = search([start], 0, bound, {start})
+    return next_bound, path, explored, depth_limited
+
+
+def idastar(start, goal, blocked, neighbors, heuristic, max_depth=900):
+    limit = heuristic(start, goal)
+    total_explored = set()
+    depth_limited = False
+
     while limit < INF:
-        next_limit, path = search([start], 0, limit, {start})
+        next_limit, path, explored, hit_depth_guard = idastar_iteration(
+            start, goal, blocked, neighbors, heuristic, limit, max_depth)
+        total_explored.update(explored)
+        depth_limited = depth_limited or hit_depth_guard
         if path is not None:
             return path, total_explored, {
                 "Nodes explored": len(total_explored),
@@ -496,6 +509,12 @@ def _depth_limited_search_to_any_goal(start, goals, blocked, neighbors, limit):
                 frontier.add(next_tile)
 
     return [], None, explored, cutoff
+
+
+def depth_limited_search_to_any_goal(start, goals, blocked, neighbors, limit):
+    """Run one IDS iteration so the controller can visualize each limit."""
+    return _depth_limited_search_to_any_goal(
+        start, goals, blocked, neighbors, limit)
 
 
 def ids_to_any_goal(start, goals, blocked, neighbors, max_depth=200):
