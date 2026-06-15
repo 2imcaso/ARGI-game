@@ -1143,90 +1143,116 @@ def belief_init_goal_astar(initial_belief, goal_belief, blocked,
 
 
 def and_or_search(start, goal, blocked, uncertain_tiles, neighbors,
-                  heuristic, counter, failure_penalty=1.0):
-    """One-step contingent AND-OR search for nondeterministic movement.
+                  heuristic, counter, max_depth=4, failure_penalty=1.0):
+    """Recursive AND-OR tree search that builds a full contingent plan.
 
-    OR nodes choose the next move. For an uncertain destination, the AND node
-    evaluates both outcomes: movement succeeds, or the tile is discovered as
-    blocked. The returned path is the success branch; callers replan when the
-    failure outcome is observed.
+    OR  nodes  (robot's choice): pick the action minimising worst-case cost.
+    AND nodes  (nature's choice): ALL four stochastic-drift outcomes must be
+                                  handled — if any branch has no plan the
+                                  action is rejected.
+
+    Stochastic drift model: 31 % intended direction, 23 % each other.
+
+    Returns
+    -------
+    path    : intended (success-branch) tile list, for visualisation.
+    policy  : dict {state -> next_tile} — the full contingent plan the
+              controller can follow on any observed outcome without replanning.
+    explored: set of states visited during the search.
+    stats   : dict of algorithm statistics.
     """
-    if start == goal:
-        return [], {start}, {
-            "Algorithm": "AND-OR Search",
-            "OR actions": 0,
-            "AND outcomes": 0,
-            "Worst-case cost": 0,
-            "Path length": 0,
-        }
+    INF = float("inf")
+    DIRECTIONS = ((0, -1), (0, 1), (-1, 0), (1, 0))
+    explored = set()
+    ancestors: set = set()          # backtracking stack for cycle detection
+    _nbr_cache: dict = {}           # neighbors(state) cache
 
-    explored = {start}
-    best = None
-    or_actions = 0
-    and_outcomes = 0
+    def valid_set(state):
+        if state not in _nbr_cache:
+            _nbr_cache[state] = set(neighbors(state, blocked))
+        return _nbr_cache[state]
 
-    for action in neighbors(start, blocked):
-        or_actions += 1
-        success_path, success_explored, success_stats = belief_astar(
-            action, goal, blocked, uncertain_tiles, neighbors, heuristic,
-            counter
-        )
-        explored.update(success_explored)
-        if not success_path and action != goal:
-            continue
+    def walkable_outcome(state, direction):
+        """Tile reached after moving in direction; stays if wall."""
+        cand = (state[0] + direction[0], state[1] + direction[1])
+        return cand if cand in valid_set(state) else state
 
-        success_cost = 1 + len(success_path)
-        failure_cost = 0
-        outcomes = 1
-        if action in uncertain_tiles:
-            outcomes = 2
-            failure_blocked = set(blocked)
-            failure_blocked.add(action)
-            failure_path, failure_explored, _ = belief_astar(
-                start, goal, failure_blocked,
-                uncertain_tiles - {action}, neighbors, heuristic, counter
-            )
-            explored.update(failure_explored)
-            failure_cost = (
-                failure_penalty + len(failure_path)
-                if failure_path else INF
-            )
+    # ------------------------------------------------------------------ OR node
+    def or_node(state, depth):
+        """Robot chooses the best action.  Returns (policy_fragment, worst_cost)."""
+        explored.add(state)
 
-        and_outcomes += outcomes
-        worst_case = max(success_cost, failure_cost)
-        expected_cost = success_cost + failure_cost
-        candidate = (
-            worst_case,
-            expected_cost,
-            heuristic(action, goal),
-            [action] + success_path,
-            outcomes,
-            success_stats,
-        )
-        if best is None or candidate[:3] < best[:3]:
-            best = candidate
+        if state == goal:
+            return {}, 0.0
 
-    if best is None:
-        return [], explored, {
-            "Algorithm": "AND-OR Search",
-            "OR actions": or_actions,
-            "AND outcomes": and_outcomes,
-            "Worst-case cost": "inf",
-            "Path length": 0,
-        }
+        if state in ancestors or depth == 0:
+            # Cycle detected, or depth exhausted → no guarantee.
+            return None, INF
 
-    worst_case, _, _, path, outcomes, _ = best
-    return path, explored, {
+        ancestors.add(state)
+        best_policy, best_cost = None, INF
+
+        for action in valid_set(state):
+            sub_policy, cost = and_node(state, action, depth - 1)
+            if sub_policy is not None and cost < best_cost:
+                best_cost = cost
+                best_policy = {state: action}
+                best_policy.update(sub_policy)
+
+        ancestors.discard(state)
+        return best_policy, best_cost
+
+    # ----------------------------------------------------------------- AND node
+    def and_node(state, intended, depth):
+        """Nature picks a drift direction.
+        ALL four outcomes must be plannable; worst-case cost is returned."""
+        merged: dict = {}
+        worst = 0.0
+
+        for direction in DIRECTIONS:
+            outcome = walkable_outcome(state, direction)
+
+            sub_policy, sub_cost = or_node(outcome, depth)
+            if sub_policy is None:
+                return None, INF        # one branch unhandled → reject action
+
+            # Merge per-state action entries (later may overwrite earlier
+            # for the same state, which is acceptable in a flat policy dict).
+            merged.update(sub_policy)
+            worst = max(worst, 1.0 + sub_cost)
+
+        return merged, worst
+
+    # ------------------------------------------------------------------ search
+    policy, cost = or_node(start, max_depth)
+
+    # Extract intended path (follow policy along the success branch).
+    path: list = []
+    current = start
+    seen = {start}
+    while current != goal and policy and current in policy:
+        nxt = policy[current]
+        if nxt is None or nxt in seen:
+            break
+        path.append(nxt)
+        seen.add(nxt)
+        current = nxt
+
+    stats = {
         "Algorithm": "AND-OR Search",
-        "OR actions": or_actions,
-        "AND outcomes": and_outcomes,
-        "Chosen outcomes": outcomes,
-        "Worst-case cost": (
-            "inf" if worst_case == INF else f"{worst_case:.1f}"
-        ),
+        "Tree depth": max_depth,
+        "OR states explored": len(explored),
+        "Policy size": len(policy) if policy else 0,
+        "Worst-case cost": "inf" if cost == INF else f"{cost:.1f}",
         "Path length": len(path),
-        "Failure policy": "Mark blocked and replan",
+        "Contingent plan": "yes" if policy else "no",
+        "Failure policy": "Follow policy on drift; replan if off-policy",
     }
+
+    if not policy:
+        return [], {}, explored, stats
+
+    return path, policy, explored, stats
 
 
 def _csp_adjacent(a, b):
@@ -1236,6 +1262,7 @@ def _csp_adjacent(a, b):
 def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
     """Assign crops using the selected CSP solving strategy."""
     variables = list(farm_tiles)
+
     steps = []
     backtracks = 0
     arc_checks = 0

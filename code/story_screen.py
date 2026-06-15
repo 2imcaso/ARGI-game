@@ -71,9 +71,10 @@ STORY_DATA = {
         "color": MODE_COLORS[4],
         "lines": [
             "Ngay thu tu, AGRI-1 vao bai dat thap bi suong mu phu kin.",
-            "AGRI-1 chi thay duoc ban kinh 2 o.",
+            "AGRI-1 chi thay duoc cac o sat ben canh.",
             "",
-            "Khi phat hien o sut hoac ngap, robot phai cap nhat ban do.",
+            "Hai buc tuong da an tao ngo cut tren duong toi cay o goc xa.",
+            "Khi phat hien da chan, robot phai quay lai va re-plan.",
             "\"Ke hoach tot nhat la ke hoach biet thay doi.\"",
         ],
         "hint": "Nhan SPACE de vao Khu 4",

@@ -110,7 +110,7 @@ class FarmAIController:
         self.wait_time = 0.0
         self.counter = count()
         self.message = f"Khu {mode}: {self.algorithm_name}"
-        self.is_running = mode not in (1, 2, 3)
+        self.is_running = mode not in (1, 2, 3, 4)
         if not self.is_running:
             self.message = "Chon thuat toan roi nhan START"
         self.algorithm_buttons = {}
@@ -166,8 +166,16 @@ class FarmAIController:
         self.hidden_blocked = set()
         self.discovered_blocked = set()
         self.explored_tiles = set()
-        self.vision_radius = 1.8
+        self.vision_radius = 1.15
         self.replan_count = 0
+        self.and_or_intended_tile = None
+        self.and_or_actual_tile = None
+        self.and_or_outcome_probability = 0
+        self.and_or_outcome_label = ""
+        self.and_or_policy = {}          # contingent plan: {state -> next_tile}
+        self.and_or_stack = []           # backtrack stack: tiles visited in order
+        self.and_or_visited = set()      # tiles already visited this navigation
+        self.and_or_backtracking = False # True when robot is retreating along stack
         if self.mode == 4:
             if hidden_blocks is not None:
                 # DĂ¹ng hidden blocks cá»‘ Ä‘á»‹nh tá»« Level (Ä‘áº·t lá»‡ch hĂ ng + cá»™t)
@@ -248,12 +256,30 @@ class FarmAIController:
         self.astar_explored.clear()
         self.hc_scores.clear()
         self.anneal_temperature = 80.0
+        self.and_or_intended_tile = None
+        self.and_or_actual_tile = None
+        self.and_or_outcome_probability = 0
+        self.and_or_outcome_label = ""
+        self.and_or_policy = {}
+        self.and_or_stack = []
+        self.and_or_visited = set()
+        self.and_or_backtracking = False
         self.is_running = False
         self.message = f"Da chon {algorithm_name}. Nhan START"
 
         if self.mode == 5:
             self.done_tiles.clear()
             self.seed_plan = self._solve_csp_crop_plan()
+        elif self.mode == 4:
+            self.done_tiles.clear()
+            self.discovered_blocked.clear()
+            self.explored_tiles.clear()
+            self.replan_count = 0
+            spawn_pos = self._tile_center(self.spawn_tile)
+            self.player.pos.update(spawn_pos)
+            self.player.rect.center = (round(spawn_pos.x), round(spawn_pos.y))
+            self.player.hitbox.center = self.player.rect.center
+            self._expand_vision(self.spawn_tile)
 
         return True
 
@@ -328,13 +354,16 @@ class FarmAIController:
         return blocked
 
     def _build_walkable_tiles(self):
-        if self.mode != 1 or not self.farm_tiles:
+        if self.mode not in (1, 4) or not self.farm_tiles:
             return None
 
         walkable = set(self.farm_tiles)
         walkable.add(self.spawn_tile)
         walkable.update(self.extra_walkable_tiles)
         walkable.update(self.terrain_costs.keys())
+
+        if self.mode == 4:
+            return walkable
 
         for target_x, target_y in self.farm_tiles:
             x, y = self.spawn_tile
@@ -449,7 +478,11 @@ class FarmAIController:
     def _build_tile_conditions(self):
         conditions = {}
         if self.mode == 4:
-            return conditions
+            condition_cycle = ("dry", "critical", "dry", "pest", "dry")
+            return {
+                tile: condition_cycle[index % len(condition_cycle)]
+                for index, tile in enumerate(self.farm_tiles)
+            }
         if self.mode == 5:
             return {tile: "replant" for tile in self.farm_tiles}
 
@@ -1266,10 +1299,22 @@ class FarmAIController:
                      or (x, y) in self.walkable_tiles)
             }
             if self.algorithm_name == "AND-OR Search":
-                path, explored, belief_stats = algorithms.and_or_search(
+                search_depth = min(
+                    12, max(5, self._heuristic(start, goal) + 2))
+                path, policy, explored, belief_stats = algorithms.and_or_search(
                     start, goal, blocked, initial_belief, self._neighbors,
-                    self._search_heuristic, self.counter
+                    self._search_heuristic, self.counter,
+                    max_depth=search_depth
                 )
+                self.and_or_policy = policy
+                if not path:
+                    path, explored, fallback_stats = algorithms.belief_astar(
+                        start, goal, blocked, initial_belief,
+                        self._neighbors, self._search_heuristic, self.counter)
+                    belief_stats.update({
+                        "Contingent fallback": "Intended branch; rebuild next state",
+                        "Fallback path": fallback_stats.get("Path length", 0),
+                    })
             elif self.algorithm_name == "Belief Init-Goal A*":
                 possible_starts = {start}
                 possible_starts.update(
@@ -1301,19 +1346,202 @@ class FarmAIController:
             path = self._astar(start, goal)
             belief_stats = {}
 
-        total_explored = len(self.explored_tiles)
-        total_map = self.rows * self.cols
+        explored_in_area = self.explored_tiles & (
+            set(self.farm_tiles) | {self.spawn_tile})
+        total_explored = len(explored_in_area)
+        total_map = len(self.farm_tiles) + 1
         self.stats = {
             "Algorithm": self.algorithm_name,
+            "Current target": f"{goal}",
             "Explored tiles": f"{total_explored}",
             "Map coverage": f"{total_explored * 100 // max(total_map, 1)}%",
             "Replanned": f"{self.replan_count} lan",
-            "Hidden blocks": f"{len(self.hidden_blocked - self.discovered_blocked)} chua biet",
+            "Blocks found": (
+                f"{len(self.discovered_blocked)}/{len(self.hidden_blocked)}"),
+            "Unknown blocks": len(
+                self.hidden_blocked - self.discovered_blocked),
         }
+        if self.algorithm_name == "Online A*":
+            self.stats["Online policy"] = "Plan known map; patch on discovery"
+        elif self.algorithm_name == "Belief A*":
+            self.stats["Online policy"] = "Penalize every unseen tile"
+        elif self.algorithm_name == "Belief Init-Goal A*":
+            self.stats["Online policy"] = "Belief over start and goal"
+        else:
+            self.stats["Online policy"] = "Plan for success/failure outcomes"
         self.stats.update(belief_stats)
         return path
 
+    def _sample_and_or_outcome(self, current, intended):
+        dx = intended[0] - current[0]
+        dy = intended[1] - current[1]
+        directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        intended_direction = (dx, dy)
+        outcomes = [intended_direction]
+        outcomes.extend(
+            direction for direction in directions
+            if direction != intended_direction)
+        probabilities = (31, 23, 23, 23)
+        chosen = random.choices(outcomes, weights=probabilities, k=1)[0]
+        probability = probabilities[outcomes.index(chosen)]
+        actual = (current[0] + chosen[0], current[1] + chosen[1])
+
+        blocked = (
+            actual not in self.walkable_tiles
+            or actual in self.hidden_blocked
+            or actual in self.discovered_blocked)
+        if blocked:
+            if actual in self.hidden_blocked:
+                self.discovered_blocked.add(actual)
+            return current, probability, f"Blocked at {actual}; stay"
+        if actual == intended:
+            return actual, probability, "Correct direction"
+        return actual, probability, "Wrong direction; continue policy"
+
+    def _and_or_policy_path(self, start, goal, max_steps=50):
+        """Extract a path from start to goal by following self.and_or_policy."""
+        path = []
+        current = start
+        seen = {start} | self.and_or_visited
+        policy = self.and_or_policy
+        for _ in range(max_steps):
+            if current == goal or current not in policy:
+                break
+            nxt = policy[current]
+            if nxt is None or nxt in seen:
+                break
+            path.append(nxt)
+            seen.add(nxt)
+            current = nxt
+        return path
+
+    def _and_or_backtrack(self, reason):
+        """Pop the stack and build a retreat path back one step.
+
+        The robot physically walks back along previously visited tiles
+        (without stochastic drift) until it reaches a tile from which a
+        new plan can be computed."""
+        if not self.and_or_stack:
+            # Stack empty — full replan from current position.
+            self.replan_count += 1
+            current = self._world_to_tile(self.player.rect.center)
+            self.and_or_visited.clear()
+            self.and_or_backtracking = False
+            self.path = self._online_plan(current, self.current_target)
+            self.stats.update({
+                "Contingency": f"stack empty; full replan ({reason})",
+                "Stack depth": 0,
+            })
+            self.message = (
+                f"AND-OR: {reason}, stack rong, "
+                f"re-plan lan {self.replan_count}")
+            self.wait_time = 0.35
+            return
+
+        backtrack_to = self.and_or_stack.pop()
+        self.and_or_backtracking = True
+        # Build retreat path: walk back to the popped tile, then try a
+        # new plan from there.
+        self.path = [backtrack_to]
+        self.stats.update({
+            "Contingency": f"backtrack: {reason}",
+            "Backtrack to": f"{backtrack_to}",
+            "Stack depth": len(self.and_or_stack),
+        })
+        self.message = (
+            f"AND-OR: {reason}, lui lai {backtrack_to} "
+            f"(stack={len(self.and_or_stack)})")
+        self.wait_time = 0.20
+
+    def _and_or_reset_navigation(self):
+        """Clear navigation state when changing target."""
+        self.and_or_stack.clear()
+        self.and_or_visited.clear()
+        self.and_or_backtracking = False
+        self.and_or_policy = {}
+
+    def _finish_and_or_outcome(self):
+        intended = self.and_or_intended_tile
+        actual = self.and_or_actual_tile
+        probability = self.and_or_outcome_probability
+        label = self.and_or_outcome_label
+        self.and_or_intended_tile = None
+        self.and_or_actual_tile = None
+
+        self.stats.update({
+            "Intended move": f"{intended}",
+            "Actual outcome": f"{actual}",
+            "Outcome probability": f"{probability}%",
+            "Outcome": label,
+            "Stack depth": len(self.and_or_stack),
+        })
+        self._expand_vision(actual)
+
+        # ---- SUCCESS: reached intended tile ----
+        if actual == intended:
+            self.and_or_stack.append(actual)
+            self.and_or_visited.add(actual)
+            self.path.pop(0)
+            return
+
+        # ---- BLOCKED: stayed in place ----
+        if label.startswith("Blocked"):
+            self.stats["Contingency"] = "blocked; backtrack"
+            self._and_or_backtrack(f"Bi chan tai {actual}")
+            return
+
+        # ---- DRIFT: ended up on a different tile ----
+
+        # Opportunistic: drifted onto unrescued farm tile → rescue it.
+        if actual in self.farm_tiles and actual not in self.done_tiles:
+            previous_target = self.current_target
+            self.current_target = actual
+            self.path = []
+            self._and_or_reset_navigation()
+            self.state = self._state_after_arrival(actual)
+            self.stats.update({
+                "Incidental plant": f"{actual}",
+                "Incidental action": "Rescue now",
+                "Previous target": f"{previous_target}",
+            })
+            self.message = (
+                f"AND-OR di lech den cay {actual}; "
+                "cuu cay nay truoc roi tiep tuc")
+            self.wait_time = 0.25
+            return
+
+        # Drifted to a tile we already visited → CYCLE → backtrack.
+        if actual in self.and_or_visited:
+            self.stats["Contingency"] = "cycle; backtrack"
+            self._and_or_backtrack(
+                f"Quay lai o da tham {actual}")
+            return
+
+        # New tile — try following contingent policy.
+        self.and_or_visited.add(actual)
+        contingency_path = self._and_or_policy_path(
+            actual, self.current_target)
+        if contingency_path:
+            self.and_or_stack.append(actual)
+            self.path = contingency_path
+            self.stats.update({
+                "Contingency": "followed policy",
+                "Policy state": f"{actual}",
+                "Policy size": len(self.and_or_policy),
+            })
+            self.message = (
+                f"AND-OR drift {probability}%: {label}; "
+                f"theo ke hoach du phong")
+            self.wait_time = 0.15
+            return
+
+        # New tile but no policy covers it → backtrack.
+        self.stats["Contingency"] = "off-policy; backtrack"
+        self._and_or_backtrack(
+            f"Khong co ke hoach cho {actual}")
+
     # -------------------------------------------------------------- MODE 5
+
     def _solve_csp_crop_plan(self):
         """CSP Backtracking: gĂ¡n corn/tomato sao cho 2 Ă´ ká» khĂ¡c loáº¡i."""
         assignment, self.csp_steps, self.stats = algorithms.solve_csp_crop_plan(
@@ -1465,7 +1693,6 @@ class FarmAIController:
                     self.danger_level.get(tile, 1),
                     -self._heuristic(start, tile),
                     tile))
-
         # Mode 4,5: giu hanh vi demo rieng, chon muc tieu gan truoc.
         best = None
         for tile in remaining:
@@ -1475,7 +1702,17 @@ class FarmAIController:
                 sort_key = (distance, tile)
                 if best is None or sort_key < best[0]:
                     best = (sort_key, tile)
-        return best[1] if best else None
+        if best is None:
+            return None
+        target = best[1]
+        self.stats.update({
+            "Target rule": "Nearest reachable target",
+            "Selected target": f"{target}",
+            "Selection reason": (
+                f"Shortest planned path = {best[0][0]}; "
+                "coordinate breaks ties"),
+        })
+        return target
 
     # ---------------------------------------------------- player direction
     def _set_player_direction_to(self, world_pos):
@@ -1532,7 +1769,9 @@ class FarmAIController:
             return
 
         # --- Stuck detection: náº¿u Ä‘ang MOVE mĂ  position khĂ´ng Ä‘á»•i > 1.5s ---
-        if self.state == "MOVE":
+        if (self.state == "MOVE"
+                and not (self.mode == 4
+                         and self.algorithm_name == "AND-OR Search")):
             cur_pos = (round(self.player.pos.x), round(self.player.pos.y))
             if not hasattr(self, '_stuck_pos'):
                 self._stuck_pos = cur_pos
@@ -1673,6 +1912,53 @@ class FarmAIController:
                     self.wait_time = 0.4
                     return
 
+            if self.mode == 4 and self.algorithm_name == "AND-OR Search":
+                current_tile = self._world_to_tile(self.player.rect.center)
+
+                # When backtracking, move directly (no drift) along
+                # the stack retreat path.
+                if self.and_or_backtracking:
+                    reached = self._set_player_direction_to(
+                        self._tile_center(next_tile))
+                    if reached:
+                        self.path.pop(0)
+                        self._expand_vision(next_tile)
+                        if not self.path:
+                            # Arrived at backtrack destination → replan.
+                            self.and_or_backtracking = False
+                            self.replan_count += 1
+                            new_path = self._online_plan(
+                                next_tile, self.current_target)
+                            if new_path:
+                                self.path = new_path
+                                self.message = (
+                                    f"AND-OR: lui xong, re-plan "
+                                    f"lan {self.replan_count}")
+                            else:
+                                # Still can't reach target → backtrack more.
+                                self._and_or_backtrack(
+                                    "Khong tim duoc duong sau khi lui")
+                    return
+
+                # Normal AND-OR forward movement with stochastic drift.
+                if self.and_or_actual_tile is None:
+                    actual, probability, label = self._sample_and_or_outcome(
+                        current_tile, next_tile)
+                    self.and_or_intended_tile = next_tile
+                    self.and_or_actual_tile = actual
+                    self.and_or_outcome_probability = probability
+                    self.and_or_outcome_label = label
+                    self.stats.update({
+                        "Intended move": f"{next_tile}",
+                        "Sampled outcome": f"{actual}",
+                        "Outcome probability": f"{probability}%",
+                    })
+                reached = self._set_player_direction_to(
+                    self._tile_center(self.and_or_actual_tile))
+                if reached:
+                    self._finish_and_or_outcome()
+                return
+
             reached = self._set_player_direction_to(
                 self._tile_center(next_tile))
             if reached:
@@ -1755,11 +2041,17 @@ class FarmAIController:
         """Váº½ thĂ´ng tin thuáº­t toĂ¡n lĂªn map (explored nodes, scores, fog, enemy...)."""
 
         for tile in self.farm_tiles:
+            if self.mode == 4 and tile not in self.explored_tiles:
+                continue
             self._draw_task_tile_marker(surface, offset, tile)
 
-        if self.mode in (1, 2, 3, 6):
+        if self.mode in (1, 2, 3, 4, 6):
             for tile in self.farm_tiles:
                 if tile in self.enemy_done_tiles:
+                    continue
+                if self.mode == 4 and tile in self.hidden_blocked:
+                    continue
+                if self.mode == 4 and tile not in self.explored_tiles:
                     continue
                 if tile in self.done_tiles:
                     self._draw_resolved_asset(surface, offset, tile)

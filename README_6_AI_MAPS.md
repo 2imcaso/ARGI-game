@@ -9,7 +9,7 @@ Game dung cung mot nong trai Pydew, nhung 6 man cu da duoc thay bang 6 ngay sau 
 | 1 | Vuon truoc trai | Bat dau lai tu dau, robot chua co ban do va tim khu dat gan nhat | Uninformed Search | BFS |
 | 2 | Loi vao nha kho | Manh vo nha kho/da chan duong, robot da biet dich va vat can | Informed Search | A* |
 | 3 | Vuon cay phia dong | Qua nhieu cay can cuu, phai chon cay uu tien trong thoi gian ngan | Local Search | Local Beam / Hill Climbing / Annealing |
-| 4 | Bai dat suong mu | Suong mu sau bao, chi thay 3 o xung quanh va vat can an | Online/Partial Observability | Online Search |
+| 4 | Rescue the Foggy Garden | Xu ly toan bo khu vuon bang mot agent doc lap | Rescue Agents | Belief State / Goal-Based / AND-OR |
 | 5 | O quy hoach trung tam | Quy hoach lai vuon, ngo va ca chua khong duoc ke nhau | Constraint Satisfaction | CSP Backtracking |
 | 6 | Hang cay can bao ve | Ke pha hoai tranh den cac o cay de pha | Adversarial Search | Minimax / Alpha-Beta |
 
@@ -18,7 +18,7 @@ Game dung cung mot nong trai Pydew, nhung 6 man cu da duoc thay bang 6 ngay sau 
 - `1`: Ngay 1 - BFS
 - `2`: Ngay 2 - A*
 - `3`: Ngay 3 - Local Search
-- `4`: Ngay 4 - Online Search
+- `4`: Man 4 - Rescue Agents
 - `5`: Ngay 5 - CSP Backtracking
 - `6`: Ngay 6 - Minimax / Alpha-Beta
 
@@ -38,7 +38,7 @@ Nhieu cay co muc do kho/heo khac nhau. Robot dung cac bien the local search nhu 
 
 ### Ngay 4 - Khu bai dat suong mu - Online Search
 
-Robot chi thay ban kinh 3 o. Mot so o sut/ngap bi an duoi suong va chi bi phat hien khi den gan. Khi gap block moi, robot cap nhat ban do va re-plan.
+Robot chi thay cac o sat ben canh va phai den cay cuu ho o goc xa. Hai buc tuong da an tao ngo cut; khi phat hien block moi, robot cap nhat belief/map va re-plan thay vi dung mot ke hoach tinh tu dau.
 
 ### Ngay 5 - Khu quy hoach trung tam - CSP Backtracking
 
