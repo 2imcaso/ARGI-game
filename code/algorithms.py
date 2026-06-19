@@ -614,6 +614,223 @@ def find_path_to_any_goal_by_algorithm(algorithm, start, goals, blocked,
     }
 
 
+def dfs_full_traversal_plan(start, goals, blocked, neighbors):
+    """Traverse once with DFS and collect every goal in first-visit order."""
+    goals = set(goals)
+    visited = {start}
+    explored_order = [start]
+    plan = []
+
+    def visit(tile):
+        if tile in goals and tile not in plan:
+            plan.append(tile)
+
+        for next_tile in neighbors(tile, blocked):
+            if next_tile in visited:
+                continue
+            visited.add(next_tile)
+            explored_order.append(next_tile)
+            visit(next_tile)
+
+    visit(start)
+    reachable = set(plan)
+    stats = {
+        "Algorithm": "DFS",
+        "Planning mode": "Full garden DFS traversal",
+        "Plan targets": len(plan),
+        "Unreachable": len(goals - reachable),
+        "Nodes explored": len(explored_order),
+        "Unique explored": len(visited),
+        "Stack max": len(explored_order),
+    }
+    return plan, set(explored_order), stats
+
+
+def _nearest_goal_distance(tile, remaining_goals, heuristic):
+    if not remaining_goals:
+        return 0
+    return min(heuristic(tile, goal) for goal in remaining_goals)
+
+
+def _full_traversal_stats(algorithm, plan, goals, explored, extra=None):
+    stats = {
+        "Algorithm": algorithm,
+        "Planning mode": f"Full garden {algorithm} traversal",
+        "Plan targets": len(plan),
+        "Unreachable": len(set(goals) - set(plan)),
+        "Nodes explored": len(explored),
+        "Unique explored": len(set(explored)),
+    }
+    if extra:
+        stats.update(extra)
+    return stats
+
+
+def bfs_full_traversal_plan(start, goals, blocked, neighbors):
+    goals = set(goals)
+    queue = deque([start])
+    visited = {start}
+    explored = []
+    plan = []
+
+    while queue and len(plan) < len(goals):
+        current = queue.popleft()
+        explored.append(current)
+        if current in goals and current not in plan:
+            plan.append(current)
+
+        for next_tile in neighbors(current, blocked):
+            if next_tile not in visited:
+                visited.add(next_tile)
+                queue.append(next_tile)
+
+    stats = _full_traversal_stats(
+        "BFS", plan, goals, explored,
+        {"Queue max": len(visited)})
+    return plan, set(explored), stats
+
+
+def ids_full_traversal_plan(start, goals, blocked, neighbors, max_depth=200):
+    goals = set(goals)
+    plan = []
+    unique_explored = set()
+    total_expansions = 0
+    final_limit = 0
+
+    for limit in range(max_depth + 1):
+        stack = [(start, 0)]
+        reached = {start}
+        cutoff = False
+        final_limit = limit
+
+        while stack:
+            current, depth = stack.pop()
+            unique_explored.add(current)
+            total_expansions += 1
+            if current in goals and current not in plan:
+                plan.append(current)
+                if len(plan) == len(goals):
+                    break
+
+            if depth >= limit:
+                cutoff = True
+                continue
+
+            for next_tile in neighbors(current, blocked):
+                if next_tile not in reached:
+                    reached.add(next_tile)
+                    stack.append((next_tile, depth + 1))
+
+        if len(plan) == len(goals) or not cutoff:
+            break
+
+    stats = _full_traversal_stats(
+        "IDS", plan, goals, unique_explored,
+        {"Depth limit": final_limit, "Total expansions": total_expansions})
+    return plan, unique_explored, stats
+
+
+def ucs_full_traversal_plan(start, goals, blocked, neighbors, counter,
+                            step_cost=unit_step_cost):
+    goals = set(goals)
+    open_set = []
+    heapq.heappush(open_set, (0, next(counter), start))
+    best_cost = {start: 0}
+    explored = []
+    plan = []
+
+    while open_set and len(plan) < len(goals):
+        cost, _, current = heapq.heappop(open_set)
+        if cost > best_cost.get(current, INF):
+            continue
+        explored.append(current)
+        if current in goals and current not in plan:
+            plan.append(current)
+
+        for next_tile in neighbors(current, blocked):
+            next_cost = cost + step_cost(current, next_tile)
+            if next_cost < best_cost.get(next_tile, INF):
+                best_cost[next_tile] = next_cost
+                heapq.heappush(
+                    open_set, (next_cost, next(counter), next_tile))
+
+    stats = _full_traversal_stats(
+        "UCS", plan, goals, explored,
+        {"Max cost": max((best_cost.get(tile, 0) for tile in plan), default=0)})
+    return plan, set(explored), stats
+
+
+def best_first_full_traversal_plan(algorithm, start, goals, blocked,
+                                   neighbors, heuristic, counter,
+                                   step_cost=unit_step_cost):
+    goals = set(goals)
+    open_set = []
+    start_h = _nearest_goal_distance(start, goals, heuristic)
+    start_priority = start_h
+    heapq.heappush(open_set, (start_priority, 0, next(counter), start))
+    best_cost = {start: 0}
+    explored = []
+    plan = []
+    last_fgh = (start_priority, 0, start_h)
+
+    while open_set and len(plan) < len(goals):
+        _, cost, _, current = heapq.heappop(open_set)
+        if cost > best_cost.get(current, INF):
+            continue
+        explored.append(current)
+        if current in goals and current not in plan:
+            plan.append(current)
+
+        remaining_goals = goals - set(plan)
+        for next_tile in neighbors(current, blocked):
+            next_cost = cost + step_cost(current, next_tile)
+            if next_cost >= best_cost.get(next_tile, INF):
+                continue
+            best_cost[next_tile] = next_cost
+            h = _nearest_goal_distance(next_tile, remaining_goals, heuristic)
+            if algorithm == "Greedy":
+                priority = h
+                heap_cost = next_cost
+            else:
+                priority = next_cost + h
+                heap_cost = next_cost
+            last_fgh = (priority, next_cost, h)
+            heapq.heappush(
+                open_set, (priority, heap_cost, next(counter), next_tile))
+
+    stats = _full_traversal_stats(
+        algorithm, plan, goals, explored,
+        {"Frontier rule": "nearest remaining goal heuristic"})
+    return plan, set(explored), last_fgh, stats
+
+
+def build_full_garden_plan_by_algorithm(algorithm, start, goals, blocked,
+                                        neighbors, heuristic, counter,
+                                        step_cost=unit_step_cost):
+    """Build one whole-garden traversal order and collect goals while exploring."""
+    if algorithm == "BFS":
+        plan, explored, stats = bfs_full_traversal_plan(
+            start, goals, blocked, neighbors)
+        return plan, explored, (0, 0, 0), stats
+    if algorithm == "DFS":
+        plan, explored, stats = dfs_full_traversal_plan(
+            start, goals, blocked, neighbors)
+        return plan, explored, (0, 0, 0), stats
+    if algorithm == "IDS":
+        plan, explored, stats = ids_full_traversal_plan(
+            start, goals, blocked, neighbors)
+        return plan, explored, (0, 0, 0), stats
+    if algorithm == "UCS":
+        plan, explored, stats = ucs_full_traversal_plan(
+            start, goals, blocked, neighbors, counter, step_cost)
+        return plan, explored, (0, 0, 0), stats
+
+    plan, explored, fgh, stats = best_first_full_traversal_plan(
+        algorithm, start, goals, blocked, neighbors, heuristic, counter,
+        step_cost)
+    return plan, explored, fgh, stats
+
+
 def hill_score(tile, start, dryness, heuristic):
     return float(dryness.get(tile, 50))
 
@@ -944,6 +1161,130 @@ def simulated_annealing_choose(remaining, start, dryness, heuristic,
     return _plan_result_stats(
         "Annealing", best, start, dryness, heuristic, scores,
         {"Anneal steps": steps, "Accepted worse": accepted_worse})
+
+
+def build_local_search_full_plan(algorithm, remaining, start, dryness,
+                                 heuristic):
+    """Optimize a full target order for the local-search family."""
+    remaining = list(remaining)
+    scores = _plan_scores(remaining, start, dryness, heuristic)
+    if not remaining:
+        return [], scores, {
+            "Local algorithm": algorithm,
+            "Planning mode": "Full garden search",
+            "Plan targets": 0,
+        }
+
+    if algorithm == "Hill Climbing":
+        initial = _nearest_neighbor_plan(remaining, start, heuristic)
+        plan, _, steps = _plan_hill_climb(
+            initial, start, dryness, heuristic, scores)
+        extra = {"Hill steps": steps}
+    elif algorithm == "Restart Hill":
+        starts = [_nearest_neighbor_plan(remaining, start, heuristic)]
+        starts.append(sorted(
+            remaining,
+            key=lambda tile: (-dryness.get(tile, 50),
+                              heuristic(start, tile), tile)))
+        while len(starts) < 8:
+            candidate = list(remaining)
+            random.shuffle(candidate)
+            starts.append(candidate)
+        plan = starts[0]
+        best_value = float("-inf")
+        for candidate in starts:
+            candidate_plan, candidate_value, _ = _plan_hill_climb(
+                candidate, start, dryness, heuristic, scores)
+            if candidate_value > best_value:
+                best_value = candidate_value
+                plan = candidate_plan
+        extra = {"Restarts": len(starts)}
+    elif algorithm == "Local Beam":
+        _, _, _, stats = local_beam_choose(
+            remaining, start, dryness, heuristic)
+        # Rebuild the same beam result here so the caller receives the order.
+        beam_width = 3
+        beam_size = max(1, min(beam_width, len(remaining)))
+        beam = [
+            _nearest_neighbor_plan(remaining, start, heuristic),
+            sorted(
+                remaining,
+                key=lambda tile: (-dryness.get(tile, 50),
+                                  heuristic(start, tile), tile)),
+        ][:beam_size]
+        generated = 0
+        for _ in range(20):
+            children = []
+            for candidate in beam:
+                children.extend(_plan_successors(candidate))
+            if not children:
+                break
+            generated += len(children)
+            unique_children = {tuple(child): child for child in children}
+            next_beam = sorted(
+                unique_children.values(),
+                key=lambda candidate: (
+                    -_plan_objective(
+                        candidate, start, dryness, heuristic, scores),
+                    tuple(candidate)))[:beam_size]
+            if {tuple(candidate) for candidate in next_beam} == {
+                    tuple(candidate) for candidate in beam}:
+                break
+            beam = next_beam
+        plan = min(
+            beam,
+            key=lambda candidate: (
+                -_plan_objective(
+                    candidate, start, dryness, heuristic, scores),
+                tuple(candidate)))
+        extra = {
+            "Beam width": stats.get("Beam width", beam_width),
+            "Generated": generated,
+        }
+    elif algorithm == "Annealing":
+        _, _, _, stats = simulated_annealing_choose(
+            remaining, start, dryness, heuristic)
+        # Use a second annealing pass that exposes the optimized permutation.
+        current = list(remaining)
+        random.shuffle(current)
+        temperature = 80.0
+        best = list(current)
+        best_value = _plan_objective(best, start, dryness, heuristic, scores)
+        current_value = best_value
+        accepted_worse = 0
+        steps = 0
+        while temperature > 0.1 and steps < 140 and len(current) > 1:
+            candidate = list(current)
+            left, right = random.sample(range(len(candidate)), 2)
+            candidate[left], candidate[right] = candidate[right], candidate[left]
+            candidate_value = _plan_objective(
+                candidate, start, dryness, heuristic, scores)
+            delta = candidate_value - current_value
+            if delta >= 0 or random.random() < math.exp(delta / temperature):
+                if delta < 0:
+                    accepted_worse += 1
+                current = candidate
+                current_value = candidate_value
+                if candidate_value > best_value:
+                    best = list(candidate)
+                    best_value = candidate_value
+            temperature *= 0.95
+            steps += 1
+        plan = best
+        extra = {
+            "Anneal steps": stats.get("Anneal steps", steps),
+            "Accepted worse": accepted_worse,
+        }
+    else:
+        plan = _nearest_neighbor_plan(remaining, start, heuristic)
+        extra = {"Plan rule": "Nearest neighbor fallback"}
+
+    _, target_score, _, stats = _plan_result_stats(
+        algorithm, plan, start, dryness, heuristic, scores, extra)
+    stats["Planning mode"] = "Full garden search"
+    stats["Plan targets"] = len(plan)
+    stats["Current score"] = f"{target_score:.0f}"
+    return plan, scores, stats
 
 
 def local_search_choose(algorithm, remaining, start, dryness, heuristic):

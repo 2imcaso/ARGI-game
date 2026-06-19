@@ -88,6 +88,9 @@ class FarmAIController:
         self.current_target = None
         self.path = []
         self.chosen_target_path = None
+        self.full_garden_plan = []
+        self.full_garden_index = 0
+        self.full_garden_stats = {}
         self.stop_after_current_target = False
         self.dfs_walk = None
         self.dfs_walk_index = 0
@@ -247,6 +250,7 @@ class FarmAIController:
         self.stats = {}
         self.path = []
         self.chosen_target_path = None
+        self._clear_full_garden_plan()
         self.dfs_walk = None
         self.dfs_walk_index = 0
         self.dfs_explored_order = []
@@ -291,6 +295,27 @@ class FarmAIController:
             self._expand_vision(self.spawn_tile)
 
         return True
+
+    def _clear_full_garden_plan(self):
+        self.full_garden_plan = []
+        self.full_garden_index = 0
+        self.full_garden_stats = {}
+        self.chosen_target_path = None
+
+    def _advance_full_garden_plan(self, tile):
+        if not self.full_garden_plan:
+            return
+        if (self.full_garden_index < len(self.full_garden_plan)
+                and self.full_garden_plan[self.full_garden_index] == tile):
+            self.full_garden_index += 1
+        while self.full_garden_index < len(self.full_garden_plan):
+            planned = self.full_garden_plan[self.full_garden_index]
+            if (planned not in self.done_tiles
+                    and planned not in self.discovered_blocked
+                    and planned not in self.enemy_done_tiles):
+                break
+            self.full_garden_index += 1
+        self._apply_full_plan_stats()
 
     def cycle_algorithm(self, step=1):
         options = self.selectable_algorithms()
@@ -731,6 +756,7 @@ class FarmAIController:
         else:
             self.message = f"Tuoi phuc hoi cay kho tai {tile}"
         self.done_tiles.add(tile)
+        self._advance_full_garden_plan(tile)
         self.current_target = None
         self.path = []
         self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
@@ -744,6 +770,7 @@ class FarmAIController:
         else:
             self.message = f"Phun sinh hoc xu ly sau benh tai {tile}"
         self.done_tiles.add(tile)
+        self._advance_full_garden_plan(tile)
         self.current_target = None
         self.path = []
         self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
@@ -753,6 +780,7 @@ class FarmAIController:
     def _finish_cultivation_target(self, tile, message):
         self.message = message
         self.done_tiles.add(tile)
+        self._advance_full_garden_plan(tile)
         self.current_target = None
         self.path = []
         self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
@@ -1514,6 +1542,7 @@ class FarmAIController:
     def _and_or_replan_from_current(self, reason, wait_time=0.18):
         current = self._world_to_tile(self.player.rect.center)
         self.replan_count += 1
+        self._clear_full_garden_plan()
         self.and_or_visited = {current}
         self.and_or_intended_tile = None
         self.and_or_actual_tile = None
@@ -1772,6 +1801,119 @@ class FarmAIController:
             return self._online_plan(start, goal)
         return self._astar(start, goal)
 
+    def _full_plan_enabled(self):
+        return self.mode in (1, 2, 3, 4, 5)
+
+    def _apply_full_plan_stats(self):
+        if not self.full_garden_plan:
+            return
+        completed = len(self.done_tiles)
+        total = len(self.farm_tiles)
+        stats = dict(self.stats or {})
+        stats.update(self.full_garden_stats)
+        stats["Algorithm"] = self.algorithm_name
+        stats["Planning mode"] = "Full garden search"
+        stats["Plan target"] = (
+            f"{min(self.full_garden_index + 1, len(self.full_garden_plan))}/"
+            f"{len(self.full_garden_plan)}")
+        stats["Completed"] = f"{completed}/{total}"
+        self.stats = stats
+
+    def _build_full_garden_plan(self, remaining, start):
+        self._clear_full_garden_plan()
+        if not remaining:
+            return []
+
+        if self.mode == 3:
+            plan, scores, stats = algorithms.build_local_search_full_plan(
+                self.algorithm_name, remaining, start, self.dryness,
+                self._heuristic)
+            self.hc_scores = scores
+            self.hc_current_score = (
+                scores.get(plan[0], 0) if plan else 0)
+            self.hc_best_neighbor_score = self.hc_current_score
+            self.full_garden_plan = list(plan)
+            self.full_garden_stats = stats
+        elif self.mode in (1, 2):
+            blocked = self._blocked_tiles()
+            blocked.discard(start)
+            for goal in remaining:
+                blocked.discard(goal)
+            plan, explored, fgh, stats = (
+                algorithms.build_full_garden_plan_by_algorithm(
+                    self.algorithm_name, start, remaining, blocked,
+                    self._neighbors, self._search_heuristic, self.counter,
+                    self._step_cost))
+            self.full_garden_plan = list(plan)
+            self.full_garden_stats = stats
+            self.astar_current_fgh = fgh
+            if self.mode == 1:
+                self.bfs_explored = set(explored)
+            else:
+                self.astar_explored = set(explored)
+        elif self.mode == 4:
+            known_blocked = self._blocked_tiles()
+            known_blocked.discard(start)
+            for goal in remaining:
+                known_blocked.discard(goal)
+            plan, explored, fgh, stats = (
+                algorithms.build_full_garden_plan_by_algorithm(
+                    "A*", start, remaining, known_blocked,
+                    self._neighbors, self._search_heuristic, self.counter,
+                    self._step_cost))
+            self.full_garden_plan = list(plan)
+            self.full_garden_stats = stats
+            self.full_garden_stats["Algorithm"] = self.algorithm_name
+            self.full_garden_stats["Online policy"] = (
+                "Full plan over known map; rebuild on discovery")
+            self.astar_current_fgh = fgh
+            self.astar_explored = set(explored)
+        elif self.mode == 5:
+            plan = []
+            unvisited = list(remaining)
+            current = start
+            while unvisited:
+                target = min(
+                    unvisited,
+                    key=lambda tile: (self._heuristic(current, tile), tile))
+                plan.append(target)
+                unvisited.remove(target)
+                current = target
+            self.full_garden_plan = plan
+            self.full_garden_stats = {
+                "Algorithm": self.algorithm_name,
+                "Planning mode": "Full garden search",
+                "Plan targets": len(plan),
+                "CSP route": "Nearest seed-plan order",
+            }
+
+        self._apply_full_plan_stats()
+        return self.full_garden_plan
+
+    def _next_full_garden_target(self, remaining, start):
+        if not self._full_plan_enabled():
+            return self._choose_target(remaining, start)
+
+        remaining_set = set(remaining)
+        if not self.full_garden_plan:
+            self._build_full_garden_plan(remaining, start)
+
+        while self.full_garden_index < len(self.full_garden_plan):
+            target = self.full_garden_plan[self.full_garden_index]
+            if target in remaining_set:
+                self.chosen_target_path = None
+                self._apply_full_plan_stats()
+                return target
+            self.full_garden_index += 1
+
+        if remaining_set:
+            # The old plan was exhausted or invalidated by online discovery.
+            self._build_full_garden_plan(remaining, start)
+            if not self.full_garden_plan:
+                return None
+            return self._next_full_garden_target(remaining, start)
+        return None
+
     def _choose_target(self, remaining, start):
         if self.mode == 3:
             return self._local_search_choose(remaining, start)
@@ -1937,11 +2079,7 @@ class FarmAIController:
             if self.mode == 4:
                 self._expand_vision(start)
 
-            if self.mode == 1 and self.algorithm_name == "IDS":
-                self._begin_ids_search(start, remaining)
-                return
-
-            target = self._choose_target(remaining, start)
+            target = self._next_full_garden_target(remaining, start)
             if target is None:
                 self.state = "DONE"
                 if self.mode == 3:
@@ -1950,10 +2088,6 @@ class FarmAIController:
                         "khong co buoc local hop le tiep theo.")
                 else:
                     self.message = "Khong tim duoc muc tieu hop le."
-                return
-
-            if self.mode == 2 and self.algorithm_name == "IDSA":
-                self._begin_idsa_search(start, target)
                 return
 
             self.current_target = target
@@ -1972,16 +2106,19 @@ class FarmAIController:
             if not self.path and start != target:
                 if self.mode == 4:
                     self.replan_count += 1
+                    self._clear_full_garden_plan()
                     self.message = (
                         f"Online: o {target} bi chan, "
                         f"re-plan (lan {self.replan_count})")
                     self.wait_time = 0.4
                     return
                 self.done_tiles.add(target)
+                self._advance_full_garden_plan(target)
                 self.message = f"Bo qua {target}: khong co duong."
                 return
 
             self.state = "MOVE"
+            self._apply_full_plan_stats()
             self.message = f"{self.algorithm_name}: di toi {target}"
             return
 
@@ -2008,6 +2145,7 @@ class FarmAIController:
                     self.path = []
                     self.state = "CHOOSE_TARGET"
                     self.replan_count += 1
+                    self._clear_full_garden_plan()
                     self.message = (
                         f"Online: phat hien vat can tai {next_tile}, "
                         f"re-plan (lan {self.replan_count})")
@@ -2397,6 +2535,16 @@ class FarmAIController:
 
         y = draw_text(f"DANG XU LY: {objective['current']}",
                       x, y, Colors.TEXT_WARNING, font_small)
+
+        if self.full_garden_plan:
+            y = draw_text(
+                f"PLAN: {len(self.full_garden_plan)} target | "
+                f"dang xu ly {min(self.full_garden_index + 1, len(self.full_garden_plan))}/"
+                f"{len(self.full_garden_plan)}",
+                x, y, Colors.TEXT_STAT, font_small)
+            y = draw_text(
+                f"Hoan thanh: {objective['completed']}/{objective['total']} o",
+                x, y, Colors.TEXT_SUCCESS, font_small)
 
         if self.mode == 4 and objective["blocked"]:
             y = draw_text(
