@@ -38,8 +38,8 @@ class FarmAIController:
             "Chi thay 2 o xung quanh, vua di vua cap nhat va re-plan",
             "Fog-of-war voi o sut/ngap an duoi suong"),
         5: ("NGAY 5 - KHU 5: O QUY HOACH TRUNG TAM", "CSP Backtracking",
-            "Gan corn/tomato cho tung o ma khong vi pham rang buoc ke nhau",
-            "Ngo va ca chua khong duoc trong canh nhau"),
+            "Gan 4 loai cay ma khong vi pham rang buoc ke nhau",
+            "Ngo/ca chua va lua mi/ca rot khong duoc trong canh nhau"),
         6: ("NGAY 6 - KHU 6: HANG CAY CAN BAO VE", "Minimax / Alpha-Beta",
             "Bao ve cay khi doi thu cung toi pha: gia su doi thu choi toi uu",
             "AGRI-1 dau tri voi ke pha hoai tren cac o can bao ve"),
@@ -166,16 +166,19 @@ class FarmAIController:
         self.hidden_blocked = set()
         self.discovered_blocked = set()
         self.explored_tiles = set()
-        self.vision_radius = 1.15
+        self.belief_worlds = []
+        self.belief_unknown_tiles = set()
+        self.belief_context = None
+        self.vision_radius = 1.5
         self.replan_count = 0
         self.and_or_intended_tile = None
         self.and_or_actual_tile = None
         self.and_or_outcome_probability = 0
         self.and_or_outcome_label = ""
         self.and_or_policy = {}          # contingent plan: {state -> next_tile}
-        self.and_or_stack = []           # backtrack stack: tiles visited in order
         self.and_or_visited = set()      # tiles already visited this navigation
-        self.and_or_backtracking = False # True when robot is retreating along stack
+        self.and_or_backtrack_count = 0
+        self.and_or_backtrack_reason = ""
         if self.mode == 4:
             if hidden_blocks is not None:
                 # DĂ¹ng hidden blocks cá»‘ Ä‘á»‹nh tá»« Level (Ä‘áº·t lá»‡ch hĂ ng + cá»™t)
@@ -261,9 +264,12 @@ class FarmAIController:
         self.and_or_outcome_probability = 0
         self.and_or_outcome_label = ""
         self.and_or_policy = {}
-        self.and_or_stack = []
         self.and_or_visited = set()
-        self.and_or_backtracking = False
+        self.and_or_backtrack_count = 0
+        self.and_or_backtrack_reason = ""
+        self.belief_worlds = []
+        self.belief_unknown_tiles = set()
+        self.belief_context = None
         self.is_running = False
         self.message = f"Da chon {algorithm_name}. Nhan START"
 
@@ -274,6 +280,9 @@ class FarmAIController:
             self.done_tiles.clear()
             self.discovered_blocked.clear()
             self.explored_tiles.clear()
+            self.belief_worlds = []
+            self.belief_unknown_tiles = set()
+            self.belief_context = None
             self.replan_count = 0
             spawn_pos = self._tile_center(self.spawn_tile)
             self.player.pos.update(spawn_pos)
@@ -387,6 +396,35 @@ class FarmAIController:
                          or (nx, ny) in self.walkable_tiles):
                 yield (nx, ny)
 
+    def _belief_neighbors(self, tile, blocked, goal=None, risk_map=None):
+        x, y = tile
+        candidates = []
+
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            nt = (nx, ny)
+
+            if 0 <= nx < self.cols and 0 <= ny < self.rows \
+                    and nt not in blocked \
+                    and (self.walkable_tiles is None
+                         or nt in self.walkable_tiles):
+                risk = risk_map.get(nt, 0.0) if risk_map else 0.0
+                known_penalty = 0 if nt in self.explored_tiles else 1
+                h = self._heuristic(nt, goal) if goal else 0
+                stable_tie = (
+                    nt[0] * 73856093
+                    ^ nt[1] * 19349663
+                    ^ tile[0] * 83492791
+                    ^ tile[1] * 2654435761
+                    ^ (goal[0] * 97531 if goal else 0)
+                    ^ (goal[1] * 314159 if goal else 0)
+                ) & 0xffff
+                candidates.append((risk, known_penalty, h, stable_tie, nt))
+
+        candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        for _, _, _, _, nt in candidates:
+            yield nt
+
     def _dfs_traversal_neighbors(self, tile, blocked):
         x, y = tile
         for nx, ny in ((x, y + 1), (x - 1, y), (x + 1, y), (x, y - 1)):
@@ -474,6 +512,35 @@ class FarmAIController:
         rect = image.get_rect(center=(int(world.x - offset.x),
                                       int(world.y - offset.y + y_offset)))
         surface.blit(image, rect)
+
+    def _draw_crop_icon(self, surface, x, y, crop_type):
+        shadow = pygame.Surface((20, 10), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (30, 20, 10, 80), (0, 0, 20, 8))
+        surface.blit(shadow, (x - 10, y + 4))
+
+        if crop_type == "tomato":
+            pygame.draw.circle(surface, (220, 40, 40), (x, y), 10)
+            pygame.draw.circle(surface, (255, 100, 100), (x - 3, y - 3), 3)
+            pygame.draw.polygon(surface, (40, 160, 40), [
+                (x, y - 8), (x - 5, y - 5), (x - 2, y - 6),
+                (x, y - 3), (x + 2, y - 6), (x + 5, y - 5)])
+            pygame.draw.line(surface, (30, 120, 30), (x, y - 8), (x, y - 12), 2)
+        elif crop_type == "corn":
+            pygame.draw.ellipse(surface, (50, 160, 50), (x - 9, y - 8, 18, 20))
+            pygame.draw.ellipse(surface, (240, 200, 20), (x - 6, y - 12, 12, 22))
+            for dy in (-6, -2, 2, 6):
+                pygame.draw.line(surface, (180, 140, 0), (x - 5, y + dy), (x + 5, y + dy), 1)
+        elif crop_type == "carrot":
+            pygame.draw.polygon(surface, (250, 110, 10), [
+                (x - 6, y - 4), (x + 6, y - 4), (x, y + 10)])
+            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x - 4, y - 12), 2)
+            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x + 4, y - 12), 2)
+            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x, y - 14), 2)
+        elif crop_type == "wheat":
+            pygame.draw.line(surface, (220, 180, 60), (x, y - 12), (x, y + 8), 2)
+            for dy in range(-8, 6, 4):
+                pygame.draw.ellipse(surface, (240, 200, 80), (x - 5, y + dy, 5, 6))
+                pygame.draw.ellipse(surface, (240, 200, 80), (x + 1, y + dy - 2, 5, 6))
 
     def _build_tile_conditions(self):
         conditions = {}
@@ -1275,10 +1342,20 @@ class FarmAIController:
     # -------------------------------------------------------------- MODE 4
     def _expand_vision(self, center):
         """Má»Ÿ rá»™ng vĂ¹ng Ä‘Ă£ khĂ¡m phĂ¡ quanh center."""
+        before_explored = set(self.explored_tiles)
+        before_blocked = set(self.discovered_blocked)
         algorithms.expand_vision(
             center, self.vision_radius, self.rows, self.cols,
             self.hidden_blocked, self.explored_tiles,
             self.discovered_blocked)
+        observed_tiles = self.explored_tiles - before_explored
+        observed_blocked = self.discovered_blocked - before_blocked
+        observed_free = observed_tiles - self.discovered_blocked
+        if self.belief_worlds:
+            self.belief_worlds = algorithms.update_belief_worlds(
+                self.belief_worlds, observed_free, observed_blocked)
+            self.belief_unknown_tiles -= observed_free
+            self.belief_unknown_tiles -= observed_blocked
 
     def _online_plan(self, start, goal):
         """Online Search: chá»‰ biáº¿t váº­t cáº£n Ä‘Ă£ khĂ¡m phĂ¡, phĂ¡t hiá»‡n thĂªm khi Ä‘i."""
@@ -1337,8 +1414,25 @@ class FarmAIController:
                         belief_stats["Path length"] = len(path)
                         belief_stats["Resolved goal"] = goal
             else:
-                path, explored, belief_stats = algorithms.belief_astar(
-                    start, goal, blocked, initial_belief, self._neighbors,
+                selected_unknowns = algorithms.select_relevant_unknown_tiles(
+                    initial_belief, start, goal, self._search_heuristic,
+                    limit=6)
+                belief_context = (
+                    start, goal, frozenset(selected_unknowns)
+                )
+                if self.belief_context != belief_context:
+                    self.belief_context = belief_context
+                    self.belief_unknown_tiles = set(selected_unknowns)
+                    self.belief_worlds = algorithms.generate_belief_worlds(
+                        selected_unknowns, max_hidden=2)
+                risk_map = algorithms.belief_risk_map(
+                    self.belief_worlds, self.belief_unknown_tiles)
+                belief_neighbors = lambda tile, blocked_set: (
+                    self._belief_neighbors(tile, blocked_set, goal, risk_map)
+                )
+                path, explored, belief_stats = algorithms.belief_world_astar(
+                    start, goal, blocked, self.belief_worlds, risk_map,
+                    self.belief_unknown_tiles, belief_neighbors,
                     self._search_heuristic, self.counter
                 )
             self.astar_explored = explored
@@ -1364,11 +1458,13 @@ class FarmAIController:
         if self.algorithm_name == "Online A*":
             self.stats["Online policy"] = "Plan known map; patch on discovery"
         elif self.algorithm_name == "Belief A*":
-            self.stats["Online policy"] = "Penalize every unseen tile"
+            self.stats["Online policy"] = "Possible worlds over hidden blocks"
         elif self.algorithm_name == "Belief Init-Goal A*":
             self.stats["Online policy"] = "Belief over start and goal"
         else:
             self.stats["Online policy"] = "Plan for success/failure outcomes"
+            self.stats["Backtracking"] = "logical rollback on failed branch"
+            self.stats["Backtracks"] = self.and_or_backtrack_count
         self.stats.update(belief_stats)
         return path
 
@@ -1381,7 +1477,7 @@ class FarmAIController:
         outcomes.extend(
             direction for direction in directions
             if direction != intended_direction)
-        probabilities = (31, 23, 23, 23)
+        probabilities = (40, 20, 20, 20)
         chosen = random.choices(outcomes, weights=probabilities, k=1)[0]
         probability = probabilities[outcomes.index(chosen)]
         actual = (current[0] + chosen[0], current[1] + chosen[1])
@@ -1415,49 +1511,39 @@ class FarmAIController:
             current = nxt
         return path
 
-    def _and_or_backtrack(self, reason):
-        """Pop the stack and build a retreat path back one step.
-
-        The robot physically walks back along previously visited tiles
-        (without stochastic drift) until it reaches a tile from which a
-        new plan can be computed."""
-        if not self.and_or_stack:
-            # Stack empty — full replan from current position.
-            self.replan_count += 1
-            current = self._world_to_tile(self.player.rect.center)
-            self.and_or_visited.clear()
-            self.and_or_backtracking = False
-            self.path = self._online_plan(current, self.current_target)
-            self.stats.update({
-                "Contingency": f"stack empty; full replan ({reason})",
-                "Stack depth": 0,
-            })
-            self.message = (
-                f"AND-OR: {reason}, stack rong, "
-                f"re-plan lan {self.replan_count}")
-            self.wait_time = 0.35
-            return
-
-        backtrack_to = self.and_or_stack.pop()
-        self.and_or_backtracking = True
-        # Build retreat path: walk back to the popped tile, then try a
-        # new plan from there.
-        self.path = [backtrack_to]
+    def _and_or_replan_from_current(self, reason, wait_time=0.18):
+        current = self._world_to_tile(self.player.rect.center)
+        self.replan_count += 1
+        self.and_or_visited = {current}
+        self.and_or_intended_tile = None
+        self.and_or_actual_tile = None
+        self.path = self._online_plan(current, self.current_target)
+        if not self.path and current != self.current_target:
+            self.state = "CHOOSE_TARGET"
         self.stats.update({
-            "Contingency": f"backtrack: {reason}",
-            "Backtrack to": f"{backtrack_to}",
-            "Stack depth": len(self.and_or_stack),
+            "Contingency": f"soft replan: {reason}",
+            "Replan from": f"{current}",
+            "Visited states": len(self.and_or_visited),
         })
         self.message = (
-            f"AND-OR: {reason}, lui lai {backtrack_to} "
-            f"(stack={len(self.and_or_stack)})")
-        self.wait_time = 0.20
+            f"AND-OR: {reason}, re-plan mem lan {self.replan_count}")
+        self.wait_time = wait_time
+
+    def _and_or_logical_backtrack(self, reason, wait_time=0.18):
+        self.and_or_backtrack_count += 1
+        self.and_or_backtrack_reason = reason
+        self._and_or_replan_from_current(reason, wait_time)
+        self.stats.update({
+            "Backtracks": self.and_or_backtrack_count,
+            "Backtrack reason": reason,
+            "Backtrack type": "logical rollback",
+        })
+        self.message = (
+            f"AND-OR backtrack #{self.and_or_backtrack_count}: {reason}")
 
     def _and_or_reset_navigation(self):
         """Clear navigation state when changing target."""
-        self.and_or_stack.clear()
         self.and_or_visited.clear()
-        self.and_or_backtracking = False
         self.and_or_policy = {}
 
     def _finish_and_or_outcome(self):
@@ -1473,26 +1559,37 @@ class FarmAIController:
             "Actual outcome": f"{actual}",
             "Outcome probability": f"{probability}%",
             "Outcome": label,
-            "Stack depth": len(self.and_or_stack),
+            "Visited states": len(self.and_or_visited),
         })
         self._expand_vision(actual)
 
+        # Always evaluate the tile the robot actually reached first,
+        # whether the move followed the intended direction or drifted.
+        if actual == self.current_target and actual not in self.done_tiles:
+            self.path = []
+            self._and_or_reset_navigation()
+            self.state = self._state_after_arrival(actual)
+            self.stats.update({
+                "Observed tile": f"{actual}",
+                "Observed action": "Current target reached",
+            })
+            self.message = f"AND-OR xet o {actual}: dung muc tieu, xu ly cay"
+            self.wait_time = 0.18
+            return
+
         # ---- SUCCESS: reached intended tile ----
         if actual == intended:
-            self.and_or_stack.append(actual)
             self.and_or_visited.add(actual)
             self.path.pop(0)
             return
 
         # ---- BLOCKED: stayed in place ----
         if label.startswith("Blocked"):
-            self.stats["Contingency"] = "blocked; backtrack"
-            self._and_or_backtrack(f"Bi chan tai {actual}")
+            self._and_or_logical_backtrack(f"Bi chan tai {actual}", 0.25)
             return
 
         # ---- DRIFT: ended up on a different tile ----
 
-        # Opportunistic: drifted onto unrescued farm tile → rescue it.
         if actual in self.farm_tiles and actual not in self.done_tiles:
             previous_target = self.current_target
             self.current_target = actual
@@ -1500,21 +1597,19 @@ class FarmAIController:
             self._and_or_reset_navigation()
             self.state = self._state_after_arrival(actual)
             self.stats.update({
-                "Incidental plant": f"{actual}",
-                "Incidental action": "Rescue now",
+                "Observed tile": f"{actual}",
+                "Observed action": "Other plant reached; handle now",
                 "Previous target": f"{previous_target}",
             })
             self.message = (
-                f"AND-OR di lech den cay {actual}; "
-                "cuu cay nay truoc roi tiep tuc")
-            self.wait_time = 0.25
+                f"AND-OR xet o {actual}: lech sang cay khac, xu ly cay nay")
+            self.wait_time = 0.18
             return
 
-        # Drifted to a tile we already visited → CYCLE → backtrack.
+        # Drifted to a tile we already visited -> logical backtrack.
         if actual in self.and_or_visited:
-            self.stats["Contingency"] = "cycle; backtrack"
-            self._and_or_backtrack(
-                f"Quay lai o da tham {actual}")
+            self._and_or_logical_backtrack(
+                f"Quay lai o da tham {actual}", 0.18)
             return
 
         # New tile — try following contingent policy.
@@ -1522,7 +1617,6 @@ class FarmAIController:
         contingency_path = self._and_or_policy_path(
             actual, self.current_target)
         if contingency_path:
-            self.and_or_stack.append(actual)
             self.path = contingency_path
             self.stats.update({
                 "Contingency": "followed policy",
@@ -1535,10 +1629,9 @@ class FarmAIController:
             self.wait_time = 0.15
             return
 
-        # New tile but no policy covers it → backtrack.
-        self.stats["Contingency"] = "off-policy; backtrack"
-        self._and_or_backtrack(
-            f"Khong co ke hoach cho {actual}")
+        # New tile but no policy covers it -> logical backtrack.
+        self._and_or_logical_backtrack(
+            f"Khong co ke hoach cho {actual}", 0.18)
 
     # -------------------------------------------------------------- MODE 5
 
@@ -1684,6 +1777,15 @@ class FarmAIController:
             return self._local_search_choose(remaining, start)
         if self.mode == 6:
             return self._minimax_choose(remaining, start)
+        if self.mode == 4 and self.algorithm_name == "AND-OR Search":
+            if self.current_target in remaining:
+                self.chosen_target_path = self._online_plan(
+                    start, self.current_target)
+                self.stats.update({
+                    "Target rule": "AND-OR continue current target",
+                    "Selected target": f"{self.current_target}",
+                })
+                return self.current_target
         if self.mode == 1:
             return self._search_first_target(start, remaining)
         if self.mode == 2:
@@ -1915,31 +2017,6 @@ class FarmAIController:
             if self.mode == 4 and self.algorithm_name == "AND-OR Search":
                 current_tile = self._world_to_tile(self.player.rect.center)
 
-                # When backtracking, move directly (no drift) along
-                # the stack retreat path.
-                if self.and_or_backtracking:
-                    reached = self._set_player_direction_to(
-                        self._tile_center(next_tile))
-                    if reached:
-                        self.path.pop(0)
-                        self._expand_vision(next_tile)
-                        if not self.path:
-                            # Arrived at backtrack destination → replan.
-                            self.and_or_backtracking = False
-                            self.replan_count += 1
-                            new_path = self._online_plan(
-                                next_tile, self.current_target)
-                            if new_path:
-                                self.path = new_path
-                                self.message = (
-                                    f"AND-OR: lui xong, re-plan "
-                                    f"lan {self.replan_count}")
-                            else:
-                                # Still can't reach target → backtrack more.
-                                self._and_or_backtrack(
-                                    "Khong tim duoc duong sau khi lui")
-                    return
-
                 # Normal AND-OR forward movement with stochastic drift.
                 if self.and_or_actual_tile is None:
                     actual, probability, label = self._sample_and_or_outcome(
@@ -2140,22 +2217,19 @@ class FarmAIController:
             # Váº½ Ă´ block áº©n chÆ°a phĂ¡t hiá»‡n (nháº¹, debug)
         # --- Mode 5: CSP assignment labels (C/T) ---
         if self.mode == 5 and self.seed_plan:
-            font_sm = pygame.font.Font(None, 22)
             for tile, crop in self.seed_plan.items():
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                label = "C" if crop == "corn" else "T"
-                color = Colors.CSP_CORN if crop == "corn" else Colors.CSP_TOMATO
                 # Ná»n
                 s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
                                    pygame.SRCALPHA)
-                bg = Colors.CSP_CORN_BG if crop == "corn" else Colors.CSP_TOMATO_BG
-                s.fill(bg)
+                s.fill((90, 60, 40, 80))
+                pygame.draw.rect(s, (120, 80, 50, 150), s.get_rect(), 2,
+                                 border_radius=6)
                 surface.blit(s, (sx - TILE_SIZE // 2 + 2,
                                  sy - TILE_SIZE // 2 + 2))
-                txt = font_sm.render(label, True, color)
-                surface.blit(txt, (sx - 5, sy - 8))
+                self._draw_crop_icon(surface, sx, sy, crop)
 
         # --- Mode 6: Enemy + enemy path ---
         if self.mode == 6 and self.enemy_tile:

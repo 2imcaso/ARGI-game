@@ -41,7 +41,7 @@ class Player(pygame.sprite.Sprite):
 		self.selected_tool = self.tools[self.tool_index]
 
 		# seeds
-		self.seeds = ['corn', 'tomato']
+		self.seeds = ['corn', 'tomato', 'wheat', 'carrot']
 		self.seed_index = 0
 		self.selected_seed = self.seeds[self.seed_index]
 
@@ -50,12 +50,16 @@ class Player(pygame.sprite.Sprite):
 			'wood': 0, 
 			'apple': 0,
 			'corn': 0,
-			'tomato': 0 
+			'tomato': 0,
+			'wheat': 0,
+			'carrot': 0
 		}
 
 		self.seed_inventory = {
 			'corn': 5,
-			'tomato': 5
+			'tomato': 5,
+			'wheat': 5,
+			'carrot': 5
 		}
 
 		self.money = 200
@@ -249,4 +253,3 @@ class Player(pygame.sprite.Sprite):
 
 		self.move(dt)
 		self.animate(dt)
-

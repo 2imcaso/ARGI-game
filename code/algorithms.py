@@ -1064,6 +1064,199 @@ def belief_astar(start, goal, blocked, uncertain_tiles, neighbors, heuristic,
     }
 
 
+def select_relevant_unknown_tiles(unknown_tiles, start, goal, heuristic,
+                                  limit=6):
+    """Pick unknown tiles closest to the start-goal corridor."""
+    if limit <= 0:
+        return []
+
+    direct_distance = heuristic(start, goal)
+
+    def corridor_score(tile):
+        via_tile = heuristic(start, tile) + heuristic(tile, goal)
+        return (
+            via_tile - direct_distance,
+            heuristic(tile, goal),
+            heuristic(start, tile),
+        )
+
+    return sorted(unknown_tiles, key=corridor_score)[:limit]
+
+
+def generate_belief_worlds(unknown_tiles, max_hidden=2):
+    """Build all possible hidden-block configurations over tracked tiles."""
+    tiles = list(unknown_tiles)
+    worlds = []
+    for mask in range(1 << len(tiles)):
+        if max_hidden is not None and mask.bit_count() > max_hidden:
+            continue
+        blocked = [
+            tiles[index]
+            for index, tile in enumerate(tiles)
+            if mask & (1 << index)
+        ]
+        worlds.append(frozenset(blocked))
+    return worlds
+
+
+def update_belief_worlds(worlds, observed_free=None, observed_blocked=None):
+    """Filter worlds against newly observed free/blocked tiles."""
+    observed_free = set(observed_free or ())
+    observed_blocked = set(observed_blocked or ())
+    if not worlds:
+        return []
+
+    return [
+        world for world in worlds
+        if world.isdisjoint(observed_free)
+        and observed_blocked.issubset(world)
+    ]
+
+
+def belief_risk_map(worlds, candidate_tiles=None):
+    """Return P(tile is blocked) estimated from current possible worlds."""
+    if candidate_tiles is None:
+        candidate_tiles = set()
+        for world in worlds:
+            candidate_tiles.update(world)
+    else:
+        candidate_tiles = set(candidate_tiles)
+
+    if not worlds:
+        return {tile: 0.0 for tile in candidate_tiles}
+
+    total_worlds = float(len(worlds))
+    return {
+        tile: sum(tile in world for world in worlds) / total_worlds
+        for tile in candidate_tiles
+    }
+
+
+def belief_world_astar(start, goal, blocked, belief_worlds, risk_map,
+                       belief_unknowns, neighbors, heuristic, counter,
+                       risk_weight=10.0, unknown_penalty=3.0):
+    """A* using possible-world blocked probabilities as risk cost."""
+    open_set = []
+    start_h = heuristic(start, goal)
+    heapq.heappush(
+        open_set, (start_h, 0.0, 0, 0.0, start_h, next(counter), start)
+    )
+    came_from = {}
+    best_cost = {start: 0.0}
+    total_risk_so_far = {start: 0.0}
+    unknown_steps_so_far = {start: 0}
+    explored = set()
+    closed = set()
+
+    def top_risk_text():
+        top_risks = sorted(
+            (
+                (probability, tile)
+                for tile, probability in risk_map.items()
+                if probability > 0.0
+            ),
+            reverse=True
+        )[:3]
+        return ", ".join(
+            f"{tile}:{probability:.2f}"
+            for probability, tile in top_risks
+        ) or "none"
+
+    def tracked_tiles_text():
+        return ", ".join(map(str, sorted(belief_unknowns))) or "none"
+
+    while open_set:
+        _, _, _, _, _, _, current = heapq.heappop(open_set)
+        if current in closed:
+            continue
+
+        closed.add(current)
+        explored.add(current)
+        if current == goal:
+            path = reconstruct_path(came_from, current)
+            path_risk_tiles = [
+                tile for tile in path
+                if risk_map.get(tile, 0.0) > 0.0
+            ]
+            risky_steps = len(path_risk_tiles)
+            unknown_steps = sum(
+                1 for tile in path if tile in belief_unknowns
+            )
+            risk_cost = sum(
+                risk_map.get(tile, 0.0) * risk_weight
+                for tile in path
+            )
+            path_risk_steps = (
+                "Path avoids tracked uncertain tiles"
+                if risky_steps == 0 and unknown_steps == 0
+                else ", ".join(map(str, path_risk_tiles)) or "none"
+            )
+            return path, explored, {
+                "Algorithm": "Belief World A*",
+                "Possible worlds": len(belief_worlds),
+                "Belief unknowns": len(belief_unknowns),
+                "Belief tracked tiles": tracked_tiles_text(),
+                "Risky tiles": len(risk_map),
+                "Risky steps": risky_steps,
+                "Unknown steps": unknown_steps,
+                "Risk map top tiles": top_risk_text(),
+                "Path risk steps": path_risk_steps,
+                "Path length": len(path),
+                "Risk cost": f"{risk_cost:.2f}",
+                "Policy": "Prefer safer known route over shortest route",
+            }
+
+        for next_tile in neighbors(current, blocked):
+            step_risk = risk_map.get(next_tile, 0.0)
+            is_unknown = next_tile in belief_unknowns
+            unknown_cost = unknown_penalty if is_unknown else 0.0
+            move_cost = 1.0 + risk_weight * step_risk + unknown_cost
+            new_g = best_cost[current] + move_cost
+
+            if new_g >= best_cost.get(next_tile, INF):
+                continue
+
+            came_from[next_tile] = current
+            best_cost[next_tile] = new_g
+
+            new_total_risk = total_risk_so_far[current] + step_risk
+            new_unknown_steps = (
+                unknown_steps_so_far[current] + (1 if is_unknown else 0)
+            )
+            total_risk_so_far[next_tile] = new_total_risk
+            unknown_steps_so_far[next_tile] = new_unknown_steps
+
+            h = heuristic(next_tile, goal)
+            priority = new_g + h
+            heapq.heappush(
+                open_set,
+                (
+                    priority,
+                    new_total_risk,
+                    new_unknown_steps,
+                    new_g,
+                    h,
+                    next(counter),
+                    next_tile,
+                )
+            )
+
+    return [], explored, {
+        "Algorithm": "Belief World A*",
+        "Possible worlds": len(belief_worlds),
+        "Belief unknowns": len(belief_unknowns),
+        "Belief tracked tiles": tracked_tiles_text(),
+        "Risky tiles": len(risk_map),
+        "Risky steps": 0,
+        "Unknown steps": 0,
+        "Risk map top tiles": top_risk_text(),
+        "Path risk steps": "Path avoids tracked uncertain tiles",
+        "Path length": 0,
+        "Risk cost": "inf",
+        "Policy": "No safe belief-aware path found",
+    }
+
+
 def belief_init_goal_astar(initial_belief, goal_belief, blocked,
                            uncertain_tiles, neighbors, heuristic, counter,
                            uncertainty_cost=2.0, preferred_start=None):
@@ -1151,7 +1344,7 @@ def and_or_search(start, goal, blocked, uncertain_tiles, neighbors,
                                   handled — if any branch has no plan the
                                   action is rejected.
 
-    Stochastic drift model: 31 % intended direction, 23 % each other.
+    Stochastic drift model: 40 % intended direction, 20 % each other.
 
     Returns
     -------
@@ -1270,15 +1463,24 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         var: [other for other in variables if _csp_adjacent(var, other)]
         for var in variables
     }
+    domain = ("corn", "tomato", "wheat", "carrot")
+    incompatible_pairs = {
+        ("corn", "tomato"), ("tomato", "corn"),
+        ("wheat", "carrot"), ("carrot", "wheat"),
+    }
 
     def log(event, var, value):
         if len(steps) < 200:
             steps.append((event, var, value))
 
+    def crop_pair_valid(left, right):
+        return left != right and (left, right) not in incompatible_pairs
+
     def valid(var, value, assignment):
         return all(
-            assignment.get(neighbor) != value
+            crop_pair_valid(value, assignment[neighbor])
             for neighbor in adjacency[var]
+            if neighbor in assignment
         )
 
     def select_unassigned(assignment, domains):
@@ -1311,8 +1513,10 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
                 for neighbor in adjacency[var]:
                     if neighbor in next_assignment:
                         continue
-                    if value in next_domains[neighbor]:
-                        next_domains[neighbor].remove(value)
+                    next_domains[neighbor] = [
+                        crop for crop in next_domains[neighbor]
+                        if crop_pair_valid(crop, value)
+                    ]
                     if not next_domains[neighbor]:
                         consistent = False
                         break
@@ -1342,7 +1546,7 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
                 left_value
                 for left_value in domains[left]
                 if any(
-                    left_value != right_value
+                    crop_pair_valid(left_value, right_value)
                     for right_value in domains[right]
                 )
             ]
@@ -1361,15 +1565,13 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         if not variables:
             return {}
 
-        assignment = {
-            var: random.choice(("corn", "tomato")) for var in variables
-        }
+        assignment = {var: random.choice(domain) for var in variables}
         log("init", None, None)
         for _ in range(max_steps):
             conflicted = [
                 var for var in variables
                 if any(
-                    assignment[neighbor] == assignment[var]
+                    not crop_pair_valid(assignment[var], assignment[neighbor])
                     for neighbor in adjacency[var]
                 )
             ]
@@ -1379,10 +1581,10 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
             var = random.choice(conflicted)
             counts = {
                 value: sum(
-                    assignment[neighbor] == value
+                    not crop_pair_valid(value, assignment[neighbor])
                     for neighbor in adjacency[var]
                 )
-                for value in ("corn", "tomato")
+                for value in domain
             }
             best_count = min(counts.values())
             best_values = [
@@ -1396,7 +1598,7 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
             log("assign", var, new_value)
         return None
 
-    domains = {var: ["corn", "tomato"] for var in variables}
+    domains = {var: list(domain) for var in variables}
     if algorithm == "Fwd Check":
         result = backtrack({}, domains, forward_check=True)
     elif algorithm == "AC-3":
@@ -1415,8 +1617,8 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
     stats = {
         "Algorithm": algorithm,
         "Variables": len(variables),
-        "Domain": "{corn, tomato}",
-        "Constraints": "No adjacent same crop",
+        "Domain": "{corn, tomato, wheat, carrot}",
+        "Constraints": "biological conflicts",
         "Backtracks": backtracks,
     }
     if algorithm == "AC-3":

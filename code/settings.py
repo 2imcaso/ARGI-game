@@ -38,17 +38,23 @@ APPLE_POS = {
 
 GROW_SPEED = {
 	'corn': 1,
-	'tomato': 0.7
+	'tomato': 0.7,
+	'wheat': 0.8,
+	'carrot': 0.9
 }
 
 SALE_PRICES = {
 	'wood': 4,
 	'apple': 2,
 	'corn': 10,
-	'tomato': 20
+	'tomato': 20,
+	'wheat': 15,
+	'carrot': 18
 }
 
 PURCHASE_PRICES = {
 	'corn': 4,
-	'tomato': 5
+	'tomato': 5,
+	'wheat': 6,
+	'carrot': 7
 }
