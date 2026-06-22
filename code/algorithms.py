@@ -221,7 +221,7 @@ def ucs(start, goal, blocked, neighbors, counter, step_cost=unit_step_cost):
 def astar(start, goal, blocked, neighbors, heuristic, counter,
           step_cost=unit_step_cost):
     open_set = []
-    heapq.heappush(open_set, (0, next(counter), start))
+    heapq.heappush(open_set, (heuristic(start, goal), next(counter), start))
     came_from = {}
     g_score = {start: 0}
     explored = set()
@@ -393,8 +393,9 @@ def find_path_by_algorithm(algorithm, start, goal, blocked, neighbors,
     if algorithm == "IDSA":
         path, explored, stats = idastar(
             start, goal, blocked, neighbors, heuristic)
+        g = len(path)
         h = heuristic(start, goal)
-        return path, explored, (len(path) + h, len(path), h), stats
+        return path, explored, (g + h, g, h), stats
 
     path, explored, fgh, stats = astar(
         start, goal, blocked, neighbors, heuristic, counter, step_cost)
@@ -831,8 +832,40 @@ def build_full_garden_plan_by_algorithm(algorithm, start, goals, blocked,
     return plan, explored, fgh, stats
 
 
-def hill_score(tile, start, dryness, heuristic):
-    return float(dryness.get(tile, 50))
+def hill_score(tile, start, dryness, heuristic, turn_penalty=0):
+    """Mode 3 local-search score.
+
+    New Mode 3 does NOT rank by random dryness anymore.
+    It ranks by tree condition first, then Manhattan distance:
+
+        dry      = 40
+        critical = 30
+        pest     = 20
+        dead     = 10
+
+        score = type_score + Manhattan(start, tile) - turn_penalty
+
+    The ``dryness`` argument is kept for compatibility with old calls, but it
+    may now also be a tile -> condition map such as self.tile_conditions.
+    """
+    type_scores = {
+        "dry": 40,
+        "critical": 30,
+        "pest": 20,
+        "dead": 10,
+    }
+    value = dryness.get(tile, "dry")
+    if isinstance(value, str):
+        base_score = type_scores.get(value, 0)
+    else:
+        # Backward-compatible fallback for old callers that still pass a
+        # numeric sensor map. Mode 3 controller should pass tile_conditions.
+        base_score = float(value)
+
+    score = base_score + heuristic(start, tile)
+    if tile != start:
+        score -= turn_penalty
+    return score
 
 
 def hill_climbing_choose(remaining, start, dryness, heuristic,
@@ -858,16 +891,19 @@ def hill_climbing_choose(remaining, start, dryness, heuristic,
             if abs(tile[0] - cx) + abs(tile[1] - cy) == 1
             and tile != current_best
         ]
-        better_neighbors = [
+        lower_neighbors = [
             tile for tile in local_neighbors
-            if scores.get(tile, 0) > current_score
+            if scores.get(tile, 0) < current_score
         ]
-        if not better_neighbors:
+        if not lower_neighbors:
             break
 
-        best_neighbor = max(
-            better_neighbors,
-            key=lambda tile: (scores.get(tile, 0), -heuristic(start, tile), tile))
+        # Test variant: downhill move.
+        # lower_neighbors chi gom cac o co score nho hon current_score.
+        # min o day chon o co score thap nhat trong cac lang gieng thap hon.
+        best_neighbor = min(
+            lower_neighbors,
+            key=lambda tile: (scores.get(tile, 0), heuristic(start, tile), tile))
         best_neighbor_score = scores.get(best_neighbor, 0)
         current_best = best_neighbor
         current_score = best_neighbor_score
@@ -905,10 +941,13 @@ def _plan_value(plan, start, dryness, heuristic):
 
 
 def _plan_objective(plan, start, dryness, heuristic, scores):
+    # Downhill variant: lower score = drier = higher urgency.
+    # Negate so that minimising plan cost also puts the lowest-score tile first.
     if not plan:
-        return float("-inf")
+        return float("inf")
     first_target_score = scores.get(plan[0], 0)
-    return first_target_score * 1000 + _plan_value(
+    # Subtract first_target_score so lower score gives a lower (better) objective.
+    return first_target_score * 1000 - _plan_value(
         plan, start, dryness, heuristic)
 
 
@@ -982,14 +1021,14 @@ def _plan_hill_climb(initial_plan, start, dryness, heuristic, scores,
         successors = _plan_successors(current)
         if not successors:
             break
-        best_neighbor = max(
+        best_neighbor = min(
             successors,
             key=lambda plan: (_plan_objective(
                                   plan, start, dryness, heuristic, scores),
                               tuple(plan)))
         best_value = _plan_objective(
             best_neighbor, start, dryness, heuristic, scores)
-        if best_value <= current_value:
+        if best_value >= current_value:
             break
         current = best_neighbor
         current_value = best_value
@@ -1039,11 +1078,11 @@ def plan_restart_hill_choose(remaining, start, dryness, heuristic,
         starts.append(plan)
 
     best_plan = None
-    best_value = float("-inf")
+    best_value = float("inf")
     for plan in starts[:max(1, restarts)]:
         candidate_plan, candidate_value, _ = _plan_hill_climb(
             plan, start, dryness, heuristic, scores)
-        if candidate_value > best_value:
+        if candidate_value < best_value:
             best_value = candidate_value
             best_plan = candidate_plan
 
@@ -1067,7 +1106,7 @@ def local_beam_choose(remaining, start, dryness, heuristic,
         _nearest_neighbor_plan(remaining_list, start, heuristic),
         sorted(
             remaining_list,
-            key=lambda tile: (-dryness.get(tile, 50),
+            key=lambda tile: (dryness.get(tile, 50),   # ascending: lowest first
                               heuristic(start, tile), tile)),
     ]
     while len(starts) < beam_size:
@@ -1092,7 +1131,7 @@ def local_beam_choose(remaining, start, dryness, heuristic,
         }
         next_beam = sorted(
             unique_children.values(),
-            key=lambda plan: (-_plan_objective(
+            key=lambda plan: (_plan_objective(
                                   plan, start, dryness, heuristic, scores),
                               tuple(plan)))[:beam_size]
         if {tuple(plan) for plan in next_beam} == {tuple(plan) for plan in beam}:
@@ -1101,7 +1140,7 @@ def local_beam_choose(remaining, start, dryness, heuristic,
 
     best_plan = min(
         beam,
-        key=lambda plan: (-_plan_objective(
+        key=lambda plan: (_plan_objective(
                               plan, start, dryness, heuristic, scores),
                           tuple(plan)))
     return _plan_result_stats(
@@ -1165,123 +1204,134 @@ def simulated_annealing_choose(remaining, start, dryness, heuristic,
 
 def build_local_search_full_plan(algorithm, remaining, start, dryness,
                                  heuristic):
-    """Optimize a full target order for the local-search family."""
-    remaining = list(remaining)
-    scores = _plan_scores(remaining, start, dryness, heuristic)
-    if not remaining:
+    """Build a full plan with the current local-neighbor Mode 3 semantics."""
+    remaining_set = set(remaining)
+    scores = _plan_scores(remaining_set, start, dryness, heuristic)
+    if not remaining_set:
         return [], scores, {
             "Local algorithm": algorithm,
-            "Planning mode": "Full garden search",
+            "Planning mode": "Full garden local-neighbor search",
             "Plan targets": 0,
         }
 
-    if algorithm == "Hill Climbing":
-        initial = _nearest_neighbor_plan(remaining, start, heuristic)
-        plan, _, steps = _plan_hill_climb(
-            initial, start, dryness, heuristic, scores)
-        extra = {"Hill steps": steps}
-    elif algorithm == "Restart Hill":
-        starts = [_nearest_neighbor_plan(remaining, start, heuristic)]
-        starts.append(sorted(
-            remaining,
-            key=lambda tile: (-dryness.get(tile, 50),
-                              heuristic(start, tile), tile)))
-        while len(starts) < 8:
-            candidate = list(remaining)
-            random.shuffle(candidate)
-            starts.append(candidate)
-        plan = starts[0]
-        best_value = float("-inf")
-        for candidate in starts:
-            candidate_plan, candidate_value, _ = _plan_hill_climb(
-                candidate, start, dryness, heuristic, scores)
-            if candidate_value > best_value:
-                best_value = candidate_value
-                plan = candidate_plan
-        extra = {"Restarts": len(starts)}
-    elif algorithm == "Local Beam":
-        _, _, _, stats = local_beam_choose(
-            remaining, start, dryness, heuristic)
-        # Rebuild the same beam result here so the caller receives the order.
-        beam_width = 3
-        beam_size = max(1, min(beam_width, len(remaining)))
-        beam = [
-            _nearest_neighbor_plan(remaining, start, heuristic),
-            sorted(
-                remaining,
-                key=lambda tile: (-dryness.get(tile, 50),
-                                  heuristic(start, tile), tile)),
-        ][:beam_size]
-        generated = 0
-        for _ in range(20):
-            children = []
-            for candidate in beam:
-                children.extend(_plan_successors(candidate))
-            if not children:
+    current = start
+    plan = []
+    local_moves = 0
+    restarts = 0
+    generated = 0
+    accepted_worse = 0
+    temperature = 80.0
+    stop_rule = "All targets planned"
+
+    def adjacent_targets(center):
+        return [
+            tile for tile in remaining_set
+            if heuristic(center, tile) == 1
+        ]
+
+    def random_restart_target():
+        return random.choice(sorted(remaining_set))
+
+    while remaining_set:
+        neighbors = adjacent_targets(current)
+        if not neighbors:
+            if algorithm in ("Hill Climbing", "Annealing", "Local Beam"):
+                stop_rule = "No adjacent target"
                 break
-            generated += len(children)
-            unique_children = {tuple(child): child for child in children}
-            next_beam = sorted(
-                unique_children.values(),
-                key=lambda candidate: (
-                    -_plan_objective(
-                        candidate, start, dryness, heuristic, scores),
-                    tuple(candidate)))[:beam_size]
-            if {tuple(candidate) for candidate in next_beam} == {
-                    tuple(candidate) for candidate in beam}:
+            target = random_restart_target()
+            if plan:
+                restarts += 1
+        elif algorithm == "Hill Climbing":
+            current_score = (
+                scores.get(current, hill_score(current, current, dryness, heuristic))
+                if current in dryness else scores.get(neighbors[0], 0)
+            )
+            better = [
+                tile for tile in neighbors
+                if scores.get(tile, 0) < current_score
+            ]
+            if not better:
+                stop_rule = "No lower adjacent target"
                 break
-            beam = next_beam
-        plan = min(
-            beam,
-            key=lambda candidate: (
-                -_plan_objective(
-                    candidate, start, dryness, heuristic, scores),
-                tuple(candidate)))
-        extra = {
-            "Beam width": stats.get("Beam width", beam_width),
-            "Generated": generated,
-        }
-    elif algorithm == "Annealing":
-        _, _, _, stats = simulated_annealing_choose(
-            remaining, start, dryness, heuristic)
-        # Use a second annealing pass that exposes the optimized permutation.
-        current = list(remaining)
-        random.shuffle(current)
-        temperature = 80.0
-        best = list(current)
-        best_value = _plan_objective(best, start, dryness, heuristic, scores)
-        current_value = best_value
-        accepted_worse = 0
-        steps = 0
-        while temperature > 0.1 and steps < 140 and len(current) > 1:
-            candidate = list(current)
-            left, right = random.sample(range(len(candidate)), 2)
-            candidate[left], candidate[right] = candidate[right], candidate[left]
-            candidate_value = _plan_objective(
-                candidate, start, dryness, heuristic, scores)
-            delta = candidate_value - current_value
-            if delta >= 0 or random.random() < math.exp(delta / temperature):
-                if delta < 0:
+            target = min(
+                better,
+                key=lambda tile: (scores.get(tile, 0), heuristic(current, tile), tile))
+            local_moves += 1
+        elif algorithm == "Restart Hill":
+            target = min(
+                neighbors,
+                key=lambda tile: (scores.get(tile, 0), heuristic(current, tile), tile))
+            local_moves += 1
+        elif algorithm == "Local Beam":
+            beam_width = 3
+            beam = sorted(
+                neighbors,
+                key=lambda tile: (scores.get(tile, 0), tile)
+            )[:beam_width]
+            candidates = set(beam)
+            for tile in beam:
+                candidates.update(adjacent_targets(tile))
+            generated += len(candidates)
+            target = min(
+                candidates,
+                key=lambda tile: (scores.get(tile, 0), heuristic(current, tile), tile))
+            if target not in neighbors:
+                target = min(
+                    neighbors,
+                    key=lambda tile: (
+                        heuristic(tile, target),
+                        scores.get(tile, 0),
+                        tile))
+            local_moves += 1
+        elif algorithm == "Annealing":
+            current_score = (
+                scores.get(current, hill_score(current, current, dryness, heuristic))
+                if current in dryness else scores.get(neighbors[0], 0)
+            )
+            ordered = list(neighbors)
+            random.shuffle(ordered)
+            target = ordered[0]
+            for candidate in ordered:
+                delta = scores.get(candidate, 0) - current_score
+                if delta <= 0:
+                    target = candidate
+                    break
+                probability = math.exp(-delta / max(temperature, 0.001))
+                if random.random() < probability:
+                    target = candidate
                     accepted_worse += 1
-                current = candidate
-                current_value = candidate_value
-                if candidate_value > best_value:
-                    best = list(candidate)
-                    best_value = candidate_value
-            temperature *= 0.95
-            steps += 1
-        plan = best
-        extra = {
-            "Anneal steps": stats.get("Anneal steps", steps),
+                    break
+            temperature = max(0.1, temperature * 0.90)
+            local_moves += 1
+        else:
+            target = min(
+                neighbors,
+                key=lambda tile: (scores.get(tile, 0), heuristic(current, tile), tile))
+            local_moves += 1
+
+        plan.append(target)
+        remaining_set.remove(target)
+        current = target
+
+    extra = {
+        "Local rule": "Adjacent targets first",
+        "Local moves": local_moves,
+        "Restarts": restarts,
+        "Stop rule": stop_rule,
+    }
+    if algorithm == "Local Beam":
+        extra.update({"Beam width": 3, "Generated": generated})
+    if algorithm == "Annealing":
+        extra.update({
+            "Anneal temp": f"{temperature:.1f}",
             "Accepted worse": accepted_worse,
-        }
-    else:
-        plan = _nearest_neighbor_plan(remaining, start, heuristic)
-        extra = {"Plan rule": "Nearest neighbor fallback"}
+        })
+    if algorithm == "Restart Hill":
+        extra["Restart rule"] = "Random remaining target"
 
     _, target_score, _, stats = _plan_result_stats(
         algorithm, plan, start, dryness, heuristic, scores, extra)
-    stats["Planning mode"] = "Full garden search"
+    stats["Planning mode"] = "Full garden local-neighbor search"
     stats["Plan targets"] = len(plan)
     stats["Current score"] = f"{target_score:.0f}"
     return plan, scores, stats
@@ -1304,23 +1354,24 @@ def local_search_choose(algorithm, remaining, start, dryness, heuristic):
             "Local algorithm": "Hill Climbing",
             "Current score": f"{current_score:.0f}",
             "Target": f"{current}",
-            "Dryness": f"{dryness.get(current, 0)}%",
+            "Target type": f"{dryness.get(current, 'unknown')}",
+            "Score formula": "type + Manhattan",
             "Hill steps": hill_steps,
             "Trace": trace,
-            "Stop rule": "No better neighbor",
+            "Stop rule": "No lower neighbor",
         }
     if algorithm == "Annealing":
         return simulated_annealing_choose(remaining, start, dryness, heuristic)
     if algorithm == "Restart Hill":
         best_tile = None
-        best_score = float("-inf")
+        best_score = float("inf")   # downhill: want the LOWEST score found
         best_trace = []
         starts = random.sample(list(remaining), min(len(remaining), 8))
         for restart_tile in starts:
             candidate, candidate_score, _, _, trace = hill_climbing_choose(
                 remaining, start, dryness, heuristic,
                 initial_tile=restart_tile)
-            if candidate_score > best_score:
+            if candidate_score < best_score:  # lower = drier = higher priority
                 best_tile = candidate
                 best_score = candidate_score
                 best_trace = trace
@@ -1331,7 +1382,7 @@ def local_search_choose(algorithm, remaining, start, dryness, heuristic):
             "Dryness": f"{dryness.get(best_tile, 0)}%",
             "Restarts": len(starts),
             "Trace": best_trace,
-            "Stop rule": "No better neighbor",
+            "Stop rule": "No lower neighbor",
         }
 
     current, current_score, scores, hill_steps, trace = hill_climbing_choose(
@@ -1340,7 +1391,8 @@ def local_search_choose(algorithm, remaining, start, dryness, heuristic):
         "Local algorithm": algorithm,
         "Current score": f"{current_score:.0f}",
         "Target": f"{current}",
-        "Dryness": f"{dryness.get(current, 0)}%",
+        "Target type": f"{dryness.get(current, 'unknown')}",
+            "Score formula": "type + Manhattan",
         "Hill steps": hill_steps,
         "Trace": trace,
     }
