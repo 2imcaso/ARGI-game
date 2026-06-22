@@ -510,14 +510,6 @@ class FarmAIController:
             return self._heuristic(a, b) + 2 * self._mode2_condition_h(b)
         return self._heuristic(a, b)
 
-    def _mode2_goal_condition_cost(self, tile):
-        """Condition part of h(n) when the expanded node is already at tile."""
-        return 2 * self._mode2_condition_h(tile)
-
-    def _mode2_target_h_from_parent(self, parent, target):
-        """Target-selection heuristic from the current parent node."""
-        return self._heuristic(parent, target) + self._mode2_goal_condition_cost(target)
-
     def _mode2_h_parts(self, current_node, target):
         priority = self._mode2_condition_h(target)
         distance = self._heuristic(current_node, target)
@@ -2261,11 +2253,6 @@ class FarmAIController:
             self._neighbors, self._search_heuristic,
             self.counter, self._step_cost)
 
-    def _mode2_target_sort_key(self, parent, target, path, fgh):
-        """Build the target-selection key using the current parent node."""
-        priority, distance, _, score = self._mode2_h_parts(parent, target)
-        return (score, priority, distance, target)
-
     def _mode2_set_leg_runtime_stats(
             self, parent, target, path, explored, fgh, sort_key,
             step_stats=None):
@@ -2340,81 +2327,6 @@ class FarmAIController:
         if f_val is not None and g_val is not None and h_val is not None:
             self.astar_current_fgh = (int(f_val), int(g_val), int(h_val))
         self.stats = stats
-
-    def _build_mode2_parent_full_plan(self, remaining, start):
-        """Build a Mode-2 full plan by saving the previous chosen node.
-
-        This keeps full-plan mode, but does NOT calculate every target from
-        the original spawn.  After a target is selected, that target becomes
-        the parent/current node for scoring the next target.
-        """
-        unvisited = list(remaining)
-        parent = start
-        plan = []
-        leg_paths = {}
-        leg_stats = {}
-        explored_all = set()
-        total_path_len = 0
-        planned_completed_g = self.mode2_total_g
-        last_fgh = (0, 0, 0)
-        leg_logs = []
-
-        while unvisited:
-            best = None
-            for target in list(unvisited):
-                path, explored, fgh, _ = self._mode2_plan_one_leg(parent, target)
-                if not path and parent != target:
-                    continue
-
-                sort_key = self._mode2_target_sort_key(parent, target, path, fgh)
-                candidate = (sort_key, target, path, explored, fgh)
-                if best is None or candidate[0] < best[0]:
-                    best = candidate
-
-            if best is None:
-                break
-
-            sort_key, target, path, explored, fgh = best
-            plan.append(target)
-            h_before = sort_key[0]
-            g_leg = len(path)
-            step_stats = self._mode2_build_step_stats(
-                parent, target, path, len(explored), sort_key,
-                planned_completed_g)
-            leg_paths[target] = (parent, list(path), fgh, h_before, g_leg)
-            leg_stats[target] = (
-                parent, list(path), set(explored), fgh, sort_key, step_stats)
-            unvisited.remove(target)
-            explored_all.update(explored)
-            total_path_len += len(path)
-            planned_completed_g += len(path)
-            last_fgh = fgh
-            leg_logs.append(
-                f"{parent}->{target}: score={sort_key[0]}, "
-                f"condition={sort_key[1]}, distance={sort_key[2]}")
-            parent = target
-
-        self.full_garden_plan = list(plan)
-        self.full_garden_index = 0
-        self.full_garden_leg_paths = leg_paths
-        self.full_garden_leg_stats = leg_stats
-        self.full_garden_stats = {
-            "Algorithm": self.algorithm_name,
-            "Planning mode": "Rolling full plan from current node",
-            "Plan targets": len(plan),
-            "Plan travel g": total_path_len,
-            "h formula": "Manhattan + 2 * condition",
-            "g formula": "+1 per move",
-            "Parent rule": "after each target, parent = selected target",
-            "Path reuse": "stored per leg; recompute if parent changes",
-            "Frontier rule": (
-                "min Manhattan(parent,target) + 2 * condition"),
-            "First legs": "; ".join(leg_logs[:3]),
-        }
-        self.astar_current_fgh = last_fgh
-        self.astar_explored = set(explored_all)
-        self._apply_full_plan_stats()
-        return self.full_garden_plan
 
     def _build_mode2_frontier_full_plan(self, remaining, start):
         """Build the whole Mode-2 route with a priority BFS frontier.
@@ -2506,10 +2418,7 @@ class FarmAIController:
                 queued.add(candidate)
             max_frontier = max(max_frontier, len(frontier))
 
-        def reset_greedy_frontier(center):
-            if self.algorithm_name == "Greedy":
-                frontier.clear()
-                queued.clear()
+        def push_next_frontier(center):
             push_frontier_neighbors(center)
 
         def save_leg(parent, target, path, explored):
@@ -2543,7 +2452,7 @@ class FarmAIController:
             if current in remaining_set and current not in planned:
                 if not save_leg(current, current, [], {current}):
                     break
-                reset_greedy_frontier(current)
+                push_next_frontier(current)
                 continue
 
             if not frontier:
@@ -2554,13 +2463,11 @@ class FarmAIController:
                     break
                 if not save_leg(current, target, path, explored):
                     break
-                reset_greedy_frontier(target)
+                push_next_frontier(target)
                 continue
 
             if self.algorithm_name == "Greedy":
-                _, _, target, _, parent_center = heapq.heappop(frontier)
-                if parent_center != current:
-                    continue
+                _, _, target, _, _ = heapq.heappop(frontier)
             else:
                 _, _, _, _, target, _, _ = heapq.heappop(frontier)
             queued.discard(target)
@@ -2579,7 +2486,7 @@ class FarmAIController:
 
             if not save_leg(current, target, path, explored):
                 continue
-            reset_greedy_frontier(target)
+            push_next_frontier(target)
 
         self.full_garden_plan = list(plan)
         self.full_mode2_walk_path = list(full_walk_path)
@@ -2609,28 +2516,6 @@ class FarmAIController:
         self.astar_explored = set(explored_all)
         self._apply_full_plan_stats()
         return self.full_garden_plan
-
-    def _choose_mode2_target_from_parent(self, remaining, start):
-        """Choose Mode-2 target using BFS-style priority search.
-
-        Do not pick a far target first and then try to force movement.
-        The priority queue expands real neighbor nodes, so the returned path is
-        always a legal 4-direction chain.
-        """
-        target, path, explored, fgh, stats = self._mode2_priority_path_to_any_goal(
-            start, remaining)
-        if target is None:
-            self.stats = stats
-            return None
-
-        self.chosen_target_path = list(path)
-        priority, distance, _, score = self._mode2_h_parts(start, target)
-        sort_key = (score, priority, distance, target)
-        self._mode2_set_leg_runtime_stats(
-            start, target, path, explored, fgh, sort_key)
-        # Keep the clearer stats from the actual priority-frontier search.
-        self.stats.update(stats)
-        return target
 
     def _build_full_garden_plan(self, remaining, start):
         self._clear_full_garden_plan()
@@ -2791,7 +2676,7 @@ class FarmAIController:
         if self.mode == 1:
             return self._search_first_target(start, remaining)
         if self.mode == 2:
-            return self._choose_mode2_target_from_parent(remaining, start)
+            return None
         # Mode 4,5: giu hanh vi demo rieng, chon muc tieu gan truoc.
         best = None
         for tile in remaining:
