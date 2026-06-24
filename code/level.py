@@ -109,7 +109,11 @@ class Level:
 				('flower', 32, 20),
 			],
 		},
-		# Day 3 - Local Search: east orchard 5x5, no obstacles.
+		# Day 3 - Local Search: 5x5 orchard with a snake route.
+		# The tile map is still a normal 5x5 garden, but the player starts
+		# on the right of the first row so the local-search demo can move:
+		# left -> down -> right -> down -> left.
+		# Plant conditions are assigned in ai_controller.py; dryness is not forced.
 		3: {
 			'area_name': 'Khu 3 - Vuon cay Local Search 5x5',
 			'spawn_tile': (34, 22),

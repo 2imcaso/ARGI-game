@@ -1108,6 +1108,27 @@ class FarmAIController:
     def _heuristic(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
+    def _mode2_condition_h(self, tile):
+        """Heuristic bonus for Mode 2 target condition.
+
+        Smaller value = higher priority because Greedy/A* use min-heap:
+            dry      = 0
+            critical = 1
+            pest     = 2
+            dead     = 3
+
+        This is intentionally separate from Mode 3 score.
+        """
+        priorities = {
+            "dry": 0,
+            "critical": 1,
+            "pest": 2,
+            "crow": 2,
+            "dead": 3,
+            "replant": 3,
+        }
+        return priorities.get(self._condition_for_tile(tile), 3)
+
     def _search_heuristic(self, a, b):
         """Heuristic used by Greedy, A* and IDA*.
 
@@ -1122,6 +1143,37 @@ class FarmAIController:
         if self.mode == 2 and b in self.farm_tiles:
             return self._heuristic(a, b) + 2 * self._mode2_condition_h(b)
         return self._heuristic(a, b)
+
+    def _mode2_h_parts(self, current_node, target):
+        priority = self._mode2_condition_h(target)
+        distance = self._heuristic(current_node, target)
+        condition_cost = 2 * priority
+        return priority, distance, condition_cost, distance + condition_cost
+
+    def _apply_mode2_hud_stats(
+            self, stats, current_node, target, fgh=None, display_g=None):
+        priority, distance, condition_cost, h = self._mode2_h_parts(
+            current_node, target)
+        condition = self._condition_for_tile(target)
+
+        if fgh is not None and self.algorithm_name != "Greedy":
+            _, g_val, _ = fgh
+            if display_g is not None:
+                g_val = display_g
+            h_val = h
+            f_val = g_val + h_val
+            stats["f(n)"] = f"{f_val}"
+            stats["g(n)"] = f"{g_val}"
+            stats["h(n)"] = f"{h_val}"
+        else:
+            stats["h(n)"] = f"{h}"
+
+        stats["h distance"] = f"{distance}"
+        stats["h condition"] = (
+            f"2 * {priority} = {condition_cost} ({condition})")
+        stats["h formula"] = "Manhattan + 2 * condition"
+        stats["g formula"] = "+1 per move"
+        return stats
 
     def _ucs_task_cost(self, tile):
         condition = self._condition_for_tile(tile)
@@ -1151,6 +1203,12 @@ class FarmAIController:
             - living_pressure)
 
     def _step_cost(self, current, next_tile):
+        # In Mode 2, A*/IDA* g(n) must be the real number of moves:
+        # each move adds exactly +1. Terrain/condition belongs to h(n),
+        # not to g(n), so f(n) remains easy to explain: f = steps + h.
+        if self.mode == 2:
+            return 1
+
         terrain_cost = self.terrain_costs.get(next_tile, 0)
         if self.mode == 1 and next_tile in self.farm_tiles:
             return 1 + terrain_cost + self._ucs_task_cost(next_tile)
@@ -1337,17 +1395,19 @@ class FarmAIController:
         return priorities.get(self._condition_for_tile(tile), 0)
 
     def _build_danger_levels(self):
+        # Kept for older HUD/code paths. For Mode 2 test version, smaller
+        # means higher priority: dry=0, critical=1, pest/crow=2, dead=3.
         priorities = {
-            "dry": 4,
-            "pest": 3,
-            "crow": 3,
-            "critical": 2,
-            "dead": 1,
-            "replant": 1,
+            "dry": 0,
+            "critical": 1,
+            "pest": 2,
+            "crow": 2,
+            "dead": 3,
+            "replant": 3,
         }
         levels = {}
         for tile in self.farm_tiles:
-            levels[tile] = priorities.get(self._condition_for_tile(tile), 0)
+            levels[tile] = priorities.get(self._condition_for_tile(tile), 3)
         return levels
 
     def _care_value(self, tile):
@@ -1362,12 +1422,13 @@ class FarmAIController:
             return "healthy_plant"
         if condition == "dead":
             return "dead_plant"
-        if condition == "crow":
-            return "crow_damage"
         if condition == "critical":
             return "storm_damaged_plant"
-        if condition in ("pest", "replant"):
-            return "urgent_plant"
+        if condition == "dry":
+            return "dry_plant"
+        if condition == "pest":
+            # Pest chi ve worm rieng trong _draw_map_overlays.
+            return None
         return "dry_plant"
 
     def _draw_resolved_asset(self, surface, offset, tile):
@@ -1484,6 +1545,16 @@ class FarmAIController:
             return "TREAT_PEST"
         return "WATER_RESCUE"
 
+    def _finish_mode2_leg_g(self, tile):
+        if self.mode != 2 or tile != self.mode2_current_leg_target:
+            return
+        self.mode2_total_g += self.mode2_current_leg_g
+        self.mode2_current_leg_g = 0
+        self.mode2_current_leg_target = None
+        self.mode2_current_leg_start = None
+        self.mode2_current_step_stats = []
+        self.mode2_current_step_index = 0
+
     def _finish_rescue_target(self, tile, condition):
         self.player.selected_tool = "water"
         self.player.status = "down_water"
@@ -1494,6 +1565,8 @@ class FarmAIController:
         else:
             self.message = f"Tuoi phuc hoi cay kho tai {tile}"
         self.done_tiles.add(tile)
+        self._finish_mode2_leg_g(tile)
+        self._refresh_mode3_scores_after_action(tile)
         self._advance_full_garden_plan(tile)
         self.current_target = None
         self.path = []
@@ -1508,6 +1581,8 @@ class FarmAIController:
         else:
             self.message = f"Phun sinh hoc xu ly sau benh tai {tile}"
         self.done_tiles.add(tile)
+        self._finish_mode2_leg_g(tile)
+        self._refresh_mode3_scores_after_action(tile)
         self._advance_full_garden_plan(tile)
         self.current_target = None
         self.path = []
@@ -1520,6 +1595,8 @@ class FarmAIController:
         self.done_tiles.add(tile)
         if self.mode == 5:
             self.csp_seeded_tiles.add(tile)
+        self._finish_mode2_leg_g(tile)
+        self._refresh_mode3_scores_after_action(tile)
         self._advance_full_garden_plan(tile)
         self.current_target = None
         self.path = []
@@ -1650,14 +1727,22 @@ class FarmAIController:
         self.astar_current_fgh = fgh
         stats["Algorithm"] = name
         if self.mode == 2 and goal in self.farm_tiles:
-            g = self.danger_level.get(goal, 1)
-            h = self._heuristic(start, goal)
-            self.astar_current_fgh = (g + h, g, h)
-            stats["f(n)"] = f"{g + h}"
-            stats["g(n)"] = f"{g}"
-            stats["h(n)"] = f"{h}"
-            stats["Color priority"] = f"{g}"
-            stats["Dryness goal"] = f"{self.dryness.get(goal, 50)}%"
+            g_leg = len(path)
+            self.mode2_current_leg_g = g_leg
+            self.mode2_current_leg_target = goal
+            display_g = self.mode2_total_g + g_leg
+            if name == "Greedy":
+                stats.pop("f(n)", None)
+                stats.pop("g(n)", None)
+                stats["Priority"] = "min h(n)"
+                self._apply_mode2_hud_stats(stats, start, goal)
+            else:
+                # For A*/IDSA, fgh returned by algorithms uses real accumulated
+                # g and the heuristic supplied above.
+                self._apply_mode2_hud_stats(
+                    stats, start, goal, self.astar_current_fgh, display_g)
+            stats["g leg"] = g_leg
+            stats["g completed"] = self.mode2_total_g
         if self.mode == 1:
             self.bfs_explored = set(explored)
         elif self.mode == 2:
@@ -1771,7 +1856,7 @@ class FarmAIController:
         self._reset_idsa_search()
         self.idsa_search_start = start
         self.idsa_search_goal = goal
-        self.idsa_f_limit = 1
+        self.idsa_f_limit = self._search_heuristic(start, goal)
         self.idsa_search_blocked = self._blocked_tiles()
         self.idsa_search_blocked.discard(start)
         self.idsa_search_blocked.discard(goal)
@@ -1800,9 +1885,26 @@ class FarmAIController:
         self.astar_explored = set(explored)
         self.idsa_unique_explored.update(explored)
         self.idsa_total_expansions += len(explored)
+        current_node = self.idsa_search_start
+        priority, distance_h, condition_cost, h_val = self._mode2_h_parts(
+            current_node, self.idsa_search_goal)
+        g_leg = len(path) if path is not None else 0
+        g_val = self.mode2_total_g + g_leg
+        f_val = g_val + h_val
         self.stats = {
             "Algorithm": "IDSA",
+            "f(n)": f"{f_val}",
+            "g(n)": f"{g_val}",
+            "h(n)": f"{h_val}",
+            "h distance": f"{distance_h}",
+            "h condition": (
+                f"2 * {priority} = {condition_cost} "
+                f"({self._condition_for_tile(self.idsa_search_goal)})"),
+            "h formula": "Manhattan + 2 * condition",
             "f limit": self.idsa_f_limit,
+            "g leg": g_leg,
+            "g completed": self.mode2_total_g,
+            "g formula": "+1 per move",
             "Restart from": f"{self.idsa_search_start}",
             "This iteration": len(explored),
             "Total expansions": self.idsa_total_expansions,
@@ -1813,6 +1915,8 @@ class FarmAIController:
             self.stats["Stopped by guard"] = "yes"
 
         if path is not None:
+            self.mode2_current_leg_g = len(path)
+            self.mode2_current_leg_target = self.idsa_search_goal
             self.path = path
             self.state = "MOVE"
             self.message = (
@@ -1827,7 +1931,7 @@ class FarmAIController:
             return
 
         finished_limit = self.idsa_f_limit
-        self.idsa_f_limit += 1
+        self.idsa_f_limit = next_limit
         self.idsa_search_timer = self.IDSA_ITERATION_DELAY
         self.message = (
             f"IDSA f-limit {finished_limit} chua thay; "
@@ -1893,6 +1997,18 @@ class FarmAIController:
         return None
 
     # -------------------------------------------------------------- MODE 3
+    def _mode3_turn_penalty(self):
+        """Penalty tang dan sau moi cay da chon/xu ly.
+
+        Muc dich: neu 2 cay cung loai nam ke nhau, o tiep theo van co
+        the co score nho hon current score de robot di tiep.
+        """
+        if self.mode != 3:
+            return 0
+        # +1 de sau khi xu ly cay dau tien, o ung vien tiep theo bi tru 2.
+        # Vi Manhattan cua o ke ben la +1, tru 2 se tao chenhlech -1.
+        return len(self.done_tiles) + 1
+
     def _hill_score(self, tile, start):
         """Mode 3 score = fixed score by tree type + Manhattan - turn penalty.
 
@@ -1943,6 +2059,25 @@ class FarmAIController:
         }
         self.hc_scores = scores
         return scores
+
+    def _refresh_mode3_scores_after_action(self, current_tile):
+        """Cap nhat lai score ngay sau khi xu ly xong 1 cay Mode 3."""
+        if self.mode != 3:
+            return
+        remaining = [
+            tile for tile in self.farm_tiles
+            if tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        ]
+        if remaining:
+            self._local_scores(current_tile, remaining)
+        else:
+            self.hc_scores = {}
+        stats = dict(self.stats or {})
+        stats["Completed"] = f"{len(self.done_tiles)}/{len(self.farm_tiles)}"
+        stats["Score refreshed"] = f"after {current_tile}"
+        self.stats = stats
 
     def _nearest_remaining(self, remaining, start):
         return min(remaining, key=lambda tile: (self._heuristic(start, tile), tile))
@@ -2939,7 +3074,21 @@ class FarmAIController:
 
     # -------------------------------------------------------------- MODE 6
     def _adversarial_choose(self, remaining, player_start):
-        """Choose the next crow-damaged crop to fix."""
+        """Choose MAX's move, then resolve only the nearest live child.
+
+        Minimax/Alpha-Beta:
+            MAX chooses ``best_tile`` and MIN deterministically chooses the
+            response returned by the searched principal variation.
+
+        Expectimax:
+            MAX still chooses ``best_tile`` deterministically.  Only the
+            immediate CHANCE child is sampled, using the same normalized risk
+            weights as the expectimax tree.
+
+        Expectiminimax:
+            MAX and MIN are deterministic.  The CHANCE result is sampled only
+            after the crow reaches MIN's selected response tile.
+        """
         self.mode6_turn += 1
         self.mode6_phase = f"Decision {self.mode6_turn}"
         best_tile, predicted_enemy_target, self.minimax_value, \
@@ -2953,16 +3102,8 @@ class FarmAIController:
             chance_targets = [
                 tile for tile in remaining if tile != best_tile
             ]
-            predicted_enemy_target = (
-                random.choices(
-                    chance_targets,
-                    weights=[
-                        self.mode6_crop_profiles[tile]["risk"]
-                        for tile in chance_targets
-                    ],
-                    k=1,
-                )[0]
-                if chance_targets else None)
+            predicted_enemy_target = self._mode6_weighted_target(
+                chance_targets)
             condition = self._condition_for_tile(predicted_enemy_target)
             event_by_condition = {
                 "healthy": "Light weather",
@@ -2998,6 +3139,25 @@ class FarmAIController:
             next_tile=best_tile,
         )
         return best_tile
+
+    def _mode6_weighted_target(self, targets):
+        """Sample one CHANCE target with the tree's normalized risk weights."""
+        candidates = sorted(set(targets))
+        if not candidates:
+            return None
+        weights = [
+            max(
+                0.0,
+                self.mode6_crop_profiles.get(
+                    tile,
+                    algorithms.MODE6_TREE_STATUS["healthy"],
+                )["risk"],
+            )
+            for tile in candidates
+        ]
+        if sum(weights) <= 0:
+            weights = [1.0] * len(candidates)
+        return random.choices(candidates, weights=weights, k=1)[0]
 
     def _update_mode6_step_hud(self, phase=None, current=None, next_tile=None):
         """Refresh algorithm-specific Mode-6 information every live step."""
@@ -3117,9 +3277,31 @@ class FarmAIController:
         """Apply the sampled MIN/CHANCE outcome to the live farm."""
         damaged_tile = target
         outcome_label = "Enemy destroyed crop"
+        sampled_probability = 1.0
 
         if self.algorithm_name == "Expectimax":
             outcome_label = self.mode6_chance_event or "Random event"
+            chance_targets = [
+                tile for tile in self.farm_tiles
+                if tile not in self.done_tiles
+                and tile not in self.enemy_done_tiles
+                and tile != self.current_target
+            ]
+            risk_total = sum(
+                self.mode6_crop_profiles.get(
+                    tile,
+                    algorithms.MODE6_TREE_STATUS["healthy"],
+                )["risk"]
+                for tile in chance_targets
+            )
+            sampled_probability = (
+                self.mode6_crop_profiles.get(
+                    target,
+                    algorithms.MODE6_TREE_STATUS["healthy"],
+                )["risk"] / risk_total
+                if target in chance_targets and risk_total > 0
+                else 0.0
+            )
         elif self.algorithm_name == "Expectiminimax":
             target_risk = self.mode6_crop_profiles.get(
                 target, algorithms.MODE6_TREE_STATUS["healthy"])["risk"]
@@ -3128,30 +3310,39 @@ class FarmAIController:
             roll = random.random()
             if roll < sabotage_probability:
                 outcome_label = "Sabotage succeeds"
+                sampled_probability = sabotage_probability
             elif roll < sabotage_probability + weather_probability:
                 alternatives = [
                     tile for tile in self._enemy_remaining_targets()
                     if tile != target
                 ]
                 damaged_tile = (
-                    random.choice(alternatives) if alternatives else target)
+                    self._mode6_weighted_target(alternatives)
+                    if alternatives else target)
                 outcome_label = "Weather damage"
+                sampled_probability = weather_probability
             else:
                 damaged_tile = None
                 outcome_label = "No damage"
+                sampled_probability = (
+                    1.0 - sabotage_probability - weather_probability)
 
         if damaged_tile is not None:
             self.enemy_done_tiles.add(damaged_tile)
             self.message = f"{outcome_label}: {damaged_tile}"
         else:
             self.message = f"Chance node: {outcome_label}"
-        self.stats["Sampled Outcome"] = outcome_label
         self.mode6_phase = outcome_label
         self._update_mode6_step_hud(
             phase=outcome_label,
             current=self._world_to_tile(self.player.rect.center),
             next_tile=self.current_target,
         )
+        self.stats["Sampled Outcome"] = outcome_label
+        self.stats["Outcome target"] = (
+            f"{damaged_tile}" if damaged_tile is not None else "None")
+        self.stats["Outcome probability"] = (
+            f"{sampled_probability * 100:.1f}%")
         return damaged_tile
 
     def _plan_enemy_path(self, target):
@@ -3186,18 +3377,6 @@ class FarmAIController:
             return
         target = self.enemy_target or self.enemy_retreat_target
         if not target:
-            return
-
-        if self.algorithm_name == "Expectimax":
-            if not self.enemy_destroy_until:
-                self.enemy_destroy_until = (
-                    pygame.time.get_ticks()
-                    + int(self.ENEMY_DESTROY_TIME * 1000))
-                return
-            if not self._enemy_is_destroying():
-                self._resolve_mode6_outcome(target)
-                self.enemy_target = None
-                self.enemy_destroy_until = 0
             return
 
         if self.enemy_destroy_until:
@@ -3294,6 +3473,439 @@ class FarmAIController:
             f"{len(self.full_garden_plan)}")
         stats["Completed"] = f"{len(self.done_tiles)}/{len(self.farm_tiles)}"
         self.stats = stats
+
+    def _mode2_priority_path_to_any_goal(self, start, remaining):
+        """Mode 2: BFS-style search with a priority queue.
+
+        This is intentionally simple and stable:
+        - expand only 4-direction neighbors from _neighbors();
+        - store came_from parent for every node;
+        - reconstruct a tile-by-tile path;
+        - never jump directly to a target.
+
+        Priority:
+        - Greedy: priority = h(n)
+        - A*/IDSA: priority = g(n) + h(n)
+
+        h(n) is computed from the node currently being expanded to the best
+        remaining target:
+            h(n) = Manhattan(n, target) + 2 * condition(target)
+        """
+        goals = {
+            tile for tile in remaining
+            if tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        }
+        if not goals:
+            return None, [], set(), (0, 0, 0), {
+                "Algorithm": self.algorithm_name,
+                "Path length": 0,
+            }
+
+        if start in goals:
+            target = start
+            priority, distance, condition_cost, h_val = self._mode2_h_parts(
+                start, target)
+            stats = {
+                "Algorithm": self.algorithm_name,
+                "Target": f"{target}",
+                "Path length": 0,
+                "Nodes explored": 1,
+                "h(n)": f"{h_val}",
+                "h distance": f"{distance}",
+                "h condition": (
+                    f"2 * {priority} = {condition_cost} "
+                    f"({self._condition_for_tile(target)})"),
+                "h formula": "Manhattan + 2 * condition",
+                "Search style": "BFS + priority queue",
+            }
+            return target, [], {start}, (h_val, 0, h_val), stats
+
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        for goal in goals:
+            blocked.discard(goal)
+
+        def best_h_from(node):
+            # Smaller tuple wins. This is recalculated from the current node,
+            # not from the original spawn.
+            best = None
+            for target in goals:
+                priority, distance, condition_cost, h_val = self._mode2_h_parts(
+                    node, target)
+                key = (h_val, priority, distance, target, condition_cost)
+                if best is None or key < best:
+                    best = key
+            return best
+
+        start_h, _, _, _, _ = best_h_from(start)
+        open_set = []
+        heapq.heappush(
+            open_set,
+            (start_h, start_h, 0, next(self.counter), start)
+        )
+        came_from = {}
+        g_score = {start: 0}
+        closed = set()
+        explored_order = []
+        max_frontier = 1
+
+        while open_set:
+            _, _, _, _, current = heapq.heappop(open_set)
+            current_g = g_score[current]
+            if current in closed:
+                continue
+            closed.add(current)
+            explored_order.append(current)
+
+            if current in goals:
+                target = current
+                path = self._reconstruct(came_from, current)
+                priority, distance, condition_cost, h_start = self._mode2_h_parts(
+                    start, target)
+                g_val = len(path)
+                f_val = g_val + h_start
+                fgh = (f_val, g_val, h_start)
+                stats = {
+                    "Algorithm": self.algorithm_name,
+                    "Target": f"{target}",
+                    "Path length": len(path),
+                    "Nodes explored": len(explored_order),
+                    "Frontier max": max_frontier,
+                    "Search style": "BFS + priority queue",
+                    "Parent rule": "came_from reconstructs each step",
+                    "f(n)": f"{f_val}",
+                    "g(n)": f"{g_val}",
+                    "h(n)": f"{h_start}",
+                    "h distance": f"{distance}",
+                    "h condition": (
+                        f"2 * {priority} = {condition_cost} "
+                        f"({self._condition_for_tile(target)})"),
+                    "h formula": "Manhattan + 2 * condition",
+                    "g formula": "+1 per move",
+                }
+                if self.algorithm_name == "Greedy":
+                    stats.pop("f(n)", None)
+                    stats.pop("g(n)", None)
+                    stats["Priority"] = "min h(n)"
+                elif self.algorithm_name == "IDSA":
+                    stats["Note"] = "IDSA visualized with priority frontier"
+                return target, path, set(explored_order), fgh, stats
+
+            for next_tile in self._neighbors(current, blocked):
+                tentative_g = current_g + 1
+                if tentative_g >= g_score.get(next_tile, float("inf")):
+                    continue
+                came_from[next_tile] = current
+                g_score[next_tile] = tentative_g
+                h_val, condition_priority, distance, _, _ = best_h_from(next_tile)
+                if self.algorithm_name == "Greedy":
+                    frontier_priority = h_val
+                else:
+                    frontier_priority = tentative_g + h_val
+                heapq.heappush(
+                    open_set,
+                    (
+                        frontier_priority,
+                        h_val,
+                        -tentative_g,
+                        next(self.counter),
+                        next_tile,
+                    )
+                )
+                max_frontier = max(max_frontier, len(open_set))
+
+        return None, [], set(explored_order), (0, 0, 0), {
+            "Algorithm": self.algorithm_name,
+            "Path length": 0,
+            "Nodes explored": len(explored_order),
+            "Search style": "BFS + priority queue",
+            "Result": "No reachable target",
+        }
+
+    def _mode2_plan_one_leg(self, parent, target):
+        """Plan one Mode-2 leg from parent to target.
+
+        The search algorithm still owns the path.  The only change is that
+        h(n) is evaluated with the expanded node n and this leg's target:
+
+            Greedy priority = h(n)
+            A*/IDA* priority = g(n) + h(n)
+            g(n) = +1 for every move
+            h(n) = Manhattan(n,target) + 2 * condition(target)
+        """
+        blocked = self._blocked_tiles()
+        blocked.discard(parent)
+        blocked.discard(target)
+        return algorithms.find_path_by_algorithm(
+            self.algorithm_name, parent, target, blocked,
+            self._neighbors, self._search_heuristic,
+            self.counter, self._step_cost)
+
+    def _mode2_set_leg_runtime_stats(
+            self, parent, target, path, explored, fgh, sort_key,
+            step_stats=None):
+        g_leg = len(path)
+        self.mode2_current_leg_g = g_leg
+        self.mode2_current_leg_start = parent
+        self.mode2_current_leg_target = target
+        self.mode2_current_step_index = 0
+        if step_stats is None:
+            self.mode2_current_step_stats = self._mode2_build_step_stats(
+                parent, target, path, len(explored), sort_key)
+        else:
+            self.mode2_current_step_stats = [dict(stats) for stats in step_stats]
+        self.astar_current_fgh = fgh
+        self.astar_explored = set(explored)
+        self._mode2_apply_precomputed_step_stats(0)
+
+    def _mode2_build_step_stats(
+            self, parent, target, path, explored_count, sort_key,
+            completed_g=None):
+        if completed_g is None:
+            completed_g = self.mode2_total_g
+        nodes = [parent] + list(path)
+        result = []
+        priority, distance, condition_cost, h = self._mode2_h_parts(
+            parent, target)
+        g_val = completed_g + len(path)
+        f_val = g_val + h
+        for step_index, node in enumerate(nodes):
+            next_node = nodes[step_index + 1] if step_index + 1 < len(nodes) else target
+            stats = {
+                "Algorithm": self.algorithm_name,
+                "Target": f"{target}",
+                "f(n)": f"{f_val}",
+                "g(n)": f"{g_val}",
+                "h(n)": f"{h}",
+                "h distance": f"{distance}",
+                "h condition": (
+                    f"2 * {priority} = {condition_cost} "
+                    f"({self._condition_for_tile(target)})"),
+                "h formula": "Manhattan + 2 * condition",
+                "Current node": f"{node}",
+                "Next node": f"{next_node}",
+                "Path length": len(path),
+                "Path remaining": max(0, len(path) - step_index),
+                "Nodes explored": explored_count,
+                "g completed": completed_g,
+                "g leg": len(path),
+                "Target rule": "min score from current parent node",
+                "Selected target": f"{target}",
+                "Parent node": f"{parent}",
+                "score(target)": sort_key[0],
+                "Tie-break": "score, condition, Manhattan, tile",
+            }
+            if self.algorithm_name == "Greedy":
+                stats.pop("f(n)", None)
+                stats.pop("g(n)", None)
+                stats["Priority"] = "min h(n)"
+            result.append(stats)
+        return result
+
+    def _mode2_apply_precomputed_step_stats(self, step_index):
+        if not self.mode2_current_step_stats:
+            return
+        step_index = max(
+            0, min(step_index, len(self.mode2_current_step_stats) - 1))
+        self.mode2_current_step_index = step_index
+        stats = dict(self.mode2_current_step_stats[step_index])
+        f_val = stats.get("f(n)")
+        g_val = stats.get("g(n)")
+        h_val = stats.get("h(n)")
+        if f_val is not None and g_val is not None and h_val is not None:
+            self.astar_current_fgh = (int(f_val), int(g_val), int(h_val))
+        self.stats = stats
+
+    def _build_mode2_frontier_full_plan(self, remaining, start):
+        """Build the whole Mode-2 route with a priority BFS frontier.
+
+        The robot executes the saved route later.  This planner is the only
+        place where Mode 2 decides target order and path legs.
+        """
+        self._clear_full_garden_plan()
+
+        remaining_set = {
+            tile for tile in remaining
+            if tile in self.farm_tiles
+            and tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        }
+        if not remaining_set:
+            return []
+
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        for tile in remaining_set:
+            blocked.discard(tile)
+
+        plan = []
+        planned = set()
+        full_walk_path = []
+        leg_paths = {}
+        leg_stats = {}
+        explored_all = set()
+        frontier = []
+        queued = set()
+        current = start
+        total_g = self.mode2_total_g
+        last_fgh = (0, 0, 0)
+        max_frontier = 0
+
+        def nearest_remaining_distance(candidate):
+            open_targets = remaining_set - planned
+            if not open_targets:
+                return 0
+            return min(self._heuristic(candidate, target)
+                       for target in open_targets)
+
+        def push_frontier_neighbors(center):
+            nonlocal max_frontier
+            x, y = center
+            for candidate in (
+                    (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if candidate not in remaining_set:
+                    continue
+                if candidate in planned or candidate in queued:
+                    continue
+                if candidate in blocked:
+                    continue
+                if candidate not in self.farm_tiles:
+                    continue
+
+                condition_priority = self._mode2_condition_h(candidate)
+                g_val = total_g + len(full_walk_path) + 1
+                h_val = (
+                    nearest_remaining_distance(candidate)
+                    + 2 * condition_priority)
+                if self.algorithm_name == "Greedy":
+                    heapq.heappush(
+                        frontier,
+                        (
+                            h_val,
+                            condition_priority,
+                            candidate,
+                            next(self.counter),
+                            center,
+                        )
+                    )
+                else:
+                    priority = g_val + h_val
+                    heapq.heappush(
+                        frontier,
+                        (
+                            priority,
+                            h_val,
+                            -g_val,
+                            condition_priority,
+                            candidate,
+                            next(self.counter),
+                            center,
+                        )
+                    )
+                queued.add(candidate)
+            max_frontier = max(max_frontier, len(frontier))
+
+        def push_next_frontier(center):
+            push_frontier_neighbors(center)
+
+        def save_leg(parent, target, path, explored):
+            nonlocal current, last_fgh
+            if path and not self._path_is_contiguous(parent, path):
+                return False
+
+            completed_g = total_g + len(full_walk_path)
+            priority, distance, _, h_before = self._mode2_h_parts(
+                parent, target)
+            g_leg = len(path)
+            fgh = (completed_g + g_leg + h_before,
+                   completed_g + g_leg,
+                   h_before)
+            sort_key = (h_before, priority, distance, target)
+            step_stats = self._mode2_build_step_stats(
+                parent, target, path, len(explored), sort_key, completed_g)
+
+            plan.append(target)
+            planned.add(target)
+            full_walk_path.extend(path)
+            leg_paths[target] = (parent, list(path), fgh, h_before, g_leg)
+            leg_stats[target] = (
+                parent, list(path), set(explored), fgh, sort_key, step_stats)
+            explored_all.update(explored)
+            last_fgh = fgh
+            current = target
+            return True
+
+        while len(planned) < len(remaining_set):
+            if current in remaining_set and current not in planned:
+                if not save_leg(current, current, [], {current}):
+                    break
+                push_next_frontier(current)
+                continue
+
+            if not frontier:
+                target, path, explored, _, _ = (
+                    self._mode2_priority_path_to_any_goal(
+                        current, remaining_set - planned))
+                if target is None:
+                    break
+                if not save_leg(current, target, path, explored):
+                    break
+                push_next_frontier(target)
+                continue
+
+            if self.algorithm_name == "Greedy":
+                _, _, target, _, _ = heapq.heappop(frontier)
+            else:
+                _, _, _, _, target, _, _ = heapq.heappop(frontier)
+            queued.discard(target)
+            if target in planned or target not in remaining_set:
+                continue
+            if target in blocked or target not in self.farm_tiles:
+                continue
+
+            if self._is_adjacent_tile(current, target):
+                path, explored = [target], {current, target}
+            else:
+                path, explored, _, _ = self._mode2_plan_one_leg(
+                    current, target)
+                if not path and current != target:
+                    continue
+
+            if not save_leg(current, target, path, explored):
+                continue
+            push_next_frontier(target)
+
+        self.full_garden_plan = list(plan)
+        self.full_mode2_walk_path = list(full_walk_path)
+        self.full_garden_leg_paths = leg_paths
+        self.full_garden_leg_stats = leg_stats
+        self.full_garden_index = 0
+        self.full_garden_stats = {
+            "Algorithm": self.algorithm_name,
+            "Planning mode": "Mode 2 frontier full traversal",
+            "Plan targets": len(plan),
+            "Plan travel g": len(full_walk_path),
+            "Walk path length": len(full_walk_path),
+            "Frontier max": max_frontier,
+            "Frontier rule": "push only 4-neighbor farm tiles",
+            "Priority": (
+                "h(n)" if self.algorithm_name == "Greedy"
+                else "f(n) = g(n) + h(n)"),
+            "Tie-break": (
+                "h, condition, tile"
+                if self.algorithm_name == "Greedy"
+                else "priority, h, -g, condition, tile"),
+            "h formula": "Manhattan(candidate, nearest remaining) + 2 * condition(candidate)",
+            "g formula": "planned real steps + 1",
+            "Path source": "precomputed full walk path",
+        }
+        self.astar_current_fgh = last_fgh
+        self.astar_explored = set(explored_all)
+        self._apply_full_plan_stats()
+        return self.full_garden_plan
 
     def _build_full_garden_plan(self, remaining, start):
         self._clear_full_garden_plan()
@@ -3879,7 +4491,9 @@ class FarmAIController:
                     continue
                 condition = self._condition_for_tile(tile)
                 asset_key = self._condition_asset(condition)
-                self._blit_tile_asset(surface, offset, tile, asset_key, y_offset=-6)
+                if asset_key is not None:
+                    self._blit_tile_asset(
+                        surface, offset, tile, asset_key, y_offset=-6)
                 if condition in ("pest", "disease"):
                     self._blit_tile_asset(surface, offset, tile, "worm", y_offset=2)
                 if self.mode == 6 and condition == "rare":
@@ -3957,8 +4571,15 @@ class FarmAIController:
                 world = self._tile_center(tile)
                 sx = int(world.x - offset.x)
                 sy = int(world.y - offset.y)
-                # TĂ´ mĂ u theo score
-                ratio = max(0, min(1, (score + 50) / 100))
+                # To mau theo score moi cua Mode 3: thap = uu tien cao, cao = it uu tien hon
+                visible_scores = [
+                    v for t, v in self.hc_scores.items()
+                    if t not in self.done_tiles
+                ]
+                min_score = min(visible_scores) if visible_scores else 0
+                max_score = max(visible_scores) if visible_scores else 1
+                ratio = (score - min_score) / max(1, max_score - min_score)
+                ratio = max(0, min(1, ratio))
                 r = int(255 * (1 - ratio))
                 g = int(255 * ratio)
                 s = pygame.Surface((TILE_SIZE - 4, TILE_SIZE - 4),
@@ -4407,8 +5028,9 @@ class FarmAIController:
                       x, y, Colors.TEXT_WARNING, font_small)
 
         if self.full_garden_plan:
+            plan_label = "ROUTE PLAN" if self.mode == 2 else "PLAN"
             y = draw_text(
-                f"PLAN: {len(self.full_garden_plan)} target | "
+                f"{plan_label}: {len(self.full_garden_plan)} target | "
                 f"dang xu ly {min(self.full_garden_index + 1, len(self.full_garden_plan))}/"
                 f"{len(self.full_garden_plan)}",
                 x, y, Colors.TEXT_STAT, font_small)
