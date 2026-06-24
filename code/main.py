@@ -38,7 +38,7 @@ class Game:
             3: self.level.selected_algorithms.get(3, "Hill Climbing"),
             4: self.level.selected_algorithms.get(4, "Online A*"),
             5: self.level.selected_algorithms.get(5, "Backtrack"),
-            6: "Minimax",
+            6: self.level.selected_algorithms.get(6, "Minimax"),
         }
         area_names = {
             1: "Khu 1 - Vuon truoc trai",
@@ -92,14 +92,14 @@ class Game:
 
         if pygame.K_1 <= event.key <= pygame.K_6:
             self.start_day(event.key - pygame.K_0)
-        elif event.key == pygame.K_q and self.mode in (1, 2, 3, 4, 5):
+        elif event.key == pygame.K_q and self.mode in (1, 2, 3, 4, 5, 6):
             self.level.cycle_algorithm(-1)
-        elif event.key == pygame.K_e and self.mode in (1, 2, 3, 4, 5):
+        elif event.key == pygame.K_e and self.mode in (1, 2, 3, 4, 5, 6):
             self.level.cycle_algorithm(1)
-        elif event.key == pygame.K_e:
+        elif event.key == pygame.K_RETURN and self.mode == 6:
             self.show_ending()
 
-    def update_and_draw(self, dt):
+    def update_and_draw(self, dt): 
         if self.state == "intro":
             self.intro_screen.update(dt)
             self.intro_screen.draw()
@@ -142,4 +142,3 @@ class Game:
 if __name__ == "__main__":
     game = Game()
     game.run()
-

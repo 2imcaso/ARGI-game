@@ -111,8 +111,8 @@ class Level:
 		},
 		# Day 3 - Local Search: east orchard 5x5, no obstacles.
 		3: {
-			'area_name': 'Khu 3 - Vuon cay phia dong',
-			'spawn_tile': (34, 24),
+			'area_name': 'Khu 3 - Vuon cay Local Search 5x5',
+			'spawn_tile': (34, 22),
 			'obstacles': [],
 			'tiles': [
 				(29,22),(30,22),(31,22),(32,22),(33,22),
@@ -123,8 +123,8 @@ class Level:
 			],
 			'decorations': [
 				('puddle', 28, 24),
-				('flower', 35, 23),
-				('stake', 28, 21), ('stake', 35, 21),
+				('flower', 34, 24),
+				('stake', 28, 21), ('stake', 34, 21),
 			],
 		},
 		# Day 4 - Online Search: hidden walls force discovery and backtracking.
@@ -180,7 +180,8 @@ class Level:
 				(30,31),(31,31),(32,31),(33,31),(34,31),
 				(30,32),(31,32),(32,32),(33,32),(34,32),
 			],
-			'enemy_spawn': (38, 31),
+			# Doi xung voi AGRI-1: ca hai cach mep vuon dung 1 tile.
+			'enemy_spawn': (35, 31),
 			'decorations': [
 				('crow', 37, 28), ('crow_damage', 36, 32),
 				('sign', 29, 28), ('stump', 38, 32),
@@ -219,6 +220,7 @@ class Level:
 			3: algorithms.LOCAL_ALGORITHMS[1],
 			4: algorithms.ONLINE_ALGORITHMS[0],
 			5: algorithms.CSP_ALGORITHMS[0],
+			6: algorithms.ADVERSARIAL_ALGORITHMS[0],
 		}
 
 		# Khá»Ÿi táº¡o mode 1
@@ -780,7 +782,7 @@ class Level:
 			3: self.selected_algorithms.get(3, 'Hill Climbing'),
 			4: self.selected_algorithms.get(4, 'Online A*'),
 			5: self.selected_algorithms.get(5, 'Backtrack'),
-			6: 'Minimax'
+			6: self.selected_algorithms.get(6, 'Minimax')
 		}
 		area_name = self.MODE_CONFIGS[mode].get('area_name', f'Khu {mode}')
 		pygame.display.set_caption(
@@ -788,7 +790,7 @@ class Level:
 			f'{mode_names.get(mode, "")}')
 
 	def cycle_algorithm(self, step=1):
-		if self.current_mode not in (1, 2, 3, 4, 5) or not hasattr(self, 'ai'):
+		if self.current_mode not in (1, 2, 3, 4, 5, 6) or not hasattr(self, 'ai'):
 			return None
 		name = self.ai.cycle_algorithm(step)
 		self.selected_algorithms[self.current_mode] = name
@@ -804,6 +806,10 @@ class Level:
 		action = self.ai.handle_panel_click(pos)
 		if action == 'reset':
 			self._init_mode(self.current_mode)
+			return True
+		if action == 'algorithm':
+			# Luu thuat toan vua chon de RESET dung lai
+			self.selected_algorithms[self.current_mode] = self.ai.algorithm_name
 			return True
 		return action is not None
 
@@ -873,7 +879,12 @@ class Level:
 		# weather
 		self.overlay.display()
 		if not self.overview_active:
-			self.ai.draw(self.display_surface, self.all_sprites.offset)
+			# draw_fg ve TOAN BO overlay AI (task markers, fog, CSP
+			# highlight...) CONG VOI speech bubble/"BACKTRACK!"/panel.
+			# Phai goi SAU customize_draw (sprites) vi cac asset minh hoa
+			# o dat duoc blit truc tiep len surface, khong phai sprite -
+			# neu ve truoc se bi ground/soil sprite cua level de len che mat.
+			self.ai.draw_fg(self.display_surface, self.all_sprites.offset)
 
 		# rain
 		if self.raining and not self.shop_active:
@@ -912,7 +923,10 @@ class CameraGroup(pygame.sprite.Group):
 		self.zoom = 1.0
 
 
-	def customize_draw(self, player):
+	def _update_camera(self, player):
+		"""Tinh self.offset/self.zoom dua tren player hoac overview_rect.
+		Tach rieng khoi customize_draw de co the goi TRUOC khi ve map
+		overlays (draw_bg), tranh dung offset cua frame truoc."""
 		if self.overview_rect:
 			self.zoom = min(
 				SCREEN_WIDTH / self.overview_rect.width,
@@ -925,6 +939,9 @@ class CameraGroup(pygame.sprite.Group):
 			self.zoom = 1.0
 			self.offset.x = player.rect.centerx - SCREEN_WIDTH / 2
 			self.offset.y = player.rect.centery - SCREEN_HEIGHT / 2
+
+	def customize_draw(self, player):
+		self._update_camera(player)
 
 		for layer in LAYERS.values():
 			for sprite in sorted(self.sprites(), key = lambda sprite: sprite.rect.centery):
@@ -942,11 +959,3 @@ class CameraGroup(pygame.sprite.Group):
 						image = pygame.transform.smoothscale(sprite.image, (width, height))
 						draw_rect = image.get_rect(center=screen_center)
 						self.display_surface.blit(image, draw_rect)
-
-
-
-
-
-
-
-

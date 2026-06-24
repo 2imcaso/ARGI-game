@@ -97,14 +97,14 @@ STORY_DATA = {
     6: {
         "day": "NGAY 6 - KHU 6",
         "title": "Hang Cay Can Bao Ve",
-        "algo": "Minimax / Alpha-Beta - Adversarial Search",
+        "algo": "Minimax / Alpha-Beta / Expectimax / Expectiminimax",
         "color": MODE_COLORS[6],
         "lines": [
             "Ngay cuoi, AGRI-1 toi hang cay phia dong nam.",
             "Khi vuon gan hoi sinh, ke pha hoai da xuat hien.",
-            "AGRI-1 phai bao ve cay truoc doi thu thong minh.",
+            "Cay khoe, cay kho, cay sau benh va cay quy co muc uu tien khac nhau.",
             "",
-            "Moi hanh dong phai tinh den phan ung tot nhat cua doi thu.",
+            "Gia tri va rui ro cua tung cay quyet dinh nuoc di cua AI.",
             "\"Doi mat voi ke thu thong minh, va dung de thua.\"",
         ],
         "hint": "Nhan SPACE de vao Khu 6",

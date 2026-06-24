@@ -16,6 +16,12 @@ ONLINE_ALGORITHMS = (
     "AND-OR Search",
 )
 CSP_ALGORITHMS = ("Backtrack", "Fwd Check", "AC-3", "Min Conflict")
+ADVERSARIAL_ALGORITHMS = (
+    "Minimax",
+    "Alpha-Beta",
+    "Expectimax",
+    "Expectiminimax",
+)
 
 ALGORITHM_GROUPS = {
     1: UNINFORMED_ALGORITHMS,
@@ -23,6 +29,7 @@ ALGORITHM_GROUPS = {
     3: LOCAL_ALGORITHMS,
     4: ONLINE_ALGORITHMS,
     5: CSP_ALGORITHMS,
+    6: ADVERSARIAL_ALGORITHMS,
 }
 
 ALGORITHM_GROUP_NAMES = {
@@ -31,6 +38,7 @@ ALGORITHM_GROUP_NAMES = {
     3: "Local Search",
     4: "Online Search",
     5: "Constraint Satisfaction",
+    6: "Adversarial Search",
 }
 
 
@@ -221,7 +229,7 @@ def ucs(start, goal, blocked, neighbors, counter, step_cost=unit_step_cost):
 def astar(start, goal, blocked, neighbors, heuristic, counter,
           step_cost=unit_step_cost):
     open_set = []
-    heapq.heappush(open_set, (0, next(counter), start))
+    heapq.heappush(open_set, (heuristic(start, goal), next(counter), start))
     came_from = {}
     g_score = {start: 0}
     explored = set()
@@ -393,8 +401,9 @@ def find_path_by_algorithm(algorithm, start, goal, blocked, neighbors,
     if algorithm == "IDSA":
         path, explored, stats = idastar(
             start, goal, blocked, neighbors, heuristic)
+        g = len(path)
         h = heuristic(start, goal)
-        return path, explored, (len(path) + h, len(path), h), stats
+        return path, explored, (g + h, g, h), stats
 
     path, explored, fgh, stats = astar(
         start, goal, blocked, neighbors, heuristic, counter, step_cost)
@@ -831,8 +840,40 @@ def build_full_garden_plan_by_algorithm(algorithm, start, goals, blocked,
     return plan, explored, fgh, stats
 
 
-def hill_score(tile, start, dryness, heuristic):
-    return float(dryness.get(tile, 50))
+def hill_score(tile, start, dryness, heuristic, turn_penalty=0):
+    """Mode 3 local-search score.
+
+    New Mode 3 does NOT rank by random dryness anymore.
+    It ranks by tree condition first, then Manhattan distance:
+
+        dry      = 40
+        critical = 30
+        pest     = 20
+        dead     = 10
+
+        score = type_score + Manhattan(start, tile) - turn_penalty
+
+    The ``dryness`` argument is kept for compatibility with old calls, but it
+    may now also be a tile -> condition map such as self.tile_conditions.
+    """
+    type_scores = {
+        "dry": 40,
+        "critical": 30,
+        "pest": 20,
+        "dead": 10,
+    }
+    value = dryness.get(tile, "dry")
+    if isinstance(value, str):
+        base_score = type_scores.get(value, 0)
+    else:
+        # Backward-compatible fallback for old callers that still pass a
+        # numeric sensor map. Mode 3 controller should pass tile_conditions.
+        base_score = float(value)
+
+    score = base_score + heuristic(start, tile)
+    if tile != start:
+        score -= turn_penalty
+    return score
 
 
 def hill_climbing_choose(remaining, start, dryness, heuristic,
@@ -858,16 +899,19 @@ def hill_climbing_choose(remaining, start, dryness, heuristic,
             if abs(tile[0] - cx) + abs(tile[1] - cy) == 1
             and tile != current_best
         ]
-        better_neighbors = [
+        lower_neighbors = [
             tile for tile in local_neighbors
-            if scores.get(tile, 0) > current_score
+            if scores.get(tile, 0) < current_score
         ]
-        if not better_neighbors:
+        if not lower_neighbors:
             break
 
-        best_neighbor = max(
-            better_neighbors,
-            key=lambda tile: (scores.get(tile, 0), -heuristic(start, tile), tile))
+        # Test variant: downhill move.
+        # lower_neighbors chi gom cac o co score nho hon current_score.
+        # min o day chon o co score thap nhat trong cac lang gieng thap hon.
+        best_neighbor = min(
+            lower_neighbors,
+            key=lambda tile: (scores.get(tile, 0), heuristic(start, tile), tile))
         best_neighbor_score = scores.get(best_neighbor, 0)
         current_best = best_neighbor
         current_score = best_neighbor_score
@@ -905,10 +949,13 @@ def _plan_value(plan, start, dryness, heuristic):
 
 
 def _plan_objective(plan, start, dryness, heuristic, scores):
+    # Downhill variant: lower score = drier = higher urgency.
+    # Negate so that minimising plan cost also puts the lowest-score tile first.
     if not plan:
-        return float("-inf")
+        return float("inf")
     first_target_score = scores.get(plan[0], 0)
-    return first_target_score * 1000 + _plan_value(
+    # Subtract first_target_score so lower score gives a lower (better) objective.
+    return first_target_score * 1000 - _plan_value(
         plan, start, dryness, heuristic)
 
 
@@ -982,14 +1029,14 @@ def _plan_hill_climb(initial_plan, start, dryness, heuristic, scores,
         successors = _plan_successors(current)
         if not successors:
             break
-        best_neighbor = max(
+        best_neighbor = min(
             successors,
             key=lambda plan: (_plan_objective(
                                   plan, start, dryness, heuristic, scores),
                               tuple(plan)))
         best_value = _plan_objective(
             best_neighbor, start, dryness, heuristic, scores)
-        if best_value <= current_value:
+        if best_value >= current_value:
             break
         current = best_neighbor
         current_value = best_value
@@ -1039,11 +1086,11 @@ def plan_restart_hill_choose(remaining, start, dryness, heuristic,
         starts.append(plan)
 
     best_plan = None
-    best_value = float("-inf")
+    best_value = float("inf")
     for plan in starts[:max(1, restarts)]:
         candidate_plan, candidate_value, _ = _plan_hill_climb(
             plan, start, dryness, heuristic, scores)
-        if candidate_value > best_value:
+        if candidate_value < best_value:
             best_value = candidate_value
             best_plan = candidate_plan
 
@@ -1067,7 +1114,7 @@ def local_beam_choose(remaining, start, dryness, heuristic,
         _nearest_neighbor_plan(remaining_list, start, heuristic),
         sorted(
             remaining_list,
-            key=lambda tile: (-dryness.get(tile, 50),
+            key=lambda tile: (dryness.get(tile, 50),   # ascending: lowest first
                               heuristic(start, tile), tile)),
     ]
     while len(starts) < beam_size:
@@ -1092,7 +1139,7 @@ def local_beam_choose(remaining, start, dryness, heuristic,
         }
         next_beam = sorted(
             unique_children.values(),
-            key=lambda plan: (-_plan_objective(
+            key=lambda plan: (_plan_objective(
                                   plan, start, dryness, heuristic, scores),
                               tuple(plan)))[:beam_size]
         if {tuple(plan) for plan in next_beam} == {tuple(plan) for plan in beam}:
@@ -1101,7 +1148,7 @@ def local_beam_choose(remaining, start, dryness, heuristic,
 
     best_plan = min(
         beam,
-        key=lambda plan: (-_plan_objective(
+        key=lambda plan: (_plan_objective(
                               plan, start, dryness, heuristic, scores),
                           tuple(plan)))
     return _plan_result_stats(
@@ -1165,123 +1212,134 @@ def simulated_annealing_choose(remaining, start, dryness, heuristic,
 
 def build_local_search_full_plan(algorithm, remaining, start, dryness,
                                  heuristic):
-    """Optimize a full target order for the local-search family."""
-    remaining = list(remaining)
-    scores = _plan_scores(remaining, start, dryness, heuristic)
-    if not remaining:
+    """Build a full plan with the current local-neighbor Mode 3 semantics."""
+    remaining_set = set(remaining)
+    scores = _plan_scores(remaining_set, start, dryness, heuristic)
+    if not remaining_set:
         return [], scores, {
             "Local algorithm": algorithm,
-            "Planning mode": "Full garden search",
+            "Planning mode": "Full garden local-neighbor search",
             "Plan targets": 0,
         }
 
-    if algorithm == "Hill Climbing":
-        initial = _nearest_neighbor_plan(remaining, start, heuristic)
-        plan, _, steps = _plan_hill_climb(
-            initial, start, dryness, heuristic, scores)
-        extra = {"Hill steps": steps}
-    elif algorithm == "Restart Hill":
-        starts = [_nearest_neighbor_plan(remaining, start, heuristic)]
-        starts.append(sorted(
-            remaining,
-            key=lambda tile: (-dryness.get(tile, 50),
-                              heuristic(start, tile), tile)))
-        while len(starts) < 8:
-            candidate = list(remaining)
-            random.shuffle(candidate)
-            starts.append(candidate)
-        plan = starts[0]
-        best_value = float("-inf")
-        for candidate in starts:
-            candidate_plan, candidate_value, _ = _plan_hill_climb(
-                candidate, start, dryness, heuristic, scores)
-            if candidate_value > best_value:
-                best_value = candidate_value
-                plan = candidate_plan
-        extra = {"Restarts": len(starts)}
-    elif algorithm == "Local Beam":
-        _, _, _, stats = local_beam_choose(
-            remaining, start, dryness, heuristic)
-        # Rebuild the same beam result here so the caller receives the order.
-        beam_width = 3
-        beam_size = max(1, min(beam_width, len(remaining)))
-        beam = [
-            _nearest_neighbor_plan(remaining, start, heuristic),
-            sorted(
-                remaining,
-                key=lambda tile: (-dryness.get(tile, 50),
-                                  heuristic(start, tile), tile)),
-        ][:beam_size]
-        generated = 0
-        for _ in range(20):
-            children = []
-            for candidate in beam:
-                children.extend(_plan_successors(candidate))
-            if not children:
+    current = start
+    plan = []
+    local_moves = 0
+    restarts = 0
+    generated = 0
+    accepted_worse = 0
+    temperature = 80.0
+    stop_rule = "All targets planned"
+
+    def adjacent_targets(center):
+        return [
+            tile for tile in remaining_set
+            if heuristic(center, tile) == 1
+        ]
+
+    def random_restart_target():
+        return random.choice(sorted(remaining_set))
+
+    while remaining_set:
+        neighbors = adjacent_targets(current)
+        if not neighbors:
+            if algorithm in ("Hill Climbing", "Annealing", "Local Beam"):
+                stop_rule = "No adjacent target"
                 break
-            generated += len(children)
-            unique_children = {tuple(child): child for child in children}
-            next_beam = sorted(
-                unique_children.values(),
-                key=lambda candidate: (
-                    -_plan_objective(
-                        candidate, start, dryness, heuristic, scores),
-                    tuple(candidate)))[:beam_size]
-            if {tuple(candidate) for candidate in next_beam} == {
-                    tuple(candidate) for candidate in beam}:
+            target = random_restart_target()
+            if plan:
+                restarts += 1
+        elif algorithm == "Hill Climbing":
+            current_score = (
+                scores.get(current, hill_score(current, current, dryness, heuristic))
+                if current in dryness else scores.get(neighbors[0], 0)
+            )
+            better = [
+                tile for tile in neighbors
+                if scores.get(tile, 0) < current_score
+            ]
+            if not better:
+                stop_rule = "No lower adjacent target"
                 break
-            beam = next_beam
-        plan = min(
-            beam,
-            key=lambda candidate: (
-                -_plan_objective(
-                    candidate, start, dryness, heuristic, scores),
-                tuple(candidate)))
-        extra = {
-            "Beam width": stats.get("Beam width", beam_width),
-            "Generated": generated,
-        }
-    elif algorithm == "Annealing":
-        _, _, _, stats = simulated_annealing_choose(
-            remaining, start, dryness, heuristic)
-        # Use a second annealing pass that exposes the optimized permutation.
-        current = list(remaining)
-        random.shuffle(current)
-        temperature = 80.0
-        best = list(current)
-        best_value = _plan_objective(best, start, dryness, heuristic, scores)
-        current_value = best_value
-        accepted_worse = 0
-        steps = 0
-        while temperature > 0.1 and steps < 140 and len(current) > 1:
-            candidate = list(current)
-            left, right = random.sample(range(len(candidate)), 2)
-            candidate[left], candidate[right] = candidate[right], candidate[left]
-            candidate_value = _plan_objective(
-                candidate, start, dryness, heuristic, scores)
-            delta = candidate_value - current_value
-            if delta >= 0 or random.random() < math.exp(delta / temperature):
-                if delta < 0:
+            target = min(
+                better,
+                key=lambda tile: (scores.get(tile, 0), heuristic(current, tile), tile))
+            local_moves += 1
+        elif algorithm == "Restart Hill":
+            target = min(
+                neighbors,
+                key=lambda tile: (scores.get(tile, 0), heuristic(current, tile), tile))
+            local_moves += 1
+        elif algorithm == "Local Beam":
+            beam_width = 3
+            beam = sorted(
+                neighbors,
+                key=lambda tile: (scores.get(tile, 0), tile)
+            )[:beam_width]
+            candidates = set(beam)
+            for tile in beam:
+                candidates.update(adjacent_targets(tile))
+            generated += len(candidates)
+            target = min(
+                candidates,
+                key=lambda tile: (scores.get(tile, 0), heuristic(current, tile), tile))
+            if target not in neighbors:
+                target = min(
+                    neighbors,
+                    key=lambda tile: (
+                        heuristic(tile, target),
+                        scores.get(tile, 0),
+                        tile))
+            local_moves += 1
+        elif algorithm == "Annealing":
+            current_score = (
+                scores.get(current, hill_score(current, current, dryness, heuristic))
+                if current in dryness else scores.get(neighbors[0], 0)
+            )
+            ordered = list(neighbors)
+            random.shuffle(ordered)
+            target = ordered[0]
+            for candidate in ordered:
+                delta = scores.get(candidate, 0) - current_score
+                if delta <= 0:
+                    target = candidate
+                    break
+                probability = math.exp(-delta / max(temperature, 0.001))
+                if random.random() < probability:
+                    target = candidate
                     accepted_worse += 1
-                current = candidate
-                current_value = candidate_value
-                if candidate_value > best_value:
-                    best = list(candidate)
-                    best_value = candidate_value
-            temperature *= 0.95
-            steps += 1
-        plan = best
-        extra = {
-            "Anneal steps": stats.get("Anneal steps", steps),
+                    break
+            temperature = max(0.1, temperature * 0.90)
+            local_moves += 1
+        else:
+            target = min(
+                neighbors,
+                key=lambda tile: (scores.get(tile, 0), heuristic(current, tile), tile))
+            local_moves += 1
+
+        plan.append(target)
+        remaining_set.remove(target)
+        current = target
+
+    extra = {
+        "Local rule": "Adjacent targets first",
+        "Local moves": local_moves,
+        "Restarts": restarts,
+        "Stop rule": stop_rule,
+    }
+    if algorithm == "Local Beam":
+        extra.update({"Beam width": 3, "Generated": generated})
+    if algorithm == "Annealing":
+        extra.update({
+            "Anneal temp": f"{temperature:.1f}",
             "Accepted worse": accepted_worse,
-        }
-    else:
-        plan = _nearest_neighbor_plan(remaining, start, heuristic)
-        extra = {"Plan rule": "Nearest neighbor fallback"}
+        })
+    if algorithm == "Restart Hill":
+        extra["Restart rule"] = "Random remaining target"
 
     _, target_score, _, stats = _plan_result_stats(
         algorithm, plan, start, dryness, heuristic, scores, extra)
-    stats["Planning mode"] = "Full garden search"
+    stats["Planning mode"] = "Full garden local-neighbor search"
     stats["Plan targets"] = len(plan)
     stats["Current score"] = f"{target_score:.0f}"
     return plan, scores, stats
@@ -1304,23 +1362,24 @@ def local_search_choose(algorithm, remaining, start, dryness, heuristic):
             "Local algorithm": "Hill Climbing",
             "Current score": f"{current_score:.0f}",
             "Target": f"{current}",
-            "Dryness": f"{dryness.get(current, 0)}%",
+            "Target type": f"{dryness.get(current, 'unknown')}",
+            "Score formula": "type + Manhattan",
             "Hill steps": hill_steps,
             "Trace": trace,
-            "Stop rule": "No better neighbor",
+            "Stop rule": "No lower neighbor",
         }
     if algorithm == "Annealing":
         return simulated_annealing_choose(remaining, start, dryness, heuristic)
     if algorithm == "Restart Hill":
         best_tile = None
-        best_score = float("-inf")
+        best_score = float("inf")   # downhill: want the LOWEST score found
         best_trace = []
         starts = random.sample(list(remaining), min(len(remaining), 8))
         for restart_tile in starts:
             candidate, candidate_score, _, _, trace = hill_climbing_choose(
                 remaining, start, dryness, heuristic,
                 initial_tile=restart_tile)
-            if candidate_score > best_score:
+            if candidate_score < best_score:  # lower = drier = higher priority
                 best_tile = candidate
                 best_score = candidate_score
                 best_trace = trace
@@ -1331,7 +1390,7 @@ def local_search_choose(algorithm, remaining, start, dryness, heuristic):
             "Dryness": f"{dryness.get(best_tile, 0)}%",
             "Restarts": len(starts),
             "Trace": best_trace,
-            "Stop rule": "No better neighbor",
+            "Stop rule": "No lower neighbor",
         }
 
     current, current_score, scores, hill_steps, trace = hill_climbing_choose(
@@ -1340,7 +1399,8 @@ def local_search_choose(algorithm, remaining, start, dryness, heuristic):
         "Local algorithm": algorithm,
         "Current score": f"{current_score:.0f}",
         "Target": f"{current}",
-        "Dryness": f"{dryness.get(current, 0)}%",
+        "Target type": f"{dryness.get(current, 'unknown')}",
+            "Score formula": "type + Manhattan",
         "Hill steps": hill_steps,
         "Trace": trace,
     }
@@ -1805,17 +1865,14 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         for var in variables
     }
     domain = ("corn", "tomato", "wheat", "carrot")
-    incompatible_pairs = {
-        ("corn", "tomato"), ("tomato", "corn"),
-        ("wheat", "carrot"), ("carrot", "wheat"),
-    }
 
     def log(event, var, value):
-        if len(steps) < 200:
+        if len(steps) < 2000:
             steps.append((event, var, value))
 
     def crop_pair_valid(left, right):
-        return left != right and (left, right) not in incompatible_pairs
+        # Ràng buộc: hai ô kề nhau không được trồng cùng loại cây
+        return left != right
 
     def valid(var, value, assignment):
         return all(
@@ -1837,9 +1894,22 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
             return dict(assignment)
 
         var = select_unassigned(assignment, domains)
-        for value in list(domains[var]):
+        candidate_values = list(domain)
+        random.shuffle(candidate_values)
+        for value in candidate_values:
+            # The UI shows the solver considering several crops before it
+            # commits to the randomly ordered candidate.
+            previews = list(domain)
+            random.shuffle(previews)
+            for preview in previews[:3]:
+                log("think", var, preview)
             log("try", var, value)
-            if not valid(var, value, assignment):
+            # Forward Checking / AC-3 may already have removed this value.
+            # It is still shown as a random physical trial, then rejected
+            # immediately by the algorithm's current domain knowledge.
+            if value not in domains[var] or not valid(var, value, assignment):
+                backtracks += 1
+                log("backtrack", var, value)
                 continue
 
             next_assignment = dict(assignment)
@@ -1901,45 +1971,102 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
                     queue.append((neighbor, left))
         return True
 
-    def min_conflicts(max_steps=200):
+    def min_conflicts(max_steps=1000, restarts=20):
+        """Min-Conflicts thuần theo AIMA Figure 6.8.
+
+        1. Khởi tạo MỘT assignment ĐẦY ĐỦ cho tất cả biến (có thể vi phạm
+           ràng buộc) bằng giá trị ngẫu nhiên trong domain.
+        2. Mỗi bước: chọn NGẪU NHIÊN một biến đang xung đột (vi phạm ít
+           nhất 1 ràng buộc), rồi gán cho nó giá trị làm xung đột TOÀN CỤC
+           thấp nhất (min-conflicts value, ties random).
+        3. Lặp tới khi không còn xung đột (solution) hoặc hết max_steps.
+
+        Không dùng AC-3/forward-check: đây là local search trên không gian
+        assignment đầy đủ, đúng bản chất khác biệt với Backtrack/FC/AC-3.
+        """
         nonlocal backtracks
         if not variables:
             return {}
 
-        assignment = {var: random.choice(domain) for var in variables}
-        log("init", None, None)
-        for _ in range(max_steps):
-            conflicted = [
-                var for var in variables
-                if any(
-                    not crop_pair_valid(assignment[var], assignment[neighbor])
-                    for neighbor in adjacency[var]
-                )
-            ]
-            if not conflicted:
-                return assignment
+        def conflicts_of_var(v, value, assignment):
+            return sum(
+                1
+                for nb in adjacency[v]
+                if nb in assignment and not crop_pair_valid(value, assignment[nb])
+            )
 
-            var = random.choice(conflicted)
-            counts = {
-                value: sum(
-                    not crop_pair_valid(value, assignment[neighbor])
-                    for neighbor in adjacency[var]
-                )
-                for value in domain
-            }
-            best_count = min(counts.values())
-            best_values = [
-                value for value, count in counts.items()
-                if count == best_count
+        def conflicted_vars(assignment):
+            return [
+                v for v in variables
+                if conflicts_of_var(v, assignment[v], assignment) > 0
             ]
-            new_value = random.choice(best_values)
-            if assignment[var] != new_value:
-                backtracks += 1
-            assignment[var] = new_value
-            log("assign", var, new_value)
+
+        for _restart in range(max(1, restarts)):
+            # Bước 1: gán đầy đủ ngẫu nhiên (random initial complete assignment).
+            assignment = {v: random.choice(domains[v]) for v in variables}
+            log("init", None, dict(assignment))  # snapshot toan bo de sync csp_assigned
+
+            for step in range(max_steps):
+                conflicted = conflicted_vars(assignment)
+                if not conflicted:
+                    return assignment  # hết xung đột -> solution
+
+                # Bước 2: chọn ngẫu nhiên 1 biến đang xung đột.
+                var = random.choice(conflicted)
+
+                # Bước 3: chọn giá trị làm số xung đột của var thấp nhất.
+                best_c = INF
+                best_vals = []
+                for value in domains[var]:
+                    c = conflicts_of_var(var, value, assignment)
+                    if c < best_c:
+                        best_c = c
+                        best_vals = [value]
+                    elif c == best_c:
+                        best_vals.append(value)
+
+                value = random.choice(best_vals)
+                old_value = assignment[var]
+                # Log "conflict" TRUOC khi doi gia tri: danh dau o nay (voi
+                # crop CU dang vi pham rang buoc) de UI to do va cho robot
+                # di toi truoc khi sua. Sau do "reassign" voi gia tri MOI
+                # se bao UI chuyen o nay sang xanh.
+                log("conflict", var, old_value)
+                assignment[var] = value
+                log("reassign", var, value)
+                backtracks += 1  # đếm mỗi lần sửa xung đột như 1 "step cost"
+
+            # Hết max_steps mà chưa xong -> restart với assignment ngẫu nhiên khác.
+
         return None
 
-    domains = {var: list(domain) for var in variables}
+
+    # Min-Conflicts keeps the balanced preference used by its full random
+    # assignment. The three systematic algorithms deliberately receive a
+    # fresh random value order per tile so their search visibly tries,
+    # rejects and backtracks instead of replaying a checkerboard answer.
+    crop_list = ["corn", "tomato", "wheat", "carrot"]
+
+    def _checker_crop(x, y):
+        # (0,0)->corn, (1,0)->tomato, (0,1)->wheat, (1,1)->carrot
+        idx = (x % 2) + (y % 2) * 2
+        return crop_list[idx % 4]
+
+    if variables and algorithm == "Min Conflict":
+        def _preferred_domain(var):
+            preferred = _checker_crop(var[0], var[1])
+            rest = [c for c in domain if c != preferred]
+            return [preferred] + rest
+
+        domains = {var: _preferred_domain(var) for var in variables}
+    else:
+        domains = {}
+        for var in variables:
+            values = list(domain)
+            random.shuffle(values)
+            domains[var] = values
+
+
     if algorithm == "Fwd Check":
         result = backtrack({}, domains, forward_check=True)
     elif algorithm == "AC-3":
@@ -1951,15 +2078,24 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
     elif algorithm == "Min Conflict":
         result = min_conflicts()
         if result is None:
+            # Chỉ fallback khi Min-Conflicts thực sự THẤT BẠI (hết max_steps/restarts
+            # mà vẫn còn xung đột), không phải vì nghiệm "ít màu" — một nghiệm chỉ
+            # dùng 2/4 loại crop vẫn hợp lệ với ràng buộc "khác màu kề nhau".
             result = backtrack({}, domains, forward_check=True)
+
     else:
         result = backtrack({}, domains)
+
+
+    # Không post-process thay đổi assignment sau khi đã tìm nghiệm.
+    # (Giữ replay CSP khớp với assignment cuối và tránh việc robot “quay lại ô cũ”).
+
 
     stats = {
         "Algorithm": algorithm,
         "Variables": len(variables),
         "Domain": "{corn, tomato, wheat, carrot}",
-        "Constraints": "biological conflicts",
+        "Constraints": "no same crop adjacent",
         "Backtracks": backtracks,
     }
     if algorithm == "AC-3":
@@ -1967,70 +2103,426 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
     return result or {}, steps, stats
 
 
-def minimax_choose(remaining, player_start, enemy_tile, enemy_done_tiles,
-                   care_value, heuristic, is_living_crop):
-    if not remaining or not enemy_tile:
-        return (remaining[0] if remaining else None), None, float("-inf"), {
-            "alpha": "-inf",
-            "beta": "+inf",
-            "pruned": 0,
-        }, {}
+MODE6_SEARCH_DEPTH = 4
+MODE6_TREE_STATUS = {
+    "healthy": {"value": 5, "risk": 0.10},
+    "dry": {"value": 10, "risk": 0.20},
+    "disease": {"value": 20, "risk": 0.40},
+    "critical": {"value": 30, "risk": 0.70},
+    "rare": {"value": 50, "risk": 0.50},
+}
+EXPECTIMAX_EVENTS = (
+    ("Pest", 0.40),
+    ("Hail", 0.35),
+    ("Drought", 0.25),
+)
+EXPECTIMINIMAX_OUTCOMES = (
+    ("Sabotage succeeds", 0.70),
+    ("Weather damage", 0.20),
+    ("No damage", 0.10),
+)
 
-    alpha = float("-inf")
-    beta = float("inf")
-    best_tile = None
-    best_value = float("-inf")
-    pruned_count = 0
 
-    for player_choice in remaining:
-        crop_score = care_value(player_choice)
-        my_cost = heuristic(player_start, player_choice)
-        player_value = crop_score - my_cost
+def _crop_value(tile, crop_profiles):
+    return crop_profiles.get(tile, MODE6_TREE_STATUS["healthy"])["value"]
 
-        enemy_remaining = [
-            tile for tile in remaining
-            if tile != player_choice
-            and tile not in enemy_done_tiles
-            and is_living_crop(tile)
-        ]
-        min_value = float("inf")
-        for enemy_choice in enemy_remaining:
-            enemy_cost = heuristic(enemy_tile, enemy_choice)
-            enemy_crop = care_value(enemy_choice)
-            value = player_value - (enemy_crop - enemy_cost * 0.5)
-            min_value = min(min_value, value)
-            if min_value <= alpha:
-                pruned_count += 1
-                break
 
-        if not enemy_remaining:
-            min_value = player_value
+def _crop_risk(tile, crop_profiles):
+    return crop_profiles.get(tile, MODE6_TREE_STATUS["healthy"])["risk"]
 
-        if min_value > best_value:
-            best_value = min_value
-            best_tile = player_choice
-        alpha = max(alpha, best_value)
 
-    enemy_choices = [
-        tile for tile in remaining
-        if tile != best_tile
-        and tile not in enemy_done_tiles
-        and is_living_crop(tile)
-    ]
-    enemy_target = (
-        min(enemy_choices, key=lambda tile: heuristic(enemy_tile, tile))
-        if enemy_choices else None
-    )
-    alpha_beta_info = {
-        "alpha": f"{alpha:.1f}",
-        "beta": f"{beta:.1f}" if beta < float("inf") else "+inf",
-        "pruned": pruned_count,
+def evaluate_farm_state(all_crops, protected, destroyed, crop_profiles=None):
+    """Shared evaluation for every Mode-6 game-tree algorithm."""
+    crop_profiles = crop_profiles or {}
+    living = set(all_crops) - set(destroyed)
+    living_value = sum(_crop_value(tile, crop_profiles) for tile in living)
+    destroyed_value = sum(
+        _crop_value(tile, crop_profiles) for tile in destroyed)
+    fixed_bonus = sum(
+        0.5 * _crop_value(tile, crop_profiles) for tile in protected)
+    return living_value - 1.5 * destroyed_value + fixed_bonus
+
+
+def _mode6_actions(all_crops, protected, destroyed):
+    return sorted(set(all_crops) - set(protected) - set(destroyed))
+
+
+def _tree_result(algorithm, move, response, value, counters, root_values,
+                 depth, expected=False, probability=None, event=None,
+                 alpha=None, beta=None):
+    info = {
+        "alpha": "-inf" if alpha is None else f"{alpha:.1f}",
+        "beta": "+inf" if beta is None else f"{beta:.1f}",
+        "pruned": counters["pruned"],
     }
     stats = {
-        "Minimax value": f"{best_value:.1f}",
-        "Alpha": alpha_beta_info["alpha"],
-        "Beta": alpha_beta_info["beta"],
-        "Pruned branches": f"{pruned_count}",
-        "Enemy target": f"{enemy_target}",
+        "Algorithm": algorithm,
+        "Depth": depth,
+        "Best Move": f"{move}",
+        "Expected Utility" if expected else "Utility": f"{value:.1f}",
+        "MAX nodes": counters["max"],
+        "MIN nodes": counters["min"],
+        "CHANCE nodes": counters["chance"],
+        "Nodes evaluated": counters["evaluated"],
+        "Pruned Nodes": counters["pruned"],
     }
-    return best_tile, enemy_target, best_value, alpha_beta_info, stats
+    if response is not None:
+        stats["Enemy Move" if not expected else "Chance Target"] = f"{response}"
+    if probability is not None:
+        stats["Probability"] = f"{probability * 100:.0f}%"
+    if event:
+        stats["Chance Event"] = event
+    if algorithm == "Alpha-Beta":
+        stats["Alpha"] = info["alpha"]
+        stats["Beta"] = info["beta"]
+    details = {
+        "root_values": root_values,
+        "pruned": counters["pruned"],
+        "best_move": move,
+        "response": response,
+        "event": event,
+        "probability": probability,
+        "depth": depth,
+    }
+    return move, response, value, info, stats, details
+
+
+def _minimax_search(all_crops, protected, destroyed, depth, maximizing,
+                    counters, memo, crop_profiles):
+    key = (frozenset(protected), frozenset(destroyed), depth, maximizing)
+    if key in memo:
+        return memo[key]
+    counters["evaluated"] += 1
+    actions = _mode6_actions(all_crops, protected, destroyed)
+    if depth == 0 or not actions:
+        result = evaluate_farm_state(
+            all_crops, protected, destroyed, crop_profiles), []
+        memo[key] = result
+        return result
+
+    if maximizing:
+        counters["max"] += 1
+        best_value = -INF
+        best_line = []
+        for tile in actions:
+            value, line = _minimax_search(
+                all_crops, protected | {tile}, destroyed,
+                depth - 1, False, counters, memo, crop_profiles)
+            if value > best_value:
+                best_value = value
+                best_line = [tile] + line
+        memo[key] = (best_value, best_line)
+        return memo[key]
+
+    counters["min"] += 1
+    best_value = INF
+    best_line = []
+    for tile in actions:
+        value, line = _minimax_search(
+            all_crops, protected, destroyed | {tile},
+            depth - 1, True, counters, memo, crop_profiles)
+        if value < best_value:
+            best_value = value
+            best_line = [tile] + line
+    memo[key] = (best_value, best_line)
+    return memo[key]
+
+
+def minimax_choose(all_crops, protected, destroyed, depth=MODE6_SEARCH_DEPTH,
+                   crop_profiles=None):
+    crop_profiles = crop_profiles or {}
+    counters = {"max": 0, "min": 0, "chance": 0,
+                "evaluated": 0, "pruned": 0}
+    root_values = []
+    memo = {}
+    best_move = None
+    best_response = None
+    best_value = -INF
+    for move in _mode6_actions(all_crops, protected, destroyed):
+        value, line = _minimax_search(
+            all_crops, set(protected) | {move}, set(destroyed),
+            depth - 1, False, counters, memo, crop_profiles)
+        root_values.append((move, value, False))
+        if value > best_value:
+            best_value = value
+            best_move = move
+            best_response = line[0] if line else None
+    return _tree_result(
+        "Minimax", best_move, best_response, best_value, counters,
+        root_values, depth)
+
+
+def _alpha_beta_search(all_crops, protected, destroyed, depth, maximizing,
+                       alpha, beta, counters, crop_profiles):
+    counters["evaluated"] += 1
+    actions = _mode6_actions(all_crops, protected, destroyed)
+    if depth == 0 or not actions:
+        return evaluate_farm_state(
+            all_crops, protected, destroyed, crop_profiles), []
+
+    if maximizing:
+        counters["max"] += 1
+        value = -INF
+        best_line = []
+        for index, tile in enumerate(actions):
+            child, line = _alpha_beta_search(
+                all_crops, protected | {tile}, destroyed, depth - 1,
+                False, alpha, beta, counters, crop_profiles)
+            if child > value:
+                value = child
+                best_line = [tile] + line
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                counters["pruned"] += len(actions) - index - 1
+                counters["cutoff_alpha"] = alpha
+                counters["cutoff_beta"] = beta
+                break
+        return value, best_line
+
+    counters["min"] += 1
+    value = INF
+    best_line = []
+    for index, tile in enumerate(actions):
+        child, line = _alpha_beta_search(
+            all_crops, protected, destroyed | {tile}, depth - 1,
+            True, alpha, beta, counters, crop_profiles)
+        if child < value:
+            value = child
+            best_line = [tile] + line
+        beta = min(beta, value)
+        if beta <= alpha:
+            counters["pruned"] += len(actions) - index - 1
+            counters["cutoff_alpha"] = alpha
+            counters["cutoff_beta"] = beta
+            break
+    return value, best_line
+
+
+def alpha_beta_choose(all_crops, protected, destroyed,
+                      depth=MODE6_SEARCH_DEPTH, crop_profiles=None):
+    crop_profiles = crop_profiles or {}
+    counters = {"max": 0, "min": 0, "chance": 0,
+                "evaluated": 0, "pruned": 0}
+    root_values = []
+    best_move = None
+    best_response = None
+    best_value = -INF
+    alpha = -INF
+    beta = INF
+    for move in _mode6_actions(all_crops, protected, destroyed):
+        value, line = _alpha_beta_search(
+            all_crops, set(protected) | {move}, set(destroyed),
+            depth - 1, False, alpha, beta, counters, crop_profiles)
+        root_values.append((move, value, False))
+        if value > best_value:
+            best_value = value
+            best_move = move
+            best_response = line[0] if line else None
+        alpha = max(alpha, best_value)
+    return _tree_result(
+        "Alpha-Beta", best_move, best_response, best_value, counters,
+        root_values, depth,
+        alpha=counters.get("cutoff_alpha", alpha),
+        beta=counters.get("cutoff_beta", beta))
+
+
+def _expectimax_search(all_crops, protected, destroyed, depth, maximizing,
+                       counters, memo, crop_profiles):
+    key = (frozenset(protected), frozenset(destroyed), depth, maximizing)
+    if key in memo:
+        return memo[key]
+    counters["evaluated"] += 1
+    actions = _mode6_actions(all_crops, protected, destroyed)
+    if depth == 0 or not actions:
+        result = evaluate_farm_state(
+            all_crops, protected, destroyed, crop_profiles), []
+        memo[key] = result
+        return result
+
+    if maximizing:
+        counters["max"] += 1
+        best_value = -INF
+        best_line = []
+        for tile in actions:
+            value, line = _expectimax_search(
+                all_crops, protected | {tile}, destroyed,
+                depth - 1, False, counters, memo, crop_profiles)
+            if value > best_value:
+                best_value = value
+                best_line = [tile] + line
+        memo[key] = (best_value, best_line)
+        return memo[key]
+
+    counters["chance"] += 1
+    risk_total = sum(_crop_risk(tile, crop_profiles) for tile in actions)
+    expected = 0.0
+    most_likely_line = []
+    most_likely_probability = -1.0
+    for tile in actions:
+        probability = (
+            _crop_risk(tile, crop_profiles) / risk_total
+            if risk_total > 0 else 1.0 / len(actions))
+        value, line = _expectimax_search(
+            all_crops, protected, destroyed | {tile},
+            depth - 1, True, counters, memo, crop_profiles)
+        expected += probability * value
+        if probability > most_likely_probability:
+            most_likely_probability = probability
+            most_likely_line = [tile] + line
+    memo[key] = (expected, most_likely_line)
+    return memo[key]
+
+
+def expectimax_choose(all_crops, protected, destroyed,
+                      depth=MODE6_SEARCH_DEPTH, crop_profiles=None):
+    crop_profiles = crop_profiles or {}
+    counters = {"max": 0, "min": 0, "chance": 0,
+                "evaluated": 0, "pruned": 0}
+    root_values = []
+    memo = {}
+    best_move = None
+    best_value = -INF
+    best_response = None
+    for move in _mode6_actions(all_crops, protected, destroyed):
+        value, line = _expectimax_search(
+            all_crops, set(protected) | {move}, set(destroyed),
+            depth - 1, False, counters, memo, crop_profiles)
+        root_values.append((move, value, False))
+        if value > best_value:
+            best_value = value
+            best_move = move
+            best_response = line[0] if line else None
+    chance_actions = _mode6_actions(
+        all_crops, set(protected) | ({best_move} if best_move else set()),
+        destroyed)
+    risk_total = sum(
+        _crop_risk(tile, crop_profiles) for tile in chance_actions)
+    probability = (
+        _crop_risk(best_response, crop_profiles) / risk_total
+        if best_response is not None and risk_total > 0 else 0.0)
+    event = max(EXPECTIMAX_EVENTS, key=lambda item: item[1])[0]
+    return _tree_result(
+        "Expectimax", best_move, best_response, best_value, counters,
+        root_values, depth, expected=True, probability=probability,
+        event=event)
+
+
+def _expectiminimax_search(all_crops, protected, destroyed, depth, node_type,
+                           counters, memo, crop_profiles):
+    key = (frozenset(protected), frozenset(destroyed), depth, node_type)
+    if key in memo:
+        return memo[key]
+    counters["evaluated"] += 1
+    actions = _mode6_actions(all_crops, protected, destroyed)
+    if depth == 0 or not actions:
+        result = evaluate_farm_state(
+            all_crops, protected, destroyed, crop_profiles), []
+        memo[key] = result
+        return result
+
+    if node_type == "MAX":
+        counters["max"] += 1
+        best_value = -INF
+        best_line = []
+        for tile in actions:
+            value, line = _expectiminimax_search(
+                all_crops, protected | {tile}, destroyed,
+                depth - 1, "MIN", counters, memo, crop_profiles)
+            if value > best_value:
+                best_value = value
+                best_line = [tile] + line
+        memo[key] = (best_value, best_line)
+        return memo[key]
+
+    if node_type == "MIN":
+        counters["min"] += 1
+        best_value = INF
+        best_line = []
+        for tile in actions:
+            value, line = _expectiminimax_search(
+                all_crops, protected, destroyed,
+                depth - 1, ("CHANCE", tile), counters, memo, crop_profiles)
+            if value < best_value:
+                best_value = value
+                best_line = [tile] + line
+        memo[key] = (best_value, best_line)
+        return memo[key]
+
+    counters["chance"] += 1
+    enemy_target = node_type[1]
+    target_risk = _crop_risk(enemy_target, crop_profiles)
+    sabotage_probability = 0.60
+    weather_probability = 0.40 * target_risk
+    safe_probability = 1.0 - sabotage_probability - weather_probability
+    success_value, success_line = _expectiminimax_search(
+        all_crops, protected, destroyed | {enemy_target},
+        depth - 1, "MAX", counters, memo, crop_profiles)
+    no_damage_value, no_damage_line = _expectiminimax_search(
+        all_crops, protected, destroyed,
+        depth - 1, "MAX", counters, memo, crop_profiles)
+    weather_targets = [
+        tile for tile in actions if tile != enemy_target
+    ]
+    if weather_targets:
+        weather_value = 0.0
+        weather_risk_total = sum(
+            _crop_risk(tile, crop_profiles) for tile in weather_targets)
+        for tile in weather_targets:
+            tile_probability = (
+                _crop_risk(tile, crop_profiles) / weather_risk_total
+                if weather_risk_total > 0
+                else 1.0 / len(weather_targets))
+            child, _ = _expectiminimax_search(
+                all_crops, protected, destroyed | {tile},
+                depth - 1, "MAX", counters, memo, crop_profiles)
+            weather_value += tile_probability * child
+    else:
+        weather_value = no_damage_value
+    expected = (
+        sabotage_probability * success_value
+        + weather_probability * weather_value
+        + safe_probability * no_damage_value
+    )
+    memo[key] = (expected, success_line or no_damage_line)
+    return memo[key]
+
+
+def expectiminimax_choose(all_crops, protected, destroyed,
+                          depth=MODE6_SEARCH_DEPTH, crop_profiles=None):
+    crop_profiles = crop_profiles or {}
+    counters = {"max": 0, "min": 0, "chance": 0,
+                "evaluated": 0, "pruned": 0}
+    root_values = []
+    memo = {}
+    best_move = None
+    best_response = None
+    best_value = -INF
+    for move in _mode6_actions(all_crops, protected, destroyed):
+        value, line = _expectiminimax_search(
+            all_crops, set(protected) | {move}, set(destroyed),
+            depth - 1, "MIN", counters, memo, crop_profiles)
+        root_values.append((move, value, False))
+        if value > best_value:
+            best_value = value
+            best_move = move
+            best_response = line[0] if line else None
+    return _tree_result(
+        "Expectiminimax", best_move, best_response, best_value, counters,
+        root_values, depth, expected=True,
+        probability=(
+            _crop_risk(best_response, crop_profiles)
+            if best_response is not None else 0.0),
+        event="MIN -> CHANCE")
+
+
+def adversarial_choose(algorithm, all_crops, protected, destroyed,
+                       depth=MODE6_SEARCH_DEPTH, crop_profiles=None):
+    chooser = {
+        "Minimax": minimax_choose,
+        "Alpha-Beta": alpha_beta_choose,
+        "Expectimax": expectimax_choose,
+        "Expectiminimax": expectiminimax_choose,
+    }.get(algorithm, minimax_choose)
+    return chooser(
+        all_crops, protected, destroyed, depth,
+        crop_profiles=crop_profiles)
