@@ -10,7 +10,7 @@ Game dung cung mot nong trai Pydew, nhung 6 man cu da duoc thay bang 6 ngay sau 
 | 2 | Loi vao nha kho | Manh vo nha kho/da chan duong, robot da biet dich va vat can | Informed Search | A* |
 | 3 | Vuon cay phia dong | Qua nhieu cay can cuu, phai chon cay uu tien trong thoi gian ngan | Local Search | Local Beam / Hill Climbing / Annealing |
 | 4 | Rescue the Foggy Garden | Xu ly toan bo khu vuon bang mot agent doc lap | Rescue Agents | Belief State / Goal-Based / AND-OR |
-| 5 | O quy hoach trung tam | Quy hoach lai vuon, ngo va ca chua khong duoc ke nhau | Constraint Satisfaction | CSP Backtracking |
+| 5 | O quy hoach trung tam | Quy hoach lai vuon, hai o ke nhau khong duoc cung loai cay | Constraint Satisfaction | CSP Backtracking |
 | 6 | Hang cay can bao ve | Ke pha hoai tranh den cac o cay de pha | Adversarial Search | Minimax / Alpha-Beta / Expectimax / Expectiminimax |
 
 ## Dieu khien
@@ -42,7 +42,7 @@ Robot chi thay cac o sat ben canh va phai den cay cuu ho o goc xa. Hai buc tuong
 
 ### Ngay 5 - Khu quy hoach trung tam - CSP Backtracking
 
-Ong Minh muon trong lai theo rang buoc: corn va tomato khong duoc nam ke nhau. Robot dung backtracking de gan crop cho tung o truoc khi gieo.
+Ong Minh muon trong lai theo rang buoc: hai o ke nhau khong duoc cung loai cay. Robot dung backtracking de gan crop cho tung o truoc khi gieo.
 
 ### Ngay 6 - Khu hang cay can bao ve - Adversarial Search
 

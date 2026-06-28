@@ -23,6 +23,10 @@ ADVERSARIAL_ALGORITHMS = (
     "Expectiminimax",
 )
 
+def csp_crop_pair_valid(left, right):
+    """Return whether two adjacent Mode 5 crops satisfy all binary constraints."""
+    return left != right
+
 ALGORITHM_GROUPS = {
     1: UNINFORMED_ALGORITHMS,
     2: INFORMED_ALGORITHMS,
@@ -1860,6 +1864,7 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
     steps = []
     backtracks = 0
     arc_checks = 0
+    show_domain_steps = algorithm in ("Fwd Check", "AC-3")
     adjacency = {
         var: [other for other in variables if _csp_adjacent(var, other)]
         for var in variables
@@ -1870,9 +1875,18 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         if len(steps) < 2000:
             steps.append((event, var, value))
 
+    def log_domain(var, domains):
+        if not show_domain_steps:
+            return
+        log("domain", var, tuple(domains[var]))
+
+    def log_domains(domains):
+        for var in variables:
+            log_domain(var, domains)
+
     def crop_pair_valid(left, right):
         # Ràng buộc: hai ô kề nhau không được trồng cùng loại cây
-        return left != right
+        return csp_crop_pair_valid(left, right)
 
     def valid(var, value, assignment):
         return all(
@@ -1888,25 +1902,30 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
             key=lambda var: (len(domains[var]), -len(adjacency[var])),
         )
 
-    def backtrack(assignment, domains, forward_check=False):
+    def _prune_domain(domains, var, keep_values):
+        kept = [value for value in domains[var] if value in keep_values]
+        if len(kept) == len(domains[var]):
+            return True
+        domains[var] = kept
+        log_domain(var, domains)
+        return bool(domains[var])
+
+    def backtrack(assignment, domains, forward_check=False, arc_consistency=False):
         nonlocal backtracks
         if len(assignment) == len(variables):
             return dict(assignment)
 
         var = select_unassigned(assignment, domains)
-        candidate_values = list(domain)
-        random.shuffle(candidate_values)
+        candidate_values = list(domains[var])
         for value in candidate_values:
             # The UI shows the solver considering several crops before it
-            # commits to the randomly ordered candidate.
-            previews = list(domain)
+            # commits to the candidate. FC/AC-3 only consider the current
+            # pruned domain, so removed crops are never "thought about" again.
+            previews = list(domains[var])
             random.shuffle(previews)
             for preview in previews[:3]:
                 log("think", var, preview)
             log("try", var, value)
-            # Forward Checking / AC-3 may already have removed this value.
-            # It is still shown as a random physical trial, then rejected
-            # immediately by the algorithm's current domain knowledge.
             if value not in domains[var] or not valid(var, value, assignment):
                 backtracks += 1
                 log("backtrack", var, value)
@@ -1918,29 +1937,37 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
                 key: list(values) for key, values in domains.items()
             }
             log("assign", var, value)
+            next_domains[var] = [value]
+            log_domain(var, next_domains)
 
             consistent = True
             if forward_check:
                 for neighbor in adjacency[var]:
                     if neighbor in next_assignment:
                         continue
-                    next_domains[neighbor] = [
+                    allowed = [
                         crop for crop in next_domains[neighbor]
                         if crop_pair_valid(crop, value)
                     ]
-                    if not next_domains[neighbor]:
+                    if not _prune_domain(next_domains, neighbor, allowed):
                         consistent = False
                         break
+            if consistent and arc_consistency:
+                consistent = enforce_arc_consistency(next_domains)
 
             if consistent:
                 result = backtrack(
-                    next_assignment, next_domains, forward_check=forward_check
+                    next_assignment,
+                    next_domains,
+                    forward_check=forward_check,
+                    arc_consistency=arc_consistency,
                 )
                 if result is not None:
                     return result
 
             backtracks += 1
             log("backtrack", var, value)
+            log_domains(domains)
         return None
 
     def enforce_arc_consistency(domains):
@@ -1963,8 +1990,7 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
             ]
             if len(supported) == len(domains[left]):
                 continue
-            domains[left] = supported
-            if not domains[left]:
+            if not _prune_domain(domains, left, supported):
                 return False
             for neighbor in adjacency[left]:
                 if neighbor != right:
@@ -2001,9 +2027,25 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
                 if conflicts_of_var(v, assignment[v], assignment) > 0
             ]
 
+        def initial_complete_assignment():
+            assignment = {
+                v: _checker_crop(v[0], v[1])
+                for v in variables
+            }
+            noisy_tiles = list(variables)
+            random.shuffle(noisy_tiles)
+            noise_count = max(1, min(4, len(variables) // 4))
+            for v in noisy_tiles[:noise_count]:
+                conflicting_neighbors = [nb for nb in adjacency[v] if nb in assignment]
+                if conflicting_neighbors:
+                    assignment[v] = assignment[random.choice(conflicting_neighbors)]
+                else:
+                    assignment[v] = random.choice(domain)
+            return assignment
+
         for _restart in range(max(1, restarts)):
             # Bước 1: gán đầy đủ ngẫu nhiên (random initial complete assignment).
-            assignment = {v: random.choice(domains[v]) for v in variables}
+            assignment = initial_complete_assignment()
             log("init", None, dict(assignment))  # snapshot toan bo de sync csp_assigned
 
             for step in range(max_steps):
@@ -2012,9 +2054,18 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
                     return assignment  # hết xung đột -> solution
 
                 # Bước 2: chọn ngẫu nhiên 1 biến đang xung đột.
-                var = random.choice(conflicted)
+                worst_conflict = max(
+                    conflicts_of_var(v, assignment[v], assignment)
+                    for v in conflicted
+                )
+                worst_vars = [
+                    v for v in conflicted
+                    if conflicts_of_var(v, assignment[v], assignment) == worst_conflict
+                ]
+                var = random.choice(worst_vars)
 
                 # Bước 3: chọn giá trị làm số xung đột của var thấp nhất.
+                old_value = assignment[var]
                 best_c = INF
                 best_vals = []
                 for value in domains[var]:
@@ -2025,8 +2076,17 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
                     elif c == best_c:
                         best_vals.append(value)
 
-                value = random.choice(best_vals)
-                old_value = assignment[var]
+                alternatives = [v for v in best_vals if v != old_value]
+                if alternatives:
+                    value = random.choice(alternatives)
+                elif conflicts_of_var(var, old_value, assignment) == 0:
+                    value = old_value
+                else:
+                    non_old = [v for v in domains[var] if v != old_value]
+                    value = min(
+                        non_old,
+                        key=lambda v: conflicts_of_var(var, v, assignment),
+                    )
                 # Log "conflict" TRUOC khi doi gia tri: danh dau o nay (voi
                 # crop CU dang vi pham rang buoc) de UI to do va cho robot
                 # di toi truoc khi sua. Sau do "reassign" voi gia tri MOI
@@ -2071,7 +2131,7 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         result = backtrack({}, domains, forward_check=True)
     elif algorithm == "AC-3":
         result = (
-            backtrack({}, domains, forward_check=True)
+            backtrack({}, domains, forward_check=True, arc_consistency=True)
             if enforce_arc_consistency(domains)
             else None
         )
@@ -2104,6 +2164,7 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
 
 
 MODE6_SEARCH_DEPTH = 4
+MODE6_MAX_BRANCHING = 7
 MODE6_TREE_STATUS = {
     "healthy": {"value": 5, "risk": 0.10},
     "dry": {"value": 10, "risk": 0.20},
@@ -2143,8 +2204,19 @@ def evaluate_farm_state(all_crops, protected, destroyed, crop_profiles=None):
     return living_value - 1.5 * destroyed_value + fixed_bonus
 
 
-def _mode6_actions(all_crops, protected, destroyed):
-    return sorted(set(all_crops) - set(protected) - set(destroyed))
+def _mode6_actions(all_crops, protected, destroyed, crop_profiles=None):
+    actions = sorted(set(all_crops) - set(protected) - set(destroyed))
+    if len(actions) <= MODE6_MAX_BRANCHING:
+        return actions
+    crop_profiles = crop_profiles or {}
+    return sorted(
+        actions,
+        key=lambda tile: (
+            -_crop_value(tile, crop_profiles),
+            -_crop_risk(tile, crop_profiles),
+            tile,
+        ),
+    )[:MODE6_MAX_BRANCHING]
 
 
 def _tree_result(algorithm, move, response, value, counters, root_values,
@@ -2158,6 +2230,7 @@ def _tree_result(algorithm, move, response, value, counters, root_values,
     stats = {
         "Algorithm": algorithm,
         "Depth": depth,
+        "Candidate cap": MODE6_MAX_BRANCHING,
         "Best Move": f"{move}",
         "Expected Utility" if expected else "Utility": f"{value:.1f}",
         "MAX nodes": counters["max"],
@@ -2193,7 +2266,7 @@ def _minimax_search(all_crops, protected, destroyed, depth, maximizing,
     if key in memo:
         return memo[key]
     counters["evaluated"] += 1
-    actions = _mode6_actions(all_crops, protected, destroyed)
+    actions = _mode6_actions(all_crops, protected, destroyed, crop_profiles)
     if depth == 0 or not actions:
         result = evaluate_farm_state(
             all_crops, protected, destroyed, crop_profiles), []
@@ -2238,7 +2311,7 @@ def minimax_choose(all_crops, protected, destroyed, depth=MODE6_SEARCH_DEPTH,
     best_move = None
     best_response = None
     best_value = -INF
-    for move in _mode6_actions(all_crops, protected, destroyed):
+    for move in _mode6_actions(all_crops, protected, destroyed, crop_profiles):
         value, line = _minimax_search(
             all_crops, set(protected) | {move}, set(destroyed),
             depth - 1, False, counters, memo, crop_profiles)
@@ -2255,7 +2328,7 @@ def minimax_choose(all_crops, protected, destroyed, depth=MODE6_SEARCH_DEPTH,
 def _alpha_beta_search(all_crops, protected, destroyed, depth, maximizing,
                        alpha, beta, counters, crop_profiles):
     counters["evaluated"] += 1
-    actions = _mode6_actions(all_crops, protected, destroyed)
+    actions = _mode6_actions(all_crops, protected, destroyed, crop_profiles)
     if depth == 0 or not actions:
         return evaluate_farm_state(
             all_crops, protected, destroyed, crop_profiles), []
@@ -2309,7 +2382,7 @@ def alpha_beta_choose(all_crops, protected, destroyed,
     best_value = -INF
     alpha = -INF
     beta = INF
-    for move in _mode6_actions(all_crops, protected, destroyed):
+    for move in _mode6_actions(all_crops, protected, destroyed, crop_profiles):
         value, line = _alpha_beta_search(
             all_crops, set(protected) | {move}, set(destroyed),
             depth - 1, False, alpha, beta, counters, crop_profiles)
@@ -2332,7 +2405,7 @@ def _expectimax_search(all_crops, protected, destroyed, depth, maximizing,
     if key in memo:
         return memo[key]
     counters["evaluated"] += 1
-    actions = _mode6_actions(all_crops, protected, destroyed)
+    actions = _mode6_actions(all_crops, protected, destroyed, crop_profiles)
     if depth == 0 or not actions:
         result = evaluate_farm_state(
             all_crops, protected, destroyed, crop_profiles), []
@@ -2383,7 +2456,7 @@ def expectimax_choose(all_crops, protected, destroyed,
     best_move = None
     best_value = -INF
     best_response = None
-    for move in _mode6_actions(all_crops, protected, destroyed):
+    for move in _mode6_actions(all_crops, protected, destroyed, crop_profiles):
         value, line = _expectimax_search(
             all_crops, set(protected) | {move}, set(destroyed),
             depth - 1, False, counters, memo, crop_profiles)
@@ -2394,7 +2467,7 @@ def expectimax_choose(all_crops, protected, destroyed,
             best_response = line[0] if line else None
     chance_actions = _mode6_actions(
         all_crops, set(protected) | ({best_move} if best_move else set()),
-        destroyed)
+        destroyed, crop_profiles)
     risk_total = sum(
         _crop_risk(tile, crop_profiles) for tile in chance_actions)
     probability = (
@@ -2413,7 +2486,7 @@ def _expectiminimax_search(all_crops, protected, destroyed, depth, node_type,
     if key in memo:
         return memo[key]
     counters["evaluated"] += 1
-    actions = _mode6_actions(all_crops, protected, destroyed)
+    actions = _mode6_actions(all_crops, protected, destroyed, crop_profiles)
     if depth == 0 or not actions:
         result = evaluate_farm_state(
             all_crops, protected, destroyed, crop_profiles), []
@@ -2497,7 +2570,7 @@ def expectiminimax_choose(all_crops, protected, destroyed,
     best_move = None
     best_response = None
     best_value = -INF
-    for move in _mode6_actions(all_crops, protected, destroyed):
+    for move in _mode6_actions(all_crops, protected, destroyed, crop_profiles):
         value, line = _expectiminimax_search(
             all_crops, set(protected) | {move}, set(destroyed),
             depth - 1, "MIN", counters, memo, crop_profiles)

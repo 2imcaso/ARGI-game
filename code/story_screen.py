@@ -87,7 +87,7 @@ STORY_DATA = {
         "lines": [
             "Khu trung tam duoc don sach de quy hoach lai.",
             "Ong Minh muon trong lai theo quy tac moi.",
-            "Ngo va ca chua khong duoc nam canh nhau.",
+            "Hai o ke nhau khong duoc trong cung loai cay.",
             "",
             "AGRI-1 phai gan crop cho tung o, sai thi lui lai va thu tiep.",
             "\"Co viec phai nghi truoc khi hanh dong.\"",

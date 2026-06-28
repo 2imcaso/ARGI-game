@@ -40,7 +40,7 @@ class FarmAIController:
             "Fog-of-war voi o sut/ngap an duoi suong"),
         5: ("NGAY 5 - KHU 5: O QUY HOACH TRUNG TAM", "CSP Backtracking",
             "Gan 4 loai cay ma khong vi pham rang buoc ke nhau",
-            "Ngo/ca chua va lua mi/ca rot khong duoc trong canh nhau"),
+            "Hai o ke nhau khong duoc trong cung loai cay"),
         6: ("NGAY 6 - KHU 6: HANG CAY CAN BAO VE", "Minimax / Alpha-Beta",
             "Cay co gia tri va rui ro theo tinh trang; AGRI-1 di sua cay",
             "MAX sua cay; MIN pha huy; CHANCE dung rui ro rieng tung cay"),
@@ -57,6 +57,7 @@ class FarmAIController:
     MODE6_ACTION_TIME = 1.5
     ENEMY_DESTROY_TIME = MODE6_ACTION_TIME
     ENEMY_RETARGET_DELAY = 0.08
+    MODE6_ENEMY_SPEED_SCALE = 0.72
     IDS_ITERATION_DELAY = 0.65
     IDSA_ITERATION_DELAY = 0.65
 
@@ -212,6 +213,7 @@ class FarmAIController:
         self.csp_replay_timer = 0.0
         self.csp_replay_speed = 0.06     # giây/bước
         self.csp_display = {}            # {tile: (crop, state)} state=try|assign|backtrack
+        self.csp_domains = {}            # {tile: [crop, ...]} domain hien tai khi replay CSP
         self.csp_flash_timers = {}       # {tile: thời gian flash đỏ còn lại}
         self.csp_analyze_pairs = []      # cặp ô highlight phase analyze
         self.csp_analyze_pair_index = 0
@@ -330,6 +332,7 @@ class FarmAIController:
             self.csp_replay_index = 0
             self.csp_replay_timer = 0.0
             self.csp_display = {}
+            self.csp_domains = {}
             self.csp_flash_timers = {}
             self.csp_analyze_pairs = []
             self.csp_analyze_pair_index = 0
@@ -1233,6 +1236,7 @@ class FarmAIController:
             "storm_debris": "storm_debris.png",
             "worm": "worm.png",
             "black_worm": "black_worm.png",
+            "bug": "bug.png",
             "crow": "crow.png",
             "crow_damage": "crow_damage.png",
         }
@@ -1354,11 +1358,11 @@ class FarmAIController:
             min_x = min(tile[0] for tile in self.farm_tiles)
             min_y = min(tile[1] for tile in self.farm_tiles)
             status_grid = (
-                ("healthy", "healthy", "dry", "healthy", "healthy"),
-                ("healthy", "dry", "disease", "dry", "healthy"),
+                ("healthy", "healthy", "critical", "healthy", "healthy"),
+                ("healthy", "dry", "disease", "critical", "healthy"),
                 ("dry", "disease", "rare", "disease", "dry"),
-                ("healthy", "dry", "disease", "dry", "healthy"),
-                ("healthy", "healthy", "dry", "healthy", "healthy"),
+                ("healthy", "critical", "disease", "dry", "healthy"),
+                ("healthy", "healthy", "critical", "healthy", "healthy"),
             )
             return {
                 tile: status_grid[tile[1] - min_y][tile[0] - min_x]
@@ -1427,8 +1431,7 @@ class FarmAIController:
         if condition == "dry":
             return "dry_plant"
         if condition == "pest":
-            # Pest chi ve worm rieng trong _draw_map_overlays.
-            return None
+            return "healthy_plant"
         return "dry_plant"
 
     def _draw_resolved_asset(self, surface, offset, tile):
@@ -2637,6 +2640,7 @@ class FarmAIController:
         self.csp_phase = "analyze"
         self.csp_analyze_timer = 0.0
         self.csp_display = {}
+        self.csp_domains = {}
         self.csp_flash_timers = {}
         pairs = []
         farm_set = set(self.farm_tiles)
@@ -2680,6 +2684,13 @@ class FarmAIController:
         self.csp_replay_index = 0
         self.csp_replay_timer = 0.0
         self.csp_display = {}
+        if self.algorithm_name in ("Fwd Check", "AC-3"):
+            self.csp_domains = {
+                tile: ["corn", "tomato", "wheat", "carrot"]
+                for tile in self.farm_tiles
+            }
+        else:
+            self.csp_domains = {}
         self.csp_flash_timers = {}
         total = len(self.csp_steps)
         bt = self.stats.get("Backtracks", 0)
@@ -2724,18 +2735,21 @@ class FarmAIController:
             self._csp_set_speech(text, duration)
 
     def _csp_find_conflict_neighbors(self, tile, crop):
-        """Tra ve cac o ke dang assign cung loai crop."""
+        """Tra ve cac o ke dang vi pham rang buoc CSP voi crop nay."""
         x, y = tile
         conflicts = set()
         for nx, ny in ((x-1,y),(x+1,y),(x,y-1),(x,y+1)):
             nb = (nx, ny)
-            if nb in self.csp_assigned and self.csp_assigned[nb] == crop:
+            if (
+                nb in self.csp_assigned
+                and not algorithms.csp_crop_pair_valid(crop, self.csp_assigned[nb])
+            ):
                 conflicts.add(nb)
         return conflicts
 
     def _csp_all_conflicting_tiles(self):
         """Quet toan bo csp_assigned hien tai, tra ve tap TAT CA tile dang
-        vi pham rang buoc voi mot hang xom (gia tri trung nhau). Dung de
+        vi pham rang buoc voi mot hang xom. Dung de
         rebuild csp_conflict_tiles chinh xac sau moi reassign, tranh truong
         hop mot tile bi to do vi gia tri CU cua hang xom nhung khong duoc
         xoa khi hang xom doi sang gia tri khac."""
@@ -2820,7 +2834,7 @@ class FarmAIController:
                     for nx, ny in ((tx-1,ty),(tx+1,ty),(tx,ty-1),(tx,ty+1)):
                         nb = (nx, ny)
                         if nb in farm_set and nb in self.csp_assigned:
-                            if self.csp_assigned[nb] == crop:
+                            if not algorithms.csp_crop_pair_valid(crop, self.csp_assigned[nb]):
                                 conflict_set.add(tile)
                                 conflict_set.add(nb)
 
@@ -2845,6 +2859,13 @@ class FarmAIController:
                 self.stats["CSP phase"] = "Khoi tao ngau nhien"
                 self.stats["O xung dot ban dau"] = len(conflict_set)
                 self.stats["Tong o"] = len(self.csp_assigned)
+            return
+
+        if event == "domain":
+            self.csp_domains[var] = list(value)
+            self.stats["CSP phase"] = "Cap nhat domain"
+            self.stats["Buoc"] = f"{self.csp_replay_index}/{len(self.csp_steps)}"
+            self.stats["Domain update"] = f"{var}: {','.join(value)}"
             return
 
         self.csp_current_var = var
@@ -3045,6 +3066,7 @@ class FarmAIController:
         """Phase 3: Ke hoach xong, robot bat dau thuc thi."""
         self.csp_phase = "ready"
         self.csp_display = {}
+        self.csp_domains = {}
         self.csp_flash_timers = {}
         self.csp_current_var = None
         self.csp_current_event = None
@@ -3420,7 +3442,12 @@ class FarmAIController:
         dx = next_tile[0] - ex
         dy = next_tile[1] - ey
         distance = abs(dx) + abs(dy)
-        step = (self.player.speed / TILE_SIZE) * dt
+        step = (
+            self.player.speed
+            * self.MODE6_ENEMY_SPEED_SCALE
+            / TILE_SIZE
+            * dt
+        )
         if distance <= step:
             self.enemy_tile = next_tile
             self.enemy_path.pop(0)
@@ -4494,49 +4521,35 @@ class FarmAIController:
                 if asset_key is not None:
                     self._blit_tile_asset(
                         surface, offset, tile, asset_key, y_offset=-6)
-                if condition in ("pest", "disease"):
-                    self._blit_tile_asset(surface, offset, tile, "worm", y_offset=2)
+                if condition == "disease":
+                    self._blit_tile_asset(surface, offset, tile, "bug", y_offset=2)
+                if condition == "pest":
+                    self._blit_tile_asset(surface, offset, tile, "bug", y_offset=2)
+                if self.mode == 6 and condition == "critical":
+                    world = self._tile_center(tile)
+                    cx = int(world.x - offset.x)
+                    cy = int(world.y - offset.y - 6)
+                    pulse = (math.sin(pygame.time.get_ticks() * 0.008) + 1) / 2
+                    radius = int(19 + pulse * 7)
+                    alpha = int(85 + pulse * 95)
+                    warning = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                    center = (TILE_SIZE // 2, TILE_SIZE // 2 - 6)
+                    pygame.draw.circle(
+                        warning, (255, 55, 45, alpha), center, radius, 3)
+                    pygame.draw.circle(
+                        warning, (255, 180, 40, max(45, alpha // 2)),
+                        center, max(8, radius - 8), 2)
+                    surface.blit(
+                        warning,
+                        (cx - TILE_SIZE // 2, cy - TILE_SIZE // 2 + 6),
+                    )
+                    self._blit_tile_asset(surface, offset, tile, "storm_debris", y_offset=8)
                 if self.mode == 6 and condition == "rare":
                     world = self._tile_center(tile)
                     cx = int(world.x - offset.x)
                     cy = int(world.y - offset.y - 6)
                     pygame.draw.circle(
                         surface, (255, 215, 70), (cx, cy), 24, 3)
-
-                if self.mode == 6:
-                    profile = self.mode6_crop_profiles[tile]
-                    world = self._tile_center(tile)
-                    tx = int(world.x - offset.x)
-                    ty = int(world.y - offset.y)
-                    font_status = pygame.font.Font(None, 18)
-                    badge_info = {
-                        "healthy": ("K", (90, 210, 110)),
-                        "dry": ("H", (230, 180, 70)),
-                        "disease": ("S", (210, 80, 80)),
-                        "critical": ("N", (170, 70, 210)),
-                        "rare": ("Q", (255, 215, 70)),
-                    }
-                    badge, badge_color = badge_info.get(
-                        condition, ("?", Colors.TEXT_PRIMARY))
-                    pygame.draw.circle(
-                        surface, badge_color, (tx - 20, ty - 20), 10)
-                    badge_text = font_status.render(
-                        badge, True, (25, 25, 25))
-                    surface.blit(
-                        badge_text,
-                        badge_text.get_rect(center=(tx - 20, ty - 20)),
-                    )
-                    value_text = font_status.render(
-                        f"{profile['value']} | "
-                        f"{profile['risk'] * 100:.0f}%",
-                        True,
-                        (255, 230, 130) if condition == "rare"
-                        else Colors.TEXT_PRIMARY,
-                    )
-                    surface.blit(
-                        value_text,
-                        value_text.get_rect(center=(tx, ty + 23)),
-                    )
 
         # --- Mode 1: BFS explored nodes (xanh dÆ°Æ¡ng nháº¡t) ---
         if self.mode == 1 and self.bfs_explored:
@@ -4739,6 +4752,35 @@ class FarmAIController:
                     txt = font_sm.render("X", True, (255, 200, 200))
                     surface.blit(txt, (sx - 4, sy - 8))
 
+                # Domain hien tai cua cac o chua gan. FC/AC-3 cat domain
+                # am tham; lop text nay cho thay tap gia tri con lai.
+                domain_label = {
+                    "corn": "C", "tomato": "T", "wheat": "W", "carrot": "R"
+                }
+                font_domain = pygame.font.Font(None, 16)
+                for tile, values in self.csp_domains.items():
+                    if tile in self.csp_assigned:
+                        continue
+                    if not values:
+                        text = "{}"
+                    else:
+                        text = "".join(domain_label.get(crop, "?") for crop in values)
+                    world = self._tile_center(tile)
+                    sx = int(world.x - offset.x)
+                    sy = int(world.y - offset.y)
+                    txt = font_domain.render(text, True, (235, 240, 255))
+                    pad_x = 3
+                    bg = pygame.Rect(
+                        sx - txt.get_width() // 2 - pad_x,
+                        sy + TILE_SIZE // 2 - 17,
+                        txt.get_width() + pad_x * 2,
+                        txt.get_height() + 2,
+                    )
+                    bg_surf = pygame.Surface(bg.size, pygame.SRCALPHA)
+                    bg_surf.fill((25, 28, 42, 170))
+                    surface.blit(bg_surf, bg.topleft)
+                    surface.blit(txt, (bg.x + pad_x, bg.y + 1))
+
                 # (Speech bubble + "BACKTRACK!" flash text duoc ve trong
                 # _draw_map_foreground, SAU khi sprites/player da ve, de
                 # khong bi nhan vat che mat - xem draw_fg().)
@@ -4783,9 +4825,7 @@ class FarmAIController:
         # --- Mode 6: Enemy + enemy path ---
         if (self.mode == 6 and self.enemy_tile
                 and self.algorithm_name != "Expectimax"):
-            world = self._tile_center(
-                (int(round(self.enemy_tile[0])),
-                 int(round(self.enemy_tile[1]))))
+            world = self._tile_center(self.enemy_tile)
             ex = int(world.x - offset.x)
             ey = int(world.y - offset.y)
             # ThĂ¢n enemy
@@ -4796,11 +4836,6 @@ class FarmAIController:
             else:
                 pygame.draw.circle(surface, Colors.ENEMY_FALLBACK, (ex, ey), 20)
                 pygame.draw.circle(surface, Colors.ENEMY_FALLBACK_OUTLINE, (ex, ey), 20, 3)
-            # Label
-            font_sm = pygame.font.Font(None, 20)
-            txt = font_sm.render("CROW", True, Colors.ENEMY)
-            surface.blit(txt, (ex - 18, ey - 42))
-
             # Enemy target line
             if self.enemy_target:
                 route = [(ex, ey)]
@@ -4832,17 +4867,12 @@ class FarmAIController:
                 self._blit_tile_asset(surface, offset, tile, asset_key, y_offset=-6)
 
         if self.mode == 6 and self.algorithm_name == "Expectimax":
-            font_sm = pygame.font.Font(None, 20)
             if self.enemy_target:
                 w = self._tile_center(self.enemy_target)
                 tx = int(w.x - offset.x)
                 ty = int(w.y - offset.y)
                 pygame.draw.circle(surface, Colors.TEXT_WARNING,
                                    (tx, ty), 18, 3)
-                label = font_sm.render(
-                    self.mode6_chance_event or "CHANCE",
-                    True, Colors.TEXT_WARNING)
-                surface.blit(label, label.get_rect(center=(tx, ty - 32)))
             for tile in self.enemy_done_tiles:
                 w = self._tile_center(tile)
                 rect = pygame.Rect(0, 0, TILE_SIZE - 6, TILE_SIZE - 6)
@@ -5107,7 +5137,16 @@ class FarmAIController:
             y = draw_text("Eval = value_song - 1.5*value_pha + 0.5*value_sua",
                           x, y, Colors.TEXT_MUTED, font_small)
             y = draw_text(
-                "K 5/10% | H 10/20% | S 20/40% | Q 50/50%",
+                "Hinh cay: xanh=khoe | vang=kho | do+sau=benh",
+                x, y, Colors.TEXT_MUTED, font_small)
+            y = draw_text(
+                "vo+debris=nguy cap | vong vang=hiem | sau=sau hai",
+                x, y, Colors.TEXT_MUTED, font_small)
+            y = draw_text(
+                "Diem/rui ro: khoe 5/10 | kho 10/20 | benh 20/40",
+                x, y, Colors.TEXT_MUTED, font_small)
+            y = draw_text(
+                "nguy cap 30/70 | hiem 50/50",
                 x, y, Colors.TEXT_MUTED, font_small)
             best_move = self.mode6_tree_details.get("best_move")
             response = self.mode6_tree_details.get("response")
