@@ -1,4 +1,5 @@
 from collections import deque
+from itertools import combinations
 import heapq
 import math
 import random
@@ -11,8 +12,8 @@ INFORMED_ALGORITHMS = ("Greedy", "IDSA", "A*")
 LOCAL_ALGORITHMS = ("Local Beam", "Hill Climbing", "Annealing", "Restart Hill")
 ONLINE_ALGORITHMS = (
     "Online A*",
-    "Belief A*",
-    "Belief Init-Goal A*",
+    "Online BFS",
+    "Belief-State BFS",
     "AND-OR Search",
 )
 CSP_ALGORITHMS = ("Backtrack", "Fwd Check", "AC-3", "Min Conflict")
@@ -273,6 +274,72 @@ def astar(start, goal, blocked, neighbors, heuristic, counter,
     return [], explored, (0, 0, 0), {
         "Nodes explored": len(explored),
         "Path length": 0,
+    }
+
+
+def astar_4dir_f_update(start, goal, blocked, neighbors, heuristic, counter,
+                        step_cost=unit_step_cost):
+    """A* core for 4-direction grid movement.
+
+    A node is updated only when the new f(n) is strictly smaller than the
+    best f(n) recorded for that node.
+    """
+    open_set = []
+    start_h = heuristic(start, goal)
+    heapq.heappush(open_set, (start_h, start_h, 0, next(counter), start))
+    came_from = {}
+    g_score = {start: 0}
+    f_score = {start: start_h}
+    explored = set()
+    max_frontier = 1
+
+    while open_set:
+        current_f, _, _, _, current = heapq.heappop(open_set)
+        if current_f > f_score.get(current, INF):
+            continue
+
+        explored.add(current)
+
+        if current == goal:
+            path = reconstruct_path(came_from, current)
+            g = g_score[current]
+            h = heuristic(current, goal)
+            return path, explored, (g + h, g, h), {
+                "Nodes explored": len(explored),
+                "Path length": len(path),
+                "Frontier max": max_frontier,
+                "f(n)": f"{g + h}",
+                "g(n)": f"{g}",
+                "h(n)": f"{h}",
+                "Update rule": "only update when f_new < f_old",
+                "Neighbor rule": "push only 4 adjacent neighbors",
+            }
+
+        for next_tile in neighbors(current, blocked):
+            if (abs(next_tile[0] - current[0])
+                    + abs(next_tile[1] - current[1]) != 1):
+                continue
+
+            tentative_g = g_score[current] + step_cost(current, next_tile)
+            h = heuristic(next_tile, goal)
+            tentative_f = tentative_g + h
+            if tentative_f >= f_score.get(next_tile, INF):
+                continue
+
+            came_from[next_tile] = current
+            g_score[next_tile] = tentative_g
+            f_score[next_tile] = tentative_f
+            heapq.heappush(
+                open_set,
+                (tentative_f, h, tentative_g, next(counter), next_tile))
+            max_frontier = max(max_frontier, len(open_set))
+
+    return [], explored, (0, 0, 0), {
+        "Nodes explored": len(explored),
+        "Path length": 0,
+        "Frontier max": max_frontier,
+        "Update rule": "only update when f_new < f_old",
+        "Neighbor rule": "push only 4 adjacent neighbors",
     }
 
 
@@ -1410,97 +1477,143 @@ def local_search_choose(algorithm, remaining, start, dryness, heuristic):
     }
 
 
+# Mode 4: Online and belief-state search
+# ---------------------------------------------------------------------------
+
+def has_line_of_sight(center, tile, blockers):
+    cx, cy = center
+    tx, ty = tile
+    dx = tx - cx
+    dy = ty - cy
+    steps = math.gcd(abs(dx), abs(dy))
+    if steps == 0:
+        return True
+
+    step_x = dx // steps
+    step_y = dy // steps
+    x, y = cx, cy
+    for _ in range(steps - 1):
+        x += step_x
+        y += step_y
+        if (x, y) in blockers:
+            return False
+    return True
+
+
 def expand_vision(center, radius, rows, cols, hidden_blocked,
                   explored_tiles, discovered_blocked):
     cx, cy = center
     scan_radius = int(radius) + 1
+    blockers = set(hidden_blocked) | set(discovered_blocked)
     for dy in range(-scan_radius, scan_radius + 1):
         for dx in range(-scan_radius, scan_radius + 1):
             if dx * dx + dy * dy > radius * radius:
                 continue
             nx, ny = cx + dx, cy + dy
-            if 0 <= nx < cols and 0 <= ny < rows:
-                tile = (nx, ny)
-                explored_tiles.add(tile)
-                if tile in hidden_blocked:
-                    discovered_blocked.add(tile)
+            if not (0 <= nx < cols and 0 <= ny < rows):
+                continue
+
+            tile = (nx, ny)
+            if not has_line_of_sight(center, tile, blockers):
+                continue
+
+            explored_tiles.add(tile)
+            if tile in hidden_blocked:
+                discovered_blocked.add(tile)
 
 
-def belief_astar(start, goal, blocked, uncertain_tiles, neighbors, heuristic,
-                 counter, uncertainty_cost=2.0):
-    """A* over a belief map where unobserved tiles carry extra risk cost."""
-    open_set = [(heuristic(start, goal), next(counter), start)]
+def belief_state_bfs(start, goal, blocked, belief_worlds, belief_unknowns,
+                     neighbors):
+    """BFS over (robot_tile, possible_world_ids) belief states.
+
+    The robot has one real position, but the map can still be one of many
+    hidden-block worlds. Moving onto a tile is planned as a successful
+    observation: worlds where that tile was blocked are filtered out.
+    """
+    worlds = list(belief_worlds or [])
+    if not worlds:
+        return [], set(), {
+            "Algorithm": "Belief-State BFS",
+            "Search style": "BFS over belief states",
+            "Belief node": "(tile, possible_worlds)",
+            "Belief states": 0,
+            "Possible worlds": 0,
+            "Belief unknowns": len(belief_unknowns),
+            "Path length": 0,
+            "Queue max": 0,
+            "Result": "Inconsistent belief: no possible worlds remain",
+        }
+    initial_world_ids = frozenset(range(len(worlds)))
+    start_state = (start, initial_world_ids)
+    queue = deque([start_state])
     came_from = {}
-    best_cost = {start: 0.0}
-    explored = set()
+    visited = {start_state}
+    explored_states = set()
+    explored_tiles = set()
+    max_queue = 1
 
-    while open_set:
-        _, _, current = heapq.heappop(open_set)
-        explored.add(current)
-        if current == goal:
-            path = reconstruct_path(came_from, current)
-            uncertain_steps = sum(tile in uncertain_tiles for tile in path)
-            return path, explored, {
-                "Algorithm": "Belief A*",
-                "Belief states": len(uncertain_tiles),
-                "Uncertain steps": uncertain_steps,
+    while queue:
+        current_state = queue.popleft()
+        current_tile, world_ids = current_state
+        explored_states.add(current_state)
+        explored_tiles.add(current_tile)
+
+        if current_tile == goal:
+            state_path = reconstruct_path(came_from, current_state)
+            path = [tile for tile, _world_ids in state_path]
+            risky_steps = sum(tile in belief_unknowns for tile in path)
+            return path, explored_tiles, {
+                "Algorithm": "Belief-State BFS",
+                "Search style": "BFS over belief states",
+                "Belief node": "(tile, possible_worlds)",
+                "Belief states": len(explored_states),
+                "Possible worlds": len(worlds),
+                "Belief unknowns": len(belief_unknowns),
+                "Risky steps": risky_steps,
                 "Path length": len(path),
-                "Risk cost": f"{best_cost[current] - len(path):.1f}",
+                "Queue max": max_queue,
+                "Policy": "FIFO belief frontier; replan after observation",
             }
 
-        for next_tile in neighbors(current, blocked):
-            risk = uncertainty_cost if next_tile in uncertain_tiles else 0.0
-            next_cost = best_cost[current] + 1.0 + risk
-            if next_cost >= best_cost.get(next_tile, INF):
+        for next_tile in neighbors(current_tile, blocked):
+            if next_tile in blocked:
                 continue
-            best_cost[next_tile] = next_cost
-            came_from[next_tile] = current
-            priority = next_cost + heuristic(next_tile, goal)
-            heapq.heappush(
-                open_set, (priority, next(counter), next_tile)
+            next_world_ids = frozenset(
+                world_id for world_id in world_ids
+                if next_tile not in worlds[world_id]
             )
+            if not next_world_ids:
+                continue
+            next_state = (next_tile, next_world_ids)
+            if next_state in visited:
+                continue
+            visited.add(next_state)
+            came_from[next_state] = current_state
+            queue.append(next_state)
+            max_queue = max(max_queue, len(queue))
 
-    return [], explored, {
-        "Algorithm": "Belief A*",
-        "Belief states": len(uncertain_tiles),
-        "Uncertain steps": 0,
+    return [], explored_tiles, {
+        "Algorithm": "Belief-State BFS",
+        "Search style": "BFS over belief states",
+        "Belief node": "(tile, possible_worlds)",
+        "Belief states": len(explored_states),
+        "Possible worlds": len(worlds),
+        "Belief unknowns": len(belief_unknowns),
+        "Risky steps": 0,
         "Path length": 0,
-        "Risk cost": "inf",
+        "Queue max": max_queue,
+        "Policy": "No belief-safe BFS path found",
     }
-
-
-def select_relevant_unknown_tiles(unknown_tiles, start, goal, heuristic,
-                                  limit=6):
-    """Pick unknown tiles closest to the start-goal corridor."""
-    if limit <= 0:
-        return []
-
-    direct_distance = heuristic(start, goal)
-
-    def corridor_score(tile):
-        via_tile = heuristic(start, tile) + heuristic(tile, goal)
-        return (
-            via_tile - direct_distance,
-            heuristic(tile, goal),
-            heuristic(start, tile),
-        )
-
-    return sorted(unknown_tiles, key=corridor_score)[:limit]
 
 
 def generate_belief_worlds(unknown_tiles, max_hidden=2):
     """Build all possible hidden-block configurations over tracked tiles."""
     tiles = list(unknown_tiles)
     worlds = []
-    for mask in range(1 << len(tiles)):
-        if max_hidden is not None and mask.bit_count() > max_hidden:
-            continue
-        blocked = [
-            tiles[index]
-            for index, tile in enumerate(tiles)
-            if mask & (1 << index)
-        ]
-        worlds.append(frozenset(blocked))
+    max_count = len(tiles) if max_hidden is None else min(max_hidden, len(tiles))
+    for rock_count in range(max_count + 1):
+        for blocked in combinations(tiles, rock_count):
+            worlds.append(frozenset(blocked))
     return worlds
 
 
@@ -1537,320 +1650,10 @@ def belief_risk_map(worlds, candidate_tiles=None):
     }
 
 
-def belief_world_astar(start, goal, blocked, belief_worlds, risk_map,
-                       belief_unknowns, neighbors, heuristic, counter,
-                       risk_weight=10.0, unknown_penalty=3.0):
-    """A* using possible-world blocked probabilities as risk cost."""
-    open_set = []
-    start_h = heuristic(start, goal)
-    heapq.heappush(
-        open_set, (start_h, 0.0, 0, 0.0, start_h, next(counter), start)
-    )
-    came_from = {}
-    best_cost = {start: 0.0}
-    total_risk_so_far = {start: 0.0}
-    unknown_steps_so_far = {start: 0}
-    explored = set()
-    closed = set()
-
-    def top_risk_text():
-        top_risks = sorted(
-            (
-                (probability, tile)
-                for tile, probability in risk_map.items()
-                if probability > 0.0
-            ),
-            reverse=True
-        )[:3]
-        return ", ".join(
-            f"{tile}:{probability:.2f}"
-            for probability, tile in top_risks
-        ) or "none"
-
-    def tracked_tiles_text():
-        return ", ".join(map(str, sorted(belief_unknowns))) or "none"
-
-    while open_set:
-        _, _, _, _, _, _, current = heapq.heappop(open_set)
-        if current in closed:
-            continue
-
-        closed.add(current)
-        explored.add(current)
-        if current == goal:
-            path = reconstruct_path(came_from, current)
-            path_risk_tiles = [
-                tile for tile in path
-                if risk_map.get(tile, 0.0) > 0.0
-            ]
-            risky_steps = len(path_risk_tiles)
-            unknown_steps = sum(
-                1 for tile in path if tile in belief_unknowns
-            )
-            risk_cost = sum(
-                risk_map.get(tile, 0.0) * risk_weight
-                for tile in path
-            )
-            path_risk_steps = (
-                "Path avoids tracked uncertain tiles"
-                if risky_steps == 0 and unknown_steps == 0
-                else ", ".join(map(str, path_risk_tiles)) or "none"
-            )
-            return path, explored, {
-                "Algorithm": "Belief World A*",
-                "Possible worlds": len(belief_worlds),
-                "Belief unknowns": len(belief_unknowns),
-                "Belief tracked tiles": tracked_tiles_text(),
-                "Risky tiles": len(risk_map),
-                "Risky steps": risky_steps,
-                "Unknown steps": unknown_steps,
-                "Risk map top tiles": top_risk_text(),
-                "Path risk steps": path_risk_steps,
-                "Path length": len(path),
-                "Risk cost": f"{risk_cost:.2f}",
-                "Policy": "Prefer safer known route over shortest route",
-            }
-
-        for next_tile in neighbors(current, blocked):
-            step_risk = risk_map.get(next_tile, 0.0)
-            is_unknown = next_tile in belief_unknowns
-            unknown_cost = unknown_penalty if is_unknown else 0.0
-            move_cost = 1.0 + risk_weight * step_risk + unknown_cost
-            new_g = best_cost[current] + move_cost
-
-            if new_g >= best_cost.get(next_tile, INF):
-                continue
-
-            came_from[next_tile] = current
-            best_cost[next_tile] = new_g
-
-            new_total_risk = total_risk_so_far[current] + step_risk
-            new_unknown_steps = (
-                unknown_steps_so_far[current] + (1 if is_unknown else 0)
-            )
-            total_risk_so_far[next_tile] = new_total_risk
-            unknown_steps_so_far[next_tile] = new_unknown_steps
-
-            h = heuristic(next_tile, goal)
-            priority = new_g + h
-            heapq.heappush(
-                open_set,
-                (
-                    priority,
-                    new_total_risk,
-                    new_unknown_steps,
-                    new_g,
-                    h,
-                    next(counter),
-                    next_tile,
-                )
-            )
-
-    return [], explored, {
-        "Algorithm": "Belief World A*",
-        "Possible worlds": len(belief_worlds),
-        "Belief unknowns": len(belief_unknowns),
-        "Belief tracked tiles": tracked_tiles_text(),
-        "Risky tiles": len(risk_map),
-        "Risky steps": 0,
-        "Unknown steps": 0,
-        "Risk map top tiles": top_risk_text(),
-        "Path risk steps": "Path avoids tracked uncertain tiles",
-        "Path length": 0,
-        "Risk cost": "inf",
-        "Policy": "No safe belief-aware path found",
-    }
-
-
-def belief_init_goal_astar(initial_belief, goal_belief, blocked,
-                           uncertain_tiles, neighbors, heuristic, counter,
-                           uncertainty_cost=2.0, preferred_start=None):
-    """Risk-aware A* from a set of possible starts to a set of goals."""
-    starts = {
-        state for state in initial_belief
-        if state not in blocked
-    }
-    goals = {
-        state for state in goal_belief
-        if state not in blocked
-    }
-    if preferred_start in starts:
-        starts = {preferred_start}
-
-    if not starts or not goals:
-        return [], set(), None, None, {
-            "Algorithm": "Belief Init-Goal A*",
-            "Initial belief": len(initial_belief),
-            "Goal belief": len(goal_belief),
-            "Path length": 0,
-            "Risk cost": "inf",
-        }
-
-    def goal_distance(tile):
-        return min(heuristic(tile, goal) for goal in goals)
-
-    open_set = []
-    came_from = {}
-    source = {}
-    best_cost = {}
-    for start in starts:
-        best_cost[start] = 0.0
-        source[start] = start
-        heapq.heappush(
-            open_set, (goal_distance(start), next(counter), start)
-        )
-
-    explored = set()
-    while open_set:
-        _, _, current = heapq.heappop(open_set)
-        explored.add(current)
-        if current in goals:
-            path = reconstruct_path(came_from, current)
-            uncertain_steps = sum(tile in uncertain_tiles for tile in path)
-            return path, explored, source[current], current, {
-                "Algorithm": "Belief Init-Goal A*",
-                "Initial belief": len(initial_belief),
-                "Goal belief": len(goal_belief),
-                "Chosen start": source[current],
-                "Chosen goal": current,
-                "Uncertain steps": uncertain_steps,
-                "Path length": len(path),
-                "Risk cost": f"{best_cost[current] - len(path):.1f}",
-            }
-
-        for next_tile in neighbors(current, blocked):
-            risk = uncertainty_cost if next_tile in uncertain_tiles else 0.0
-            next_cost = best_cost[current] + 1.0 + risk
-            if next_cost >= best_cost.get(next_tile, INF):
-                continue
-            best_cost[next_tile] = next_cost
-            came_from[next_tile] = current
-            source[next_tile] = source[current]
-            priority = next_cost + goal_distance(next_tile)
-            heapq.heappush(
-                open_set, (priority, next(counter), next_tile)
-            )
-
-    return [], explored, None, None, {
-        "Algorithm": "Belief Init-Goal A*",
-        "Initial belief": len(initial_belief),
-        "Goal belief": len(goal_belief),
-        "Path length": 0,
-        "Risk cost": "inf",
-    }
-
-
-def and_or_search(start, goal, blocked, uncertain_tiles, neighbors,
-                  heuristic, counter, max_depth=4, failure_penalty=1.0):
-    """Recursive AND-OR tree search that builds a full contingent plan.
-
-    OR  nodes  (robot's choice): pick the action minimising worst-case cost.
-    AND nodes  (nature's choice): ALL four stochastic-drift outcomes must be
-                                  handled — if any branch has no plan the
-                                  action is rejected.
-
-    Stochastic drift model: 40 % intended direction, 20 % each other.
-
-    Returns
-    -------
-    path    : intended (success-branch) tile list, for visualisation.
-    policy  : dict {state -> next_tile} — the full contingent plan the
-              controller can follow on any observed outcome without replanning.
-    explored: set of states visited during the search.
-    stats   : dict of algorithm statistics.
-    """
-    INF = float("inf")
-    DIRECTIONS = ((0, -1), (0, 1), (-1, 0), (1, 0))
-    explored = set()
-    ancestors: set = set()          # backtracking stack for cycle detection
-    _nbr_cache: dict = {}           # neighbors(state) cache
-
-    def valid_set(state):
-        if state not in _nbr_cache:
-            _nbr_cache[state] = set(neighbors(state, blocked))
-        return _nbr_cache[state]
-
-    def walkable_outcome(state, direction):
-        """Tile reached after moving in direction; stays if wall."""
-        cand = (state[0] + direction[0], state[1] + direction[1])
-        return cand if cand in valid_set(state) else state
-
-    # ------------------------------------------------------------------ OR node
-    def or_node(state, depth):
-        """Robot chooses the best action.  Returns (policy_fragment, worst_cost)."""
-        explored.add(state)
-
-        if state == goal:
-            return {}, 0.0
-
-        if state in ancestors or depth == 0:
-            # Cycle detected, or depth exhausted → no guarantee.
-            return None, INF
-
-        ancestors.add(state)
-        best_policy, best_cost = None, INF
-
-        for action in valid_set(state):
-            sub_policy, cost = and_node(state, action, depth - 1)
-            if sub_policy is not None and cost < best_cost:
-                best_cost = cost
-                best_policy = {state: action}
-                best_policy.update(sub_policy)
-
-        ancestors.discard(state)
-        return best_policy, best_cost
-
-    # ----------------------------------------------------------------- AND node
-    def and_node(state, intended, depth):
-        """Nature picks a drift direction.
-        ALL four outcomes must be plannable; worst-case cost is returned."""
-        merged: dict = {}
-        worst = 0.0
-
-        for direction in DIRECTIONS:
-            outcome = walkable_outcome(state, direction)
-
-            sub_policy, sub_cost = or_node(outcome, depth)
-            if sub_policy is None:
-                return None, INF        # one branch unhandled → reject action
-
-            # Merge per-state action entries (later may overwrite earlier
-            # for the same state, which is acceptable in a flat policy dict).
-            merged.update(sub_policy)
-            worst = max(worst, 1.0 + sub_cost)
-
-        return merged, worst
-
-    # ------------------------------------------------------------------ search
-    policy, cost = or_node(start, max_depth)
-
-    # Extract intended path (follow policy along the success branch).
-    path: list = []
-    current = start
-    seen = {start}
-    while current != goal and policy and current in policy:
-        nxt = policy[current]
-        if nxt is None or nxt in seen:
-            break
-        path.append(nxt)
-        seen.add(nxt)
-        current = nxt
-
-    stats = {
-        "Algorithm": "AND-OR Search",
-        "Tree depth": max_depth,
-        "OR states explored": len(explored),
-        "Policy size": len(policy) if policy else 0,
-        "Worst-case cost": "inf" if cost == INF else f"{cost:.1f}",
-        "Path length": len(path),
-        "Contingent plan": "yes" if policy else "no",
-        "Failure policy": "Follow policy on drift; replan if off-policy",
-    }
-
-    if not policy:
-        return [], {}, explored, stats
-
-    return path, policy, explored, stats
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Mode 5: Constraint satisfaction
+# ---------------------------------------------------------------------------
 
 
 def _csp_adjacent(a, b):

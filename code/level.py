@@ -134,20 +134,24 @@ class Level:
 		# Day 4 - Online Search: hidden walls force discovery and backtracking.
 		4: {
 			'area_name': 'Khu 4 - Bai dat suong mu',
-			'spawn_tile': (18, 31),
+			'spawn_tile': (16, 29),
 			'obstacles': [],
 			'tiles': [
-				(11,27),(12,27),(13,27),(14,27),(15,27),(16,27),(17,27),
-				(11,28),(12,28),(13,28),(14,28),(15,28),(16,28),(17,28),
-				(11,29),(12,29),(13,29),(14,29),(15,29),(16,29),(17,29),
-				(11,30),(12,30),(13,30),(14,30),(15,30),(16,30),(17,30),
-				(11,31),(12,31),(13,31),(14,31),(15,31),(16,31),(17,31),
-				(11,32),(12,32),(13,32),(14,32),(15,32),(16,32),(17,32),
+				(11,27),(12,27),(13,27),(14,27),(15,27),
+				(11,28),(12,28),(13,28),(14,28),(15,28),
+				(11,29),(12,29),(13,29),(14,29),(15,29),
+				(11,30),(12,30),(13,30),(14,30),(15,30),
+				(11,31),(12,31),(13,31),(14,31),(15,31),
+			],
+			'entry_tile': (15, 29),
+			'extra_walkable_tiles': [
+				(16,29),
 			],
 			'hidden_blocks': [
-				(13,27),(13,28),(13,29),(13,30),
-				(15,29),(15,30),(15,31),(15,32),
-				(16,27),
+				(13,28),
+				(12,30),
+				(14,30),
+				(15,31),
 			],
 			'decorations': [
 				('mist', 12, 26), ('mist', 15, 26), ('mist', 18, 30),
@@ -767,6 +771,7 @@ class Level:
 			enemy_spawn=enemy_spawn,
 			terrain_costs=terrain_costs,
 			extra_walkable_tiles=extra_walkable_tiles,
+			entry_tile=cfg.get('entry_tile'),
 			selected_algorithm=self.selected_algorithms.get(mode))
 		if show_overview:
 			self._start_overview()

@@ -1,3 +1,4 @@
+from collections import deque
 from itertools import count
 import heapq
 import math
@@ -65,6 +66,7 @@ class FarmAIController:
     def __init__(self, player, soil_layer, collision_sprites, farm_tiles,
                  mode=2, hidden_blocks=None, enemy_spawn=None,
                  terrain_costs=None, extra_walkable_tiles=None,
+                 entry_tile=None,
                  selected_algorithm=None):
         self.player = player
         self.soil_layer = soil_layer
@@ -76,6 +78,14 @@ class FarmAIController:
         self.mode_name = info[0]
         self.algorithm_group_name = info[1]
         self.algorithm_name = selected_algorithm or self._default_algorithm(mode)
+        if (self.mode == 4
+                and self.algorithm_name in (
+                    "Belief Init-Goal A*", "Belief BFS", "Belief A*")):
+            self.algorithm_name = "Belief-State BFS"
+        if (self.mode == 4
+                and self.algorithm_name == "Belief-State BFS"
+                and self.algorithm_name not in algorithms.ONLINE_ALGORITHMS):
+            self.algorithm_name = self._default_algorithm(mode)
         self.mode_desc = info[2]
         self.difficulty_desc = info[3] if len(info) > 3 else ""
         self.farm_tiles = list(farm_tiles)
@@ -84,6 +94,7 @@ class FarmAIController:
         self.rows = len(self.soil_layer.grid)
         self.cols = len(self.soil_layer.grid[0]) if self.rows else 0
         self.spawn_tile = self._world_to_tile(self.player.rect.center)
+        self.mode4_entry_tile = entry_tile
         self.walkable_tiles = self._build_walkable_tiles()
 
         self.state = "CHOOSE_TARGET"
@@ -166,19 +177,33 @@ class FarmAIController:
         self.hidden_blocked = set()
         self.discovered_blocked = set()
         self.explored_tiles = set()
+        self.known_free = set()
         self.belief_worlds = []
         self.belief_unknown_tiles = set()
         self.belief_context = None
+        self.belief_worlds_before_observation = 0
+        self.belief_worlds_after_observation = 0
+        self.belief_inconsistent = False
+        self.mode4_current_frontier = None
+        self.belief_max_hidden = 4
+        self._last_risk_map = {}
+        self.frontier_tiles = set()
+        self.belief_state = {}
+        self.mode4_phase = "IDLE"
         self.vision_radius = 1.5
         self.replan_count = 0
+        self.mode4_completed_g = 0.0
+        self.mode4_active_step = None
+        self._mode4_online_astar_reset()
+        self._mode4_online_bfs_reset()
+        self._mode4_belief_bfs_reset()
         self.and_or_intended_tile = None
         self.and_or_actual_tile = None
         self.and_or_outcome_probability = 0
         self.and_or_outcome_label = ""
-        self.and_or_policy = {}          # contingent plan: {state -> next_tile}
+        self.and_or_seen_targets = frozenset()
         self.and_or_visited = set()      # tiles already visited this navigation
-        self.and_or_backtrack_count = 0
-        self.and_or_backtrack_reason = ""
+        self.and_or_resume_target = None
         if self.mode == 4:
             if hidden_blocks is not None:
                 # DĂ¹ng hidden blocks cá»‘ Ä‘á»‹nh tá»« Level (Ä‘áº·t lá»‡ch hĂ ng + cá»™t)
@@ -199,6 +224,7 @@ class FarmAIController:
                 for t in chosen:
                     self.hidden_blocked.add(t)
             # Explore quanh vá»‹ trĂ­ spawn ban Ä‘áº§u
+            self._init_mode4_belief()
             start_tile = self._world_to_tile(self.player.rect.center)
             self._expand_vision(start_tile)
 
@@ -312,10 +338,7 @@ class FarmAIController:
         self.and_or_actual_tile = None
         self.and_or_outcome_probability = 0
         self.and_or_outcome_label = ""
-        self.and_or_policy = {}
         self.and_or_visited = set()
-        self.and_or_backtrack_count = 0
-        self.and_or_backtrack_reason = ""
         self.belief_worlds = []
         self.belief_unknown_tiles = set()
         self.belief_context = None
@@ -359,14 +382,30 @@ class FarmAIController:
             self.done_tiles.clear()
             self.discovered_blocked.clear()
             self.explored_tiles.clear()
+            self.known_free = set()
             self.belief_worlds = []
             self.belief_unknown_tiles = set()
             self.belief_context = None
+            self.belief_worlds_before_observation = 0
+            self.belief_worlds_after_observation = 0
+            self.belief_inconsistent = False
+            self.frontier_tiles = set()
+            self.belief_state = {}
+            self.mode4_phase = "EXPLORE"
             self.replan_count = 0
+            self.mode4_completed_g = 0.0
+            self.mode4_active_step = None
+            self._mode4_online_astar_reset()
+            self._mode4_online_bfs_reset()
+            self._mode4_belief_bfs_reset()
+            self.and_or_seen_targets = frozenset()
+            self.and_or_visited = set()
+            self.and_or_resume_target = None
             spawn_pos = self._tile_center(self.spawn_tile)
             self.player.pos.update(spawn_pos)
             self.player.rect.center = (round(spawn_pos.x), round(spawn_pos.y))
             self.player.hitbox.center = self.player.rect.center
+            self._init_mode4_belief()
             self._expand_vision(self.spawn_tile)
         elif self.mode == 6:
             self.done_tiles.clear()
@@ -1143,7 +1182,7 @@ class FarmAIController:
         spawn point. Therefore A* and IDA* recalculate h(n) for every node
         they expand. ``b`` is the current target/goal being evaluated.
         """
-        if self.mode == 2 and b in self.farm_tiles:
+        if self.mode in (2, 4) and b in self.farm_tiles:
             return self._heuristic(a, b) + 2 * self._mode2_condition_h(b)
         return self._heuristic(a, b)
 
@@ -1493,6 +1532,76 @@ class FarmAIController:
                 (drift + int(430 * scale), y - 10, int(280 * scale), max(16, thickness - 12)))
         surface.blit(mist, (0, 0))
 
+    def _draw_belief_minimap(self, surface):
+        if not self.rows or not self.cols:
+            return
+
+        max_size = 170
+        cell = max(3, min(8, max_size // max(self.rows, self.cols)))
+        pad = 8
+        map_w = self.cols * cell
+        map_h = self.rows * cell
+        panel = pygame.Rect(0, 0, map_w + pad * 2, map_h + pad * 2)
+        panel.topright = (surface.get_width() - 18, 18)
+
+        bg = pygame.Surface(panel.size, pygame.SRCALPHA)
+        bg.fill((12, 14, 18, 210))
+        surface.blit(bg, panel.topleft)
+        pygame.draw.rect(surface, (235, 235, 210), panel, 1)
+
+        risk_map = self._last_risk_map or {}
+        if self.walkable_tiles is None:
+            navigable = {
+                (x, y)
+                for y in range(self.rows)
+                for x in range(self.cols)
+            }
+        else:
+            navigable = set(self.walkable_tiles)
+
+        for y in range(self.rows):
+            for x in range(self.cols):
+                tile = (x, y)
+                if tile not in navigable:
+                    color = (38, 42, 48)
+                elif tile in self.discovered_blocked:
+                    color = (18, 20, 24)
+                elif tile in self.explored_tiles:
+                    color = (218, 232, 205)
+                else:
+                    risk = max(0.0, min(1.0, float(risk_map.get(tile, 0.0))))
+                    color = (255, int(220 - 130 * risk), int(55 - 35 * risk))
+
+                rect = pygame.Rect(
+                    panel.x + pad + x * cell,
+                    panel.y + pad + y * cell,
+                    cell,
+                    cell)
+                pygame.draw.rect(surface, color, rect)
+
+        target = self.current_target
+        if target is None and self.path:
+            target = self.path[-1]
+        if target is not None:
+            tx, ty = target
+            if 0 <= tx < self.cols and 0 <= ty < self.rows:
+                rect = pygame.Rect(
+                    panel.x + pad + tx * cell,
+                    panel.y + pad + ty * cell,
+                    cell,
+                    cell)
+                pygame.draw.rect(surface, (255, 245, 70), rect)
+
+        robot = self._world_to_tile(self.player.rect.center)
+        rx, ry = robot
+        if 0 <= rx < self.cols and 0 <= ry < self.rows:
+            rect = pygame.Rect(
+                panel.x + pad + rx * cell,
+                panel.y + pad + ry * cell,
+                cell,
+                cell)
+            pygame.draw.rect(surface, (65, 235, 95), rect)
+
     def _seed_for_tile(self, tile):
         if self.mode == 5:
             return self.seed_plan.get(tile, "corn")
@@ -1541,6 +1650,9 @@ class FarmAIController:
     def _state_after_arrival(self, tile):
         if self.mode == 6:
             return "FIX_CROW"
+        if self.mode == 4:
+            self.mode4_phase = "RESCUE"
+            self._update_belief_state()
         condition = self._condition_for_tile(tile)
         if condition in ("dead", "replant"):
             return self._next_cultivation_state(tile)
@@ -1571,6 +1683,9 @@ class FarmAIController:
         self._finish_mode2_leg_g(tile)
         self._refresh_mode3_scores_after_action(tile)
         self._advance_full_garden_plan(tile)
+        if self.mode == 4:
+            self.mode4_phase = "EXPLORE"
+            self._update_belief_state()
         self.current_target = None
         self.path = []
         self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
@@ -1587,6 +1702,9 @@ class FarmAIController:
         self._finish_mode2_leg_g(tile)
         self._refresh_mode3_scores_after_action(tile)
         self._advance_full_garden_plan(tile)
+        if self.mode == 4:
+            self.mode4_phase = "EXPLORE"
+            self._update_belief_state()
         self.current_target = None
         self.path = []
         self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
@@ -1601,6 +1719,9 @@ class FarmAIController:
         self._finish_mode2_leg_g(tile)
         self._refresh_mode3_scores_after_action(tile)
         self._advance_full_garden_plan(tile)
+        if self.mode == 4:
+            self.mode4_phase = "EXPLORE"
+            self._update_belief_state()
         self.current_target = None
         self.path = []
         self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
@@ -2329,10 +2450,813 @@ class FarmAIController:
         return current_best
 
     # -------------------------------------------------------------- MODE 4
+    def _compute_frontier_tiles(self):
+        if self.mode != 4:
+            return set()
+
+        frontier = set()
+        known_free = set(self.known_free or self.explored_tiles)
+        unknown_tiles = self._mode4_unknown_tiles()
+        blocked = self._blocked_tiles()
+        for tile in known_free:
+            if tile in blocked:
+                continue
+            for neighbor in self._neighbors(tile, blocked):
+                if neighbor in unknown_tiles:
+                    frontier.add(tile)
+                    break
+        return frontier
+
+    def _mode4_initial_known_free(self):
+        known = {self.spawn_tile}
+        if self.mode4_entry_tile is not None:
+            known.add(self.mode4_entry_tile)
+        return {
+            tile for tile in known
+            if (self.walkable_tiles is None or tile in self.walkable_tiles)
+            and tile not in self.hidden_blocked
+        }
+
+    def _mode4_unknown_tiles(self):
+        candidates = set(self.farm_tiles)
+        return candidates - self.known_free - self.discovered_blocked
+
+    def _init_mode4_belief(self):
+        if self.mode != 4:
+            return
+        self.known_free = self._mode4_initial_known_free()
+        self.explored_tiles.update(self.known_free)
+        self.discovered_blocked.intersection_update(set(self.farm_tiles))
+        self.belief_unknown_tiles = self._mode4_unknown_tiles()
+        self.belief_worlds = algorithms.generate_belief_worlds(
+            self.belief_unknown_tiles, max_hidden=self.belief_max_hidden)
+        self.belief_worlds_before_observation = len(self.belief_worlds)
+        self.belief_worlds_after_observation = len(self.belief_worlds)
+        self.belief_inconsistent = False
+        self.belief_context = "persistent"
+        self._last_risk_map = algorithms.belief_risk_map(
+            self.belief_worlds, self.belief_unknown_tiles)
+
+    def _rebuild_mode4_belief_from_observations(self):
+        self.belief_unknown_tiles = self._mode4_unknown_tiles()
+        remaining_hidden_budget = max(
+            0, self.belief_max_hidden - len(self.discovered_blocked))
+        worlds = algorithms.generate_belief_worlds(
+            self.belief_unknown_tiles, max_hidden=remaining_hidden_budget)
+        known_blocked = set(self.discovered_blocked)
+        self.belief_worlds = [
+            world for world in worlds
+            if world.isdisjoint(self.known_free)
+            and known_blocked.isdisjoint(self.known_free)
+        ]
+        self.belief_worlds_after_observation = len(self.belief_worlds)
+        self.belief_inconsistent = not self.belief_worlds
+        self._last_risk_map = algorithms.belief_risk_map(
+            self.belief_worlds, self.belief_unknown_tiles)
+
+    def _update_belief_state(self):
+        if self.mode != 4:
+            return
+
+        self.frontier_tiles = self._compute_frontier_tiles()
+        unknown_tiles = self._mode4_unknown_tiles()
+        self.belief_state = {
+            "explored": len(self.explored_tiles),
+            "known_free": len(self.known_free),
+            "unknown": len(unknown_tiles),
+            "frontier": len(self.frontier_tiles),
+            "discovered_blocked": len(self.discovered_blocked),
+            "hidden_remaining": len(
+                self.hidden_blocked - self.discovered_blocked),
+            "belief_worlds": len(self.belief_worlds),
+            "belief_before": self.belief_worlds_before_observation,
+            "belief_after": self.belief_worlds_after_observation,
+            "inconsistent": self.belief_inconsistent,
+            "replans": self.replan_count,
+            "phase": self.mode4_phase,
+        }
+
+    def _belief_bfs_plan(self, start, goal, blocked):
+        path, explored, bfs_stats = algorithms.belief_state_bfs(
+            start, goal, blocked, self.belief_worlds,
+            self.belief_unknown_tiles, self._neighbors)
+        risky_steps = sum(tile in self.belief_unknown_tiles for tile in path)
+        stats = dict(bfs_stats)
+        stats.update({
+            "Algorithm": self.algorithm_name,
+            "Current node": f"{start}",
+            "Next node": f"{path[0] if path else start}",
+            "Target rule": "belief-state BFS to current target",
+            "Neighbor rule": "push only 4 adjacent neighbors",
+            "Risky steps": risky_steps,
+        })
+        return path, explored, (0, len(path), 0), stats
+
+    def _choose_mode4_target(self, remaining, start):
+        if self.algorithm_name in ("Belief-State BFS", "Belief BFS", "Belief A*"):
+            target, path, explored, fgh, stats = (
+                self._mode4_belief_state_target(start, remaining))
+        elif self.algorithm_name in (
+                "Online A*", "Online BFS", "Belief BFS", "Belief A*"):
+            if self.algorithm_name in ("Online BFS", "Belief BFS", "Belief A*"):
+                target, path, explored, fgh, stats = (
+                    self._mode4_online_bfs_frontier_target(start, remaining))
+            else:
+                target, path, explored, fgh, stats = (
+                    self._mode4_online_astar_frontier_target(start, remaining))
+        elif self.algorithm_name == "AND-OR Search":
+            all_seen_targets = self._and_or_seen_targets_now()
+            seen_targets = self._and_or_planning_targets(
+                start, all_seen_targets)
+            self.and_or_seen_targets = seen_targets
+            resume_target = self.and_or_resume_target
+            if self._and_or_target_valid(resume_target):
+                target = resume_target
+                self.and_or_resume_target = None
+                target_rule = "resume original target after drift rescue"
+            elif seen_targets:
+                target = min(
+                    seen_targets,
+                    key=lambda tile: (
+                        self._mode2_h_parts(start, tile)[3],
+                        self._mode2_condition_h(tile),
+                        self._heuristic(start, tile),
+                        tile))
+                target_rule = "same h(n)=distance+2*condition as Mode 2 A*"
+            else:
+                target = None
+
+            if target is not None:
+                priority, distance, condition_cost, h_val = (
+                    self._mode2_h_parts(start, target))
+                path, explored, fgh, stats = [], {start}, (0, 0, 0), {
+                    "Algorithm": self.algorithm_name,
+                    "Selected target": f"{target}",
+                    "Seen targets": len(seen_targets),
+                    "Seen targets total": len(all_seen_targets),
+                    "Planned seen targets": len(seen_targets),
+                    "Remaining seen targets": len(seen_targets),
+                    "Target rule": target_rule,
+                    "h(n)": f"{h_val}",
+                    "h distance": f"{distance}",
+                    "condition": f"{priority} -> +{condition_cost}",
+                    "OR node": "choose A* target",
+                    "AND outcomes": "70 correct / 10 / 10 / 10 drift",
+                }
+            else:
+                target, path, explored, fgh, stats = (
+                    None, [], set(), (0, 0, 0), {
+                        "Algorithm": self.algorithm_name,
+                        "Selected target": "None",
+                        "Seen targets": 0,
+                        "Target rule": "Wait for visible/seen targets",
+                    })
+        else:
+            target, path, explored, fgh, stats = (
+                self._mode4_priority_queue_astar_to_any_goal(
+                    start, remaining))
+        self.chosen_target_path = None
+        if target is None:
+            self.stats = stats
+            return None
+        if self.algorithm_name in (
+                "Online A*", "Online BFS",
+                "Belief-State BFS", "Belief BFS", "Belief A*"):
+            self.chosen_target_path = list(path)
+        self.astar_explored = set(explored)
+        self.astar_current_fgh = fgh
+        self.mode4_phase = "EXPLORE"
+        base_stats = {
+            "Algorithm": self.algorithm_name,
+            "Selected target": f"{target}",
+            "Target rule": (
+                "heapq.heappop(frontier)"
+                if self.algorithm_name in (
+                    "Online A*", "Online BFS",
+                    "Belief-State BFS", "Belief BFS", "Belief A*")
+                else "target selected only when (node == target) "
+                     "is popped from PQ"),
+            "Path source": (
+                "online frontier + algorithm core"
+                if self.algorithm_name in (
+                    "Online A*", "Online BFS",
+                    "Belief-State BFS", "Belief BFS", "Belief A*")
+                else "planner runs per algorithm"),
+        }
+        if self.algorithm_name in (
+                "Online A*", "Online BFS",
+                "Belief-State BFS", "Belief BFS", "Belief A*"):
+            if self.algorithm_name in (
+                    "Online BFS", "Belief-State BFS",
+                    "Belief BFS", "Belief A*"):
+                priority_keys = (
+                    "Algorithm", "Selected target", "Current tile",
+                    "Next node", "Frontier size", "Frontier max",
+                    "Frontier rule", "Target rule", "Neighbor rule",
+                    "Path source", "Path length", "Nodes explored",
+                    "Queue max", "Queued farms",
+                )
+            else:
+                priority_keys = (
+                    "Algorithm", "Selected target", "f(n)", "g(n)", "h(n)",
+                    "condition", "h distance", "Current tile", "Next node",
+                    "Frontier size", "Frontier max", "Frontier rule",
+                    "Target rule", "Neighbor rule", "Path source",
+                    "Path length", "Queued farms",
+                )
+            ordered_stats = {}
+            merged_stats = {**base_stats, **stats}
+            for key in priority_keys:
+                if key in merged_stats:
+                    ordered_stats[key] = merged_stats[key]
+            for key, val in merged_stats.items():
+                ordered_stats.setdefault(key, val)
+            self.stats = ordered_stats
+        else:
+            self.stats = base_stats
+            self.stats.update(stats)
+        return target
+
+    def _mode4_belief_tile_possible(self, tile):
+        if tile in self.discovered_blocked:
+            return False
+        if tile not in self.belief_unknown_tiles:
+            return True
+        if not self.belief_worlds:
+            return False
+        return any(tile not in world for world in self.belief_worlds)
+
+    def _mode4_belief_add_four_neighbors(self, tile):
+        if not self.mode4_belief_bfs_started:
+            self.mode4_belief_bfs_started = True
+            self.mode4_belief_bfs_visited.add(tile)
+            self.mode4_belief_bfs_parent.setdefault(tile, None)
+
+        x, y = tile
+        added = 0
+        for next_tile in (
+                (x - 1, y), (x + 1, y),
+                (x, y - 1), (x, y + 1)):
+            if not (0 <= next_tile[0] < self.cols
+                    and 0 <= next_tile[1] < self.rows):
+                continue
+            if (self.walkable_tiles is not None
+                    and next_tile not in self.walkable_tiles):
+                continue
+            if next_tile in self.mode4_belief_bfs_visited:
+                continue
+            if not self._mode4_belief_tile_possible(next_tile):
+                continue
+            self.mode4_belief_bfs_visited.add(next_tile)
+            self.mode4_belief_bfs_parent[next_tile] = tile
+            self.mode4_belief_bfs_queue.append(next_tile)
+            added += 1
+        self.mode4_belief_bfs_frontier_max = max(
+            self.mode4_belief_bfs_frontier_max,
+            len(self.mode4_belief_bfs_queue))
+        return added
+
+    def _mode4_belief_tree_path(self, start, target):
+        if start == target:
+            return []
+
+        def ancestors(tile):
+            result = []
+            current = tile
+            seen = set()
+            while current is not None and current not in seen:
+                result.append(current)
+                seen.add(current)
+                current = self.mode4_belief_bfs_parent.get(current)
+            return result
+
+        start_chain = ancestors(start)
+        target_chain = ancestors(target)
+        start_index = {tile: index for index, tile in enumerate(start_chain)}
+        lca = None
+        target_lca_index = 0
+        for index, tile in enumerate(target_chain):
+            if tile in start_index:
+                lca = tile
+                target_lca_index = index
+                break
+        if lca is None:
+            return [target] if self._heuristic(start, target) == 1 else []
+        up_path = start_chain[1:start_index[lca] + 1]
+        down_path = list(reversed(target_chain[:target_lca_index]))
+        return up_path + down_path
+
+    def _mode4_belief_state_target(self, start, remaining):
+        added = self._mode4_belief_add_four_neighbors(start)
+        unknown_tiles = self._mode4_unknown_tiles()
+        while self.mode4_belief_bfs_queue:
+            target = self.mode4_belief_bfs_queue.popleft()
+            if target in self.discovered_blocked:
+                continue
+            if not self._mode4_belief_tile_possible(target):
+                continue
+            path = self._mode4_belief_tree_path(start, target)
+            if not path and start != target:
+                continue
+            if not self._path_is_contiguous(start, path):
+                continue
+            self.mode4_belief_bfs_explored.add(target)
+            stats = {
+                "Algorithm": "Belief-State BFS",
+                "Search style": "single BFS queue for whole Mode 4",
+                "Queue rule": "add 4 directions, then FIFO pop",
+                "Neighbor order": "left, right, up, down",
+                "Selected target": f"{target}",
+                "Current tile": f"{start}",
+                "Next node": f"{path[0] if path else start}",
+                "Path length": len(path),
+                "Nodes explored": len(self.mode4_belief_bfs_explored),
+                "Queue size": len(self.mode4_belief_bfs_queue),
+                "Queue max": self.mode4_belief_bfs_frontier_max,
+                "Adjacent added": added,
+                "Possible worlds": len(self.belief_worlds),
+                "Belief unknowns": len(self.belief_unknown_tiles),
+                "Unknown tiles": len(unknown_tiles),
+                "Known free tiles": len(self.known_free),
+                "Discovered blocked": len(self.discovered_blocked),
+                "Policy": "global BFS traversal; no per-target BFS call",
+            }
+            return target, path, set(self.mode4_belief_bfs_explored), (
+                0, len(path), 0), stats
+
+        return None, [], set(), (0, 0, 0), {
+            "Algorithm": "Belief-State BFS",
+            "Map size": "5x5",
+            "Real hidden rocks": len(self.hidden_blocked),
+            "Robot prior": f"at most {self.belief_max_hidden} hidden rocks",
+            "Spawn outside": "yes" if self.spawn_tile not in self.farm_tiles else "no",
+            "Entry tile": f"{self.mode4_entry_tile}",
+            "Selected target": "None",
+            "Frontier tiles": len(self.frontier_tiles),
+            "Unknown tiles": len(unknown_tiles),
+            "Known free tiles": len(self.known_free),
+            "Discovered blocked": len(self.discovered_blocked),
+            "Worlds before obs": self.belief_worlds_before_observation,
+            "Worlds after obs": self.belief_worlds_after_observation,
+            "Current belief size": len(self.belief_worlds),
+            "Possible worlds": len(self.belief_worlds),
+            "Queue size": len(self.mode4_belief_bfs_queue),
+            "Result": (
+                "Inconsistent belief: no possible worlds remain"
+                if self.belief_inconsistent
+                else "Global BFS queue empty"),
+            "Policy": "global BFS traversal; no per-target BFS call",
+        }
+
+    def _mode4_online_astar_reset(self, start=None, remaining=None):
+        self.mode4_online_astar_open = []
+        self.mode4_online_astar_queued = set()
+        self.mode4_online_astar_parent = {}
+        self.mode4_online_astar_g_score = {}
+        self.mode4_online_astar_f_score = {}
+        self.mode4_online_astar_explored = set()
+        self.mode4_online_astar_root = start
+        self.mode4_online_astar_remaining_key = (
+            tuple(sorted(remaining)) if remaining is not None else None)
+        self.mode4_online_astar_frontier_max = 0
+        self.mode4_online_astar_started = False
+
+    def _mode4_online_bfs_reset(self):
+        self.mode4_online_bfs_queue = deque()
+        self.mode4_online_bfs_queued = set()
+        self.mode4_online_bfs_parent = {}
+        self.mode4_online_bfs_explored = set()
+        self.mode4_online_bfs_frontier_max = 0
+
+    def _mode4_belief_bfs_reset(self):
+        self.mode4_belief_bfs_queue = deque()
+        self.mode4_belief_bfs_visited = set()
+        self.mode4_belief_bfs_parent = {}
+        self.mode4_belief_bfs_explored = set()
+        self.mode4_belief_bfs_frontier_max = 0
+        self.mode4_belief_bfs_started = False
+
+    def _mode4_online_bfs_add_adjacent_farms(self, current, remaining_set,
+                                             blocked):
+        added = 0
+        for candidate in self._neighbors(current, blocked):
+            if candidate not in remaining_set:
+                continue
+            if candidate in self.mode4_online_bfs_queued:
+                continue
+            if candidate in blocked or candidate in self.discovered_blocked:
+                continue
+            if candidate in self.done_tiles or candidate in self.enemy_done_tiles:
+                continue
+            self.mode4_online_bfs_queue.append(candidate)
+            self.mode4_online_bfs_queued.add(candidate)
+            self.mode4_online_bfs_parent[candidate] = current
+            added += 1
+        self.mode4_online_bfs_frontier_max = max(
+            self.mode4_online_bfs_frontier_max,
+            len(self.mode4_online_bfs_queue))
+        return added
+
+    def _mode4_online_bfs_frontier_target(self, start, remaining):
+        remaining_set = {
+            tile for tile in remaining
+            if tile in self.farm_tiles
+            and tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        }
+        if not remaining_set:
+            return None, [], set(), (0, 0, 0), {
+                "Algorithm": self.algorithm_name,
+                "Path length": 0,
+                "Result": "No target candidates",
+            }
+
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        added = self._mode4_online_bfs_add_adjacent_farms(
+            start, remaining_set, blocked)
+
+        while self.mode4_online_bfs_queue:
+            target = self.mode4_online_bfs_queue.popleft()
+            self.mode4_online_bfs_queued.discard(target)
+            if target in blocked or target in self.discovered_blocked:
+                self.mode4_online_bfs_parent.pop(target, None)
+                continue
+            if target not in remaining_set or target in self.done_tiles:
+                continue
+            target_blocked = set(blocked)
+            target_blocked.discard(target)
+            path, explored, _, core_stats = algorithms.find_path_by_algorithm(
+                "BFS", start, target, target_blocked, self._neighbors,
+                self._search_heuristic, self.counter, self._step_cost)
+            if start != target and not path:
+                continue
+            if not self._path_is_contiguous(start, path):
+                continue
+            self.mode4_online_bfs_explored.update(explored)
+            stats = {
+                "Algorithm": self.algorithm_name,
+                "Selected target": f"{target}",
+                "Current tile": f"{start}",
+                "Next node": f"{path[0] if path else start}",
+                "Frontier size": len(self.mode4_online_bfs_queue),
+                "Frontier max": self.mode4_online_bfs_frontier_max,
+                "Frontier rule": "FIFO queue stores discovered farm tiles",
+                "Target rule": "popleft() first discovered farm",
+                "Neighbor rule": "add farm tiles in 4 adjacent directions",
+                "Path source": (
+                    "Belief-state BFS in _online_plan"
+                    if self.algorithm_name in (
+                        "Belief-State BFS", "Belief BFS", "Belief A*")
+                    else "BFS core from Mode 1"),
+                "Path length": len(path),
+                "Nodes explored": len(explored),
+                "Queue max": core_stats.get("Queue max", "-"),
+                "Queued farms": len(self.mode4_online_bfs_queued),
+                "Adjacent farms added": added,
+            }
+            return target, path, set(self.mode4_online_bfs_explored), (0, 0, 0), stats
+
+        return None, [], set(self.mode4_online_bfs_explored), (0, 0, 0), {
+            "Algorithm": self.algorithm_name,
+            "Path length": 0,
+            "Frontier size": 0,
+            "Frontier max": self.mode4_online_bfs_frontier_max,
+            "Queued farms": len(self.mode4_online_bfs_queued),
+            "Adjacent farms added": added,
+            "Result": "FIFO frontier empty",
+            "Frontier rule": "FIFO queue stores discovered farm tiles",
+            "Target rule": "popleft() first discovered farm",
+        }
+
+    def _mode4_online_astar_push_farm_candidate(self, current, candidate,
+                                                remaining_set, blocked):
+        if candidate not in remaining_set:
+            return False
+        if candidate in blocked or candidate in self.discovered_blocked:
+            return False
+        if candidate in self.done_tiles or candidate in self.enemy_done_tiles:
+            return False
+        parent_g = self.mode4_online_astar_g_score.get(current)
+        if parent_g is None:
+            parent_g = (
+                0 if current == self.mode4_online_astar_root
+                else self.mode4_completed_g)
+            self.mode4_online_astar_g_score[current] = parent_g
+        g_val = parent_g + 1
+        old_g = self.mode4_online_astar_g_score.get(candidate, math.inf)
+        if candidate in self.mode4_online_astar_queued and g_val >= old_g:
+            return False
+        condition = self._mode2_condition_h(candidate)
+        distance = self._heuristic(current, candidate)
+        h_val = distance + 2 * condition
+        f_val = g_val + h_val
+        self.mode4_online_astar_queued.add(candidate)
+        self.mode4_online_astar_parent[candidate] = current
+        self.mode4_online_astar_g_score[candidate] = g_val
+        self.mode4_online_astar_f_score[candidate] = f_val
+        heapq.heappush(
+            self.mode4_online_astar_open,
+            (
+                f_val, h_val, g_val, condition,
+                next(self.counter), candidate,
+            ))
+        self.mode4_online_astar_frontier_max = max(
+            self.mode4_online_astar_frontier_max,
+            len(self.mode4_online_astar_open))
+        return True
+
+    def _mode4_online_astar_add_adjacent_farms(self, current, remaining_set,
+                                               blocked):
+        added = 0
+        for candidate in self._neighbors(current, blocked):
+            if self._mode4_online_astar_push_farm_candidate(
+                    current, candidate, remaining_set, blocked):
+                added += 1
+        return added
+
+    def _mode4_online_astar_frontier_target(self, start, remaining):
+        """Mode 4 Online A*: persistent PQ containing only adjacent farms."""
+        remaining_set = {
+            tile for tile in remaining
+            if tile in self.farm_tiles
+            and tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        }
+        if not remaining_set:
+            return None, [], set(), (0, 0, 0), {
+                "Algorithm": self.algorithm_name,
+                "Path length": 0,
+                "Result": "No target candidates",
+            }
+
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        if not self.mode4_online_astar_started:
+            self.mode4_online_astar_started = True
+            self.mode4_online_astar_root = start
+            self.mode4_online_astar_g_score[start] = 0
+        added = self._mode4_online_astar_add_adjacent_farms(
+            start, remaining_set, blocked)
+
+        while self.mode4_online_astar_open:
+            (
+                current_f, current_h, current_g, condition,
+                _counter, target,
+            ) = heapq.heappop(self.mode4_online_astar_open)
+            if target in blocked or target in self.discovered_blocked:
+                self.mode4_online_astar_queued.discard(target)
+                self.mode4_online_astar_parent.pop(target, None)
+                self.mode4_online_astar_g_score.pop(target, None)
+                self.mode4_online_astar_f_score.pop(target, None)
+                continue
+            if target not in remaining_set or target in self.done_tiles:
+                self.mode4_online_astar_queued.discard(target)
+                continue
+            if current_f != self.mode4_online_astar_f_score.get(target):
+                continue
+            if current_g != self.mode4_online_astar_g_score.get(target):
+                continue
+            target_blocked = set(blocked)
+            target_blocked.discard(target)
+            if self.algorithm_name == "Online BFS":
+                path, explored, _, core_stats = algorithms.find_path_by_algorithm(
+                    "BFS", start, target, target_blocked, self._neighbors,
+                    self._search_heuristic, self.counter, self._step_cost)
+                path_source = "BFS core from Mode 1"
+            else:
+                path, explored, _, core_stats = algorithms.astar_4dir_f_update(
+                    start, target, target_blocked, self._neighbors,
+                    self._heuristic, self.counter)
+                path_source = "A* 4-dir from current start to popped farm"
+            if start != target and not path:
+                continue
+            if not self._path_is_contiguous(start, path):
+                continue
+            self.mode4_online_astar_queued.discard(target)
+            self.mode4_online_astar_explored.update(explored)
+            next_node = path[0] if path else start
+            stats = {
+                "Algorithm": self.algorithm_name,
+                "Selected target": f"{target}",
+                "f(n)": f"{current_f}",
+                "g(n)": f"{current_g}",
+                "h(n)": f"{current_h}",
+                "condition": f"{condition}",
+                "h distance": f"{self._heuristic(start, target)}",
+                "Current tile": f"{start}",
+                "Next node": f"{next_node}",
+                "Frontier size": len(self.mode4_online_astar_open),
+                "Frontier max": self.mode4_online_astar_frontier_max,
+                "Frontier rule": "persistent PQ stores only farm tiles",
+                "Target rule": "heapq.heappop(farm frontier)",
+                "Neighbor rule": "add farm tiles in 4 adjacent directions",
+                "Path source": path_source,
+                "Path length": len(path),
+                "Nodes explored": len(explored),
+                "Queue max": core_stats.get("Queue max", "-"),
+                "g completed": f"{self.mode4_completed_g}",
+                "Queued farms": len(self.mode4_online_astar_queued),
+                "Adjacent farms added": added,
+            }
+            return (
+                target, path,
+                set(self.mode4_online_astar_explored),
+                (current_f, current_g, current_h), stats)
+
+        return None, [], set(self.mode4_online_astar_explored), (0, 0, 0), {
+            "Algorithm": self.algorithm_name,
+            "Path length": 0,
+            "Frontier size": 0,
+            "Frontier max": self.mode4_online_astar_frontier_max,
+            "Queued farms": len(self.mode4_online_astar_queued),
+            "Adjacent farms added": added,
+            "Result": "No adjacent farm in persistent PQ",
+            "Frontier rule": "persistent PQ stores only farm tiles",
+            "Neighbor rule": "add farm tiles in 4 adjacent directions",
+        }
+
+    def _update_mode4_online_astar_hud(self, current, next_tile, target):
+        if (self.mode != 4
+                or self.algorithm_name != "Online A*"
+                or target is None):
+            return
+        display_node = current
+        if self.mode4_active_step is not None:
+            display_node = self.mode4_active_step[0]
+        condition = self._mode2_condition_h(target)
+        display_f, display_g, display_h = self.astar_current_fgh
+        self.stats.update({
+            "Selected target": f"{target}",
+            "Target": f"{target}",
+            "f(n)": f"{display_f}",
+            "g(n)": f"{display_g}",
+            "h(n)": f"{display_h}",
+            "condition": f"{condition}",
+            "Current tile": f"{display_node}",
+            "Next node": f"{next_tile}",
+            "Display f from robot": f"{display_f}",
+            "Frontier size": len(self.mode4_online_astar_open),
+            "Frontier max": self.mode4_online_astar_frontier_max,
+            "Frontier rule": "persistent PQ stores only farm tiles",
+            "Target rule": "heapq.heappop(farm frontier)",
+            "Neighbor rule": "add farm tiles in 4 adjacent directions",
+        })
+
+    def _mode4_priority_queue_astar_to_any_goal(self, start, remaining,
+                                                step_cost=None):
+        """Select a Mode-4 target only when it is popped from one A* heap."""
+        candidates = [
+            tile for tile in remaining
+            if tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        ]
+        if not candidates:
+            return None, [], set(), (0, 0, 0), {
+                "Algorithm": self.algorithm_name,
+                "Path length": 0,
+                "Result": "No target candidates",
+            }
+
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        for target in candidates:
+            blocked.discard(target)
+
+        open_set = []
+        came_from = {}
+        f_score = {}
+        explored = set()
+        max_frontier = 0
+
+        def condition_priority(tile):
+            return self._mode2_condition_h(tile)
+
+        def state_priority(node, target):
+            g_to_target = self._heuristic(node, target)
+            condition = condition_priority(target)
+            f_val = g_to_target + 2 * condition
+            return f_val, g_to_target, condition
+
+        def push_state(node, target, parent=None):
+            f_val, g_to_target, condition = state_priority(node, target)
+            state = (node, target)
+            if f_val >= f_score.get(state, math.inf):
+                return False
+            f_score[state] = f_val
+            if parent is not None:
+                came_from[state] = parent
+            heapq.heappush(
+                open_set,
+                # Heap tie-break: f, condition, distance, target coords.
+                (f_val, condition, g_to_target, target,
+                 next(self.counter), node, target))
+            return True
+
+        def reconstruct_state_path(node, target):
+            state = (node, target)
+            path = [node]
+            while state in came_from:
+                state = came_from[state]
+                path.append(state[0])
+            path.reverse()
+            return path[1:]
+
+        for target in candidates:
+            if push_state(start, target):
+                max_frontier = max(max_frontier, len(open_set))
+
+        while open_set:
+            (
+                current_f, current_condition, current_g_to_target, _,
+                _, current, target
+            ) = heapq.heappop(open_set)
+            state = (current, target)
+            if current_f > f_score.get(state, math.inf):
+                continue
+
+            explored.add(current)
+            if current == target:
+                path = reconstruct_state_path(current, target)
+                if not self._path_is_contiguous(start, path):
+                    return None, [], explored, (0, 0, 0), {
+                        "Algorithm": self.algorithm_name,
+                        "Path length": 0,
+                        "Nodes explored": len(explored),
+                        "Frontier max": max_frontier,
+                        "Result": "Non-contiguous path rejected",
+                        "Update rule": "only update when f_new < f_old",
+                        "Neighbor rule": "push only 4 adjacent neighbors",
+                    }
+                condition_cost = 2 * current_condition
+                display_g = len(path)
+                display_h = condition_cost
+                display_f = display_g + display_h
+                return target, path, explored, (
+                    display_f, display_g, display_h), {
+                    "Top PQ candidate": (
+                        f"node={start}, target={target}, f={display_f}"),
+                    "Selected target": f"{target}",
+                    "f(n)": f"{display_f}",
+                    "g(n)": f"{display_g}",
+                    "condition": f"{current_condition}",
+                    "h(n)": f"{display_h}",
+                    "g leg": f"{display_g}",
+                    "g completed": f"{self.mode4_completed_g}",
+                    "Current node": f"{start}",
+                    "Target carried in PQ": f"{target}",
+                    "Next node": f"{path[0] if path else start}",
+                    "Path length": len(path),
+                    "Nodes explored": len(explored),
+                    "Frontier max": max_frontier,
+                    "Popped node": f"{current}",
+                    "Popped target": f"{target}",
+                    "Popped f": f"{current_f}",
+                    "Display f from robot": f"{display_f}",
+                    "h condition": (
+                        f"2 * {current_condition} = {display_h} "
+                        f"({self._condition_for_tile(target)})"),
+                    "Candidate targets": len(candidates),
+                    "Search style": "single priority queue",
+                    "Replan every step": "yes",
+                    "Reason": (
+                        "Online A* replans after each observed tile"),
+                    "Target rule": (
+                        "target selected only when (node == target) "
+                        "is popped from PQ"),
+                    "Update rule": "only update when f_new < f_old",
+                    "Neighbor rule": "push only 4 adjacent neighbors",
+                }
+
+            for neighbor in self._neighbors(current, blocked):
+                if self._heuristic(current, neighbor) != 1:
+                    continue
+                if push_state(neighbor, target, state):
+                    max_frontier = max(max_frontier, len(open_set))
+
+        return None, [], explored, (0, 0, 0), {
+            "Algorithm": self.algorithm_name,
+            "Path length": 0,
+            "Nodes explored": len(explored),
+            "Frontier max": max_frontier,
+            "Result": "No reachable target",
+            "Candidate targets": len(candidates),
+            "Search style": "single priority queue",
+            "Target rule": (
+                "target selected only when (node == target) is popped from PQ"),
+            "Update rule": "only update when f_new < f_old",
+            "Neighbor rule": "push only 4 adjacent neighbors",
+        }
+
+
     def _expand_vision(self, center):
         """Má»Ÿ rá»™ng vĂ¹ng Ä‘Ă£ khĂ¡m phĂ¡ quanh center."""
         before_explored = set(self.explored_tiles)
         before_blocked = set(self.discovered_blocked)
+        self.belief_worlds_before_observation = len(self.belief_worlds)
         algorithms.expand_vision(
             center, self.vision_radius, self.rows, self.cols,
             self.hidden_blocked, self.explored_tiles,
@@ -2340,100 +3264,180 @@ class FarmAIController:
         observed_tiles = self.explored_tiles - before_explored
         observed_blocked = self.discovered_blocked - before_blocked
         observed_free = observed_tiles - self.discovered_blocked
+        observed_free = {
+            tile for tile in observed_free
+            if self.walkable_tiles is None or tile in self.walkable_tiles
+        }
+        self.known_free.update(observed_free)
+        self.known_free.add(center)
+        if self.mode4_entry_tile is not None:
+            self.known_free.add(self.mode4_entry_tile)
+        tracked_unknowns = set(self.belief_unknown_tiles)
         if self.belief_worlds:
             self.belief_worlds = algorithms.update_belief_worlds(
-                self.belief_worlds, observed_free, observed_blocked)
-            self.belief_unknown_tiles -= observed_free
-            self.belief_unknown_tiles -= observed_blocked
+                self.belief_worlds,
+                observed_free & tracked_unknowns,
+                observed_blocked & tracked_unknowns)
+        self.belief_unknown_tiles -= observed_free
+        self.belief_unknown_tiles -= observed_blocked
+        self.belief_worlds_after_observation = len(self.belief_worlds)
+        self.belief_inconsistent = not self.belief_worlds
+        if self.belief_inconsistent:
+            self.message = "Inconsistent belief: no possible worlds remain"
+            self._rebuild_mode4_belief_from_observations()
+        else:
+            self._last_risk_map = algorithms.belief_risk_map(
+                self.belief_worlds, self.belief_unknown_tiles)
+        self._update_belief_state()
+
+    def _and_or_seen_targets_now(self):
+        return frozenset(
+            tile for tile in self.farm_tiles
+            if tile in self.explored_tiles
+            and tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        )
+
+    def _and_or_planning_targets(self, start, seen_targets):
+        ordered = sorted(
+            seen_targets,
+            key=lambda tile: (
+                self._mode2_h_parts(start, tile)[3],
+                self._mode2_condition_h(tile),
+                self._heuristic(start, tile),
+                tile,
+            )
+        )
+        return frozenset(ordered)
+
+    def _and_or_target_valid(self, tile):
+        return (
+            tile in self.farm_tiles
+            and tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        )
 
     def _online_plan(self, start, goal):
         """Online Search: chá»‰ biáº¿t váº­t cáº£n Ä‘Ă£ khĂ¡m phĂ¡, phĂ¡t hiá»‡n thĂªm khi Ä‘i."""
+        self.mode4_phase = "REPLAN" if self.replan_count else "EXPLORE"
         if goal in self.discovered_blocked:
+            self._update_belief_state()
+            return []
+        if start == goal:
+            explored_in_area = self.explored_tiles & (
+                set(self.farm_tiles) | {self.spawn_tile})
+            self.astar_current_fgh = (
+                self.mode4_completed_g, self.mode4_completed_g, 0)
+            self.stats = {
+                "Algorithm": self.algorithm_name,
+                "Current target": f"{goal}",
+                "Path length": 0,
+                "Nodes explored": 1,
+                "f(n)": f"{self.mode4_completed_g}",
+                "g(n)": f"{self.mode4_completed_g}",
+                "h(n)": "0",
+                "g leg": 0,
+                "g completed": self.mode4_completed_g,
+                "Replanned": f"{self.replan_count} lan",
+                "Explored tiles": f"{len(explored_in_area)}",
+                "Blocks found": (
+                    f"{len(self.discovered_blocked)}/{len(self.hidden_blocked)}"),
+                "Online policy": "Already at selected target",
+            }
+            if self.algorithm_name in (
+                    "Online BFS", "Belief-State BFS",
+                    "Belief BFS", "Belief A*"):
+                self.stats["Queue max"] = 1
             return []
 
+        self._update_belief_state()
         if self.algorithm_name in (
-                "Belief A*", "Belief Init-Goal A*", "AND-OR Search"):
+                "Belief-State BFS", "Belief BFS",
+                "Belief A*", "AND-OR Search"):
             blocked = self._blocked_tiles()
             blocked.discard(start)
             blocked.discard(goal)
-            initial_belief = {
-                (x, y)
-                for y in range(self.rows)
-                for x in range(self.cols)
-                if (x, y) not in self.explored_tiles
-                and (self.walkable_tiles is None
-                     or (x, y) in self.walkable_tiles)
-            }
             if self.algorithm_name == "AND-OR Search":
-                search_depth = min(
-                    12, max(5, self._heuristic(start, goal) + 2))
-                path, policy, explored, belief_stats = algorithms.and_or_search(
-                    start, goal, blocked, initial_belief, self._neighbors,
-                    self._search_heuristic, self.counter,
-                    max_depth=search_depth
-                )
-                self.and_or_policy = policy
-                if not path:
-                    path, explored, fallback_stats = algorithms.belief_astar(
-                        start, goal, blocked, initial_belief,
-                        self._neighbors, self._search_heuristic, self.counter)
-                    belief_stats.update({
-                        "Contingent fallback": "Intended branch; rebuild next state",
-                        "Fallback path": fallback_stats.get("Path length", 0),
-                    })
-            elif self.algorithm_name == "Belief Init-Goal A*":
-                possible_starts = {start}
-                possible_starts.update(
-                    tile for tile in self._neighbors(start, blocked)
-                    if tile not in self.explored_tiles
-                )
-                possible_goals = {goal}
-                possible_goals.update(self._neighbors(goal, blocked))
-                path, explored, _, chosen_goal, belief_stats = (
-                    algorithms.belief_init_goal_astar(
-                        possible_starts, possible_goals, blocked,
-                        initial_belief, self._neighbors,
+                path, explored, fgh, belief_stats = (
+                    algorithms.astar_4dir_f_update(
+                        start, goal, blocked, self._neighbors,
                         self._search_heuristic, self.counter,
-                        preferred_start=start
-                    )
-                )
-                if chosen_goal is not None and chosen_goal != goal:
-                    if goal in self._neighbors(chosen_goal, blocked):
-                        path.append(goal)
-                        belief_stats["Path length"] = len(path)
-                        belief_stats["Resolved goal"] = goal
+                        self._step_cost))
+                self.astar_current_fgh = fgh
+                _, g_leg, h_val = fgh
+                g_total = self.mode4_completed_g + g_leg
+                f_val = g_total + h_val
+                belief_stats.update({
+                    "Algorithm": "AND-OR Search",
+                    "f(n)": f"{f_val}",
+                    "g(n)": f"{g_total}",
+                    "h(n)": f"{h_val}",
+                    "g leg": g_leg,
+                    "g completed": self.mode4_completed_g,
+                    "Search style": "OR picks A* node; AND samples outcome",
+                    "Target rule": "same h(n) priority as Mode 2 A*",
+                    "AND outcomes": "70 correct / 10 / 10 / 10 drift",
+                    "Policy": "replan after actual outcome",
+                })
             else:
-                selected_unknowns = algorithms.select_relevant_unknown_tiles(
-                    initial_belief, start, goal, self._search_heuristic,
-                    limit=6)
-                belief_context = (
-                    start, goal, frozenset(selected_unknowns)
-                )
-                if self.belief_context != belief_context:
-                    self.belief_context = belief_context
-                    self.belief_unknown_tiles = set(selected_unknowns)
-                    self.belief_worlds = algorithms.generate_belief_worlds(
-                        selected_unknowns, max_hidden=2)
+                self.belief_unknown_tiles = self._mode4_unknown_tiles()
                 risk_map = algorithms.belief_risk_map(
                     self.belief_worlds, self.belief_unknown_tiles)
-                belief_neighbors = lambda tile, blocked_set: (
-                    self._belief_neighbors(tile, blocked_set, goal, risk_map)
-                )
-                path, explored, belief_stats = algorithms.belief_world_astar(
-                    start, goal, blocked, self.belief_worlds, risk_map,
-                    self.belief_unknown_tiles, belief_neighbors,
-                    self._search_heuristic, self.counter
-                )
+                self._last_risk_map = dict(risk_map)
+                path, explored, fgh, belief_stats = self._belief_bfs_plan(
+                    start, goal, blocked)
+                self.astar_current_fgh = fgh
+                if path:
+                    path = path[:1]
+                    belief_stats["Next node"] = f"{path[0]}"
+                    belief_stats["Robot execution"] = (
+                        "one real robot; execute first BFS tile only")
+                else:
+                    belief_stats["Robot execution"] = "no action"
             self.astar_explored = explored
         else:
-            path = self._astar(start, goal)
-            belief_stats = {}
+            blocked = self._blocked_tiles()
+            blocked.discard(start)
+            blocked.discard(goal)
+            path, explored, fgh, belief_stats = algorithms.astar_4dir_f_update(
+                start, goal, blocked, self._neighbors,
+                self._search_heuristic, self.counter, self._step_cost)
+            self.astar_explored = set(explored)
+            self.astar_current_fgh = fgh
+            belief_stats["Algorithm"] = self.algorithm_name
+            if self.algorithm_name == "Online A*":
+                _, g_leg, h_val = fgh
+                g_total = self.mode4_completed_g + g_leg
+                f_val = g_total + h_val
+                belief_stats.update({
+                    "f(n)": f"{f_val}",
+                    "g(n)": f"{g_total}",
+                    "h(n)": f"{h_val}",
+                    "g leg": g_leg,
+                    "g completed": self.mode4_completed_g,
+                })
+
+        if "g leg" not in belief_stats:
+            belief_stats["g leg"] = len(path)
+        if "g completed" not in belief_stats:
+            belief_stats["g completed"] = self.mode4_completed_g
+        belief_stats["Path length"] = len(path)
+        belief_stats["Current target"] = f"{goal}"
+        belief_stats.setdefault("Current node", f"{start}")
+        belief_stats.setdefault("Next node", f"{path[0] if path else start}")
+        if self.algorithm_name == "Online A*":
+            belief_stats.setdefault(
+                "Update rule", "only update when f_new < f_old")
+            belief_stats.setdefault(
+                "Neighbor rule", "push only 4 adjacent neighbors")
 
         explored_in_area = self.explored_tiles & (
             set(self.farm_tiles) | {self.spawn_tile})
         total_explored = len(explored_in_area)
         total_map = len(self.farm_tiles) + 1
-        self.stats = {
+        base_stats = {
             "Algorithm": self.algorithm_name,
             "Current target": f"{goal}",
             "Explored tiles": f"{total_explored}",
@@ -2444,17 +3448,34 @@ class FarmAIController:
             "Unknown blocks": len(
                 self.hidden_blocked - self.discovered_blocked),
         }
+        priority_keys = (
+            "Algorithm", "Current target", "f(n)", "g(n)", "h(n)",
+            "Current node", "Next node", "Path length", "Queue max",
+            "Frontier max", "Belief states", "Possible worlds",
+            "g leg", "g completed", "Search style", "Target rule",
+            "Update rule", "Neighbor rule",
+        )
+        ordered_stats = {}
+        for key in priority_keys:
+            if key in belief_stats:
+                ordered_stats[key] = belief_stats[key]
+            elif key in base_stats:
+                ordered_stats[key] = base_stats[key]
+        for key, val in base_stats.items():
+            ordered_stats.setdefault(key, val)
+        for key, val in belief_stats.items():
+            ordered_stats.setdefault(key, val)
+        self.stats = ordered_stats
         if self.algorithm_name == "Online A*":
             self.stats["Online policy"] = "Plan known map; patch on discovery"
-        elif self.algorithm_name == "Belief A*":
-            self.stats["Online policy"] = "Possible worlds over hidden blocks"
-        elif self.algorithm_name == "Belief Init-Goal A*":
-            self.stats["Online policy"] = "Belief over start and goal"
+        elif self.algorithm_name == "Online BFS":
+            self.stats["Online policy"] = "BFS on known map; replan on discovery"
+        elif self.algorithm_name in ("Belief-State BFS", "Belief BFS", "Belief A*"):
+            self.stats["Online policy"] = "Belief-state BFS over hidden blocks"
         else:
-            self.stats["Online policy"] = "Plan for success/failure outcomes"
-            self.stats["Backtracking"] = "logical rollback on failed branch"
-            self.stats["Backtracks"] = self.and_or_backtrack_count
-        self.stats.update(belief_stats)
+            self.stats["Online policy"] = "OR uses A*; AND samples 70/10/10/10"
+            self.stats["Backtracking"] = "replan from actual outcome"
+        self._update_belief_state()
         return path
 
     def _sample_and_or_outcome(self, current, intended):
@@ -2462,11 +3483,13 @@ class FarmAIController:
         dy = intended[1] - current[1]
         directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
         intended_direction = (dx, dy)
+        if intended_direction not in directions:
+            return current, 100, "Invalid intended step; stay"
         outcomes = [intended_direction]
         outcomes.extend(
             direction for direction in directions
             if direction != intended_direction)
-        probabilities = (40, 20, 20, 20)
+        probabilities = (70, 10, 10, 10)
         chosen = random.choices(outcomes, weights=probabilities, k=1)[0]
         probability = probabilities[outcomes.index(chosen)]
         actual = (current[0] + chosen[0], current[1] + chosen[1])
@@ -2481,60 +3504,11 @@ class FarmAIController:
             return current, probability, f"Blocked at {actual}; stay"
         if actual == intended:
             return actual, probability, "Correct direction"
-        return actual, probability, "Wrong direction; continue policy"
-
-    def _and_or_policy_path(self, start, goal, max_steps=50):
-        """Extract a path from start to goal by following self.and_or_policy."""
-        path = []
-        current = start
-        seen = {start} | self.and_or_visited
-        policy = self.and_or_policy
-        for _ in range(max_steps):
-            if current == goal or current not in policy:
-                break
-            nxt = policy[current]
-            if nxt is None or nxt in seen:
-                break
-            path.append(nxt)
-            seen.add(nxt)
-            current = nxt
-        return path
-
-    def _and_or_replan_from_current(self, reason, wait_time=0.18):
-        current = self._world_to_tile(self.player.rect.center)
-        self.replan_count += 1
-        self._clear_full_garden_plan()
-        self.and_or_visited = {current}
-        self.and_or_intended_tile = None
-        self.and_or_actual_tile = None
-        self.path = self._online_plan(current, self.current_target)
-        if not self.path and current != self.current_target:
-            self.state = "CHOOSE_TARGET"
-        self.stats.update({
-            "Contingency": f"soft replan: {reason}",
-            "Replan from": f"{current}",
-            "Visited states": len(self.and_or_visited),
-        })
-        self.message = (
-            f"AND-OR: {reason}, re-plan mem lan {self.replan_count}")
-        self.wait_time = wait_time
-
-    def _and_or_logical_backtrack(self, reason, wait_time=0.18):
-        self.and_or_backtrack_count += 1
-        self.and_or_backtrack_reason = reason
-        self._and_or_replan_from_current(reason, wait_time)
-        self.stats.update({
-            "Backtracks": self.and_or_backtrack_count,
-            "Backtrack reason": reason,
-            "Backtrack type": "logical rollback",
-        })
-        self.message = (
-            f"AND-OR backtrack #{self.and_or_backtrack_count}: {reason}")
+        return actual, probability, "Wrong direction; replan from actual tile"
 
     def _and_or_reset_navigation(self):
-        """Clear navigation state when changing target."""
+        """Clear transient navigation state for the current stochastic step."""
         self.and_or_visited.clear()
-        self.and_or_policy = {}
 
     def _finish_and_or_outcome(self):
         intended = self.and_or_intended_tile
@@ -2552,76 +3526,112 @@ class FarmAIController:
             "Visited states": len(self.and_or_visited),
         })
         self._expand_vision(actual)
+        latest_seen_targets = self._and_or_planning_targets(
+            actual, self._and_or_seen_targets_now())
+        seen_targets_changed = latest_seen_targets != self.and_or_seen_targets
+        if seen_targets_changed:
+            self.and_or_seen_targets = latest_seen_targets
 
-        # Always evaluate the tile the robot actually reached first,
-        # whether the move followed the intended direction or drifted.
-        if actual == self.current_target and actual not in self.done_tiles:
-            self.path = []
-            self._and_or_reset_navigation()
-            self.state = self._state_after_arrival(actual)
-            self.stats.update({
-                "Observed tile": f"{actual}",
-                "Observed action": "Current target reached",
-            })
-            self.message = f"AND-OR xet o {actual}: dung muc tieu, xu ly cay"
-            self.wait_time = 0.18
-            return
-
-        # ---- SUCCESS: reached intended tile ----
+        # Correct move: keep aiming at the selected target. Do not care for
+        # untreated crops passed along the route.
         if actual == intended:
             self.and_or_visited.add(actual)
-            self.path.pop(0)
+            if self.path:
+                self.path.pop(0)
             return
 
-        # ---- BLOCKED: stayed in place ----
-        if label.startswith("Blocked"):
-            self._and_or_logical_backtrack(f"Bi chan tai {actual}", 0.25)
-            return
-
-        # ---- DRIFT: ended up on a different tile ----
-
-        if actual in self.farm_tiles and actual not in self.done_tiles:
+        # Drift move: only then evaluate the tile the robot actually reached.
+        if (actual in self.farm_tiles
+                and actual not in self.done_tiles
+                and actual not in self.discovered_blocked
+                and actual not in self.enemy_done_tiles):
             previous_target = self.current_target
+            if (previous_target is not None
+                    and previous_target != actual
+                    and self._and_or_target_valid(previous_target)):
+                self.and_or_resume_target = previous_target
             self.current_target = actual
             self.path = []
             self._and_or_reset_navigation()
             self.state = self._state_after_arrival(actual)
             self.stats.update({
                 "Observed tile": f"{actual}",
-                "Observed action": "Other plant reached; handle now",
+                "Observed action": "drift found untreated tile; handle now",
                 "Previous target": f"{previous_target}",
+                "Resume target": f"{self.and_or_resume_target}",
             })
-            self.message = (
-                f"AND-OR xet o {actual}: lech sang cay khac, xu ly cay nay")
+            self.message = f"AND-OR xet o {actual}: xu ly target da thay"
             self.wait_time = 0.18
             return
 
-        # Drifted to a tile we already visited -> logical backtrack.
-        if actual in self.and_or_visited:
-            self._and_or_logical_backtrack(
-                f"Quay lai o da tham {actual}", 0.18)
+        # ---- BLOCKED: stayed in place ----
+        if label.startswith("Blocked"):
+            self.path = []
+            self.current_target = None
+            self.state = "CHOOSE_TARGET"
+            self.replan_count += 1
+            self.mode4_phase = "REPLAN"
+            self._clear_full_garden_plan()
+            self._and_or_reset_navigation()
+            self.stats.update({
+                "Contingency": f"{label}; choose new target",
+            })
+            self.message = (
+                f"AND-OR: {label}, "
+                f"chon lai muc tieu (lan {self.replan_count})")
+            self._update_belief_state()
+            self.wait_time = 0.25
             return
 
-        # New tile — try following contingent policy.
+        # ---- DRIFT: ended up on a different tile ----
+
         self.and_or_visited.add(actual)
-        contingency_path = self._and_or_policy_path(
-            actual, self.current_target)
-        if contingency_path:
-            self.path = contingency_path
+        self.path = []
+        self.replan_count += 1
+        self.mode4_phase = "REPLAN"
+        self._clear_full_garden_plan()
+        self._and_or_reset_navigation()
+
+        if actual in self.done_tiles:
+            self.and_or_resume_target = None
+            self.current_target = None
+            self.state = "CHOOSE_TARGET"
             self.stats.update({
-                "Contingency": "followed policy",
-                "Policy state": f"{actual}",
-                "Policy size": len(self.and_or_policy),
+                "Contingency": "drifted to already handled tile",
+                "Next OR step": "choose a new target",
+            })
+            self.message = (
+                f"AND-OR drift {probability}% vao o da chua {actual}; "
+                f"chon lai muc tieu (lan {self.replan_count})")
+            self.wait_time = 0.18
+            return
+
+        if self._and_or_target_valid(self.current_target):
+            self.and_or_resume_target = self.current_target
+            self.current_target = None
+            self.state = "CHOOSE_TARGET"
+            self.stats.update({
+                "Contingency": "drifted to free tile",
+                "Resume target": f"{self.and_or_resume_target}",
+                "Next OR step": "A* replan from actual tile to target",
             })
             self.message = (
                 f"AND-OR drift {probability}%: {label}; "
-                f"theo ke hoach du phong")
+                f"di lai toi target cu (lan {self.replan_count})")
             self.wait_time = 0.15
             return
 
-        # New tile but no policy covers it -> logical backtrack.
-        self._and_or_logical_backtrack(
-            f"Khong co ke hoach cho {actual}", 0.18)
+        self.and_or_resume_target = None
+        self.current_target = None
+        self.state = "CHOOSE_TARGET"
+        self.stats.update({
+            "Contingency": "drifted and old target is no longer valid",
+            "Next OR step": "choose a new target",
+        })
+        self.message = (
+            f"AND-OR drift {probability}%: {label}; "
+            f"chon lai muc tieu (lan {self.replan_count})")
+        self.wait_time = 0.18
 
     # -------------------------------------------------------------- MODE 5
 
@@ -3485,7 +4495,7 @@ class FarmAIController:
         # Mode 3 must run step-by-step through _local_search_choose(),
         # not through build_local_search_full_plan(), otherwise it uses
         # the old full-plan score and can stop/route incorrectly.
-        return self.mode in (1, 2, 4, 5)
+        return self.mode in (1, 2, 5)
 
     def _apply_full_plan_stats(self):
         if not self.full_garden_plan:
@@ -4081,15 +5091,8 @@ class FarmAIController:
             return self._local_search_choose(remaining, start)
         if self.mode == 6:
             return self._adversarial_choose(remaining, start)
-        if self.mode == 4 and self.algorithm_name == "AND-OR Search":
-            if self.current_target in remaining:
-                self.chosen_target_path = self._online_plan(
-                    start, self.current_target)
-                self.stats.update({
-                    "Target rule": "AND-OR continue current target",
-                    "Selected target": f"{self.current_target}",
-                })
-                return self.current_target
+        if self.mode == 4:
+            return self._choose_mode4_target(remaining, start)
         if self.mode == 1:
             return self._search_first_target(start, remaining)
         if self.mode == 2:
@@ -4194,6 +5197,24 @@ class FarmAIController:
             elif cur_pos == self._stuck_pos:
                 self._stuck_timer += dt
                 if self._stuck_timer > 1.5:
+                    if (self.mode == 4
+                            and self.algorithm_name in (
+                                "Online A*", "Online BFS",
+                                "Belief-State BFS", "Belief BFS", "Belief A*")):
+                        self.path = []
+                        self.current_target = None
+                        self.state = "CHOOSE_TARGET"
+                        self.replan_count += 1
+                        self.mode4_phase = "REPLAN"
+                        self._update_belief_state()
+                        self._stuck_pos = None
+                        self._stuck_timer = 0.0
+                        self.wait_time = 0.1
+                        self.message = (
+                            f"{self.algorithm_name}: bi ket, "
+                            "clear path va re-plan "
+                            f"(lan {self.replan_count})")
+                        return
                     # Teleport player lĂªn center cá»§a next_tile, bá» qua tile nĂ y
                     if self.path:
                         snap_tile = self.path[0]
@@ -4220,6 +5241,8 @@ class FarmAIController:
 
         # --- CHOOSE TARGET ---
         if self.state == "CHOOSE_TARGET":
+            if self.mode == 4:
+                self.mode4_active_step = None
             if (self.mode == 6
                     and (self.enemy_target is not None
                          or self._enemy_is_destroying())):
@@ -4233,6 +5256,9 @@ class FarmAIController:
                          and (self.mode != 6 or t != self.enemy_target)]
             if not remaining:
                 self.state = "DONE"
+                if self.mode == 4:
+                    self.mode4_phase = "DONE"
+                    self._update_belief_state()
                 done_count = len(self.done_tiles)
                 enemy_count = len(self.enemy_done_tiles)
                 if self.mode == 6:
@@ -4251,6 +5277,12 @@ class FarmAIController:
                 return
 
             start = self._world_to_tile(self.player.rect.center)
+            if self.mode == 4:
+                center = self._tile_center(start)
+                self.player.pos.update(center)
+                self.player.rect.center = (round(center.x), round(center.y))
+                self.player.hitbox.center = self.player.rect.center
+                self.player.direction.update(0, 0)
 
             # Mode 4: má»Ÿ rá»™ng táº§m nhĂ¬n
             if self.mode == 4:
@@ -4258,7 +5290,31 @@ class FarmAIController:
 
             target = self._next_full_garden_target(remaining, start)
             if target is None:
+                if (self.mode == 4
+                        and self.algorithm_name == "Online A*"
+                        and remaining
+                        and self.mode4_online_astar_open):
+                    self.state = "CHOOSE_TARGET"
+                    self.mode4_phase = "EXPLORE"
+                    self._update_belief_state()
+                    self.message = (
+                        f"{self.algorithm_name}: expand 1 node trong PQ")
+                    return
+                if (self.mode == 4
+                        and self.algorithm_name in (
+                            "Online BFS", "Belief-State BFS",
+                            "Belief BFS", "Belief A*")
+                        and remaining
+                        and self.mode4_online_bfs_queue):
+                    self.state = "CHOOSE_TARGET"
+                    self.mode4_phase = "EXPLORE"
+                    self._update_belief_state()
+                    self.message = f"{self.algorithm_name}: lay target tu FIFO queue"
+                    return
                 self.state = "DONE"
+                if self.mode == 4:
+                    self.mode4_phase = "DONE"
+                    self._update_belief_state()
                 if self.mode == 3:
                     self.message = (
                         f"{self.algorithm_name} dung: "
@@ -4291,15 +5347,33 @@ class FarmAIController:
                     self.mode2_current_leg_target = None
                     self.mode2_current_step_stats = []
                     self.mode2_current_step_index = 0
+            if (self.mode == 4 and self.path
+                    and not self._path_is_contiguous(start, self.path)):
+                self.path = []
+                self.current_target = None
+                self.state = "CHOOSE_TARGET"
+                self.replan_count += 1
+                self.mode4_phase = "REPLAN"
+                self._update_belief_state()
+                self.message = (
+                    f"Online: path khong lien ke, "
+                    f"chon lai (lan {self.replan_count})")
+                self.wait_time = 0.2
+                return
 
             if not self.path and start != target:
                 if self.mode == 4:
+                    self.path = []
+                    self.current_target = None
+                    self.state = "CHOOSE_TARGET"
                     self.replan_count += 1
+                    self.mode4_phase = "REPLAN"
+                    self._update_belief_state()
                     self._clear_full_garden_plan()
                     self.message = (
                         f"Online: o {target} bi chan, "
                         f"re-plan (lan {self.replan_count})")
-                    self.wait_time = 0.4
+                    self.wait_time = 0.1
                     return
                 self.done_tiles.add(target)
                 if self.mode == 2 and target == self.mode2_current_leg_target:
@@ -4335,6 +5409,31 @@ class FarmAIController:
                 self.message = "Player re-plan vi qua da lock muc tieu"
                 return
             if not self.path:
+                if self.mode == 4:
+                    current_tile = self._world_to_tile(
+                        self.player.rect.center)
+                    if (self.current_target is not None
+                            and current_tile == self.current_target):
+                        center = self._tile_center(current_tile)
+                        self.player.pos.update(center)
+                        self.player.rect.center = (
+                            round(center.x), round(center.y))
+                        self.player.hitbox.center = self.player.rect.center
+                        self.player.direction.update(0, 0)
+                        self.state = self._state_after_arrival(
+                            self.current_target)
+                        return
+                    self.current_target = None
+                    self.path = []
+                    self.state = "CHOOSE_TARGET"
+                    self.replan_count += 1
+                    self.mode4_phase = "REPLAN"
+                    self._update_belief_state()
+                    self.message = (
+                        f"{self.algorithm_name}: path rong, "
+                        f"re-plan lan {self.replan_count}")
+                    self.wait_time = 0.1
+                    return
                 self.state = self._state_after_arrival(self.current_target)
                 return
 
@@ -4342,12 +5441,39 @@ class FarmAIController:
 
             # Mode 4: phĂ¡t hiá»‡n váº­t cáº£n áº©n khi Ä‘i gáº§n
             if self.mode == 4:
-                self._expand_vision(
-                    self._world_to_tile(self.player.rect.center))
+                current_tile = self._world_to_tile(self.player.rect.center)
+                self._update_mode4_online_astar_hud(
+                    current_tile, next_tile, self.current_target)
+                step_is_invalid = False
+                if self.mode4_active_step is None:
+                    step_is_invalid = (
+                        self._heuristic(current_tile, next_tile) != 1)
+                    if not step_is_invalid:
+                        self.mode4_active_step = (current_tile, next_tile)
+                else:
+                    _, active_next = self.mode4_active_step
+                    step_is_invalid = active_next != next_tile
+                if step_is_invalid:
+                    self.path = []
+                    self.current_target = None
+                    self.state = "CHOOSE_TARGET"
+                    self.mode4_active_step = None
+                    self.replan_count += 1
+                    self.mode4_phase = "REPLAN"
+                    self._update_belief_state()
+                    self.message = (
+                        f"Online: buoc khong hop le toi {next_tile}, "
+                        f"chon lai (lan {self.replan_count})")
+                    self.wait_time = 0.2
+                    return
+                self._expand_vision(current_tile)
                 if next_tile in self.discovered_blocked:
                     self.path = []
+                    self.current_target = None
                     self.state = "CHOOSE_TARGET"
                     self.replan_count += 1
+                    self.mode4_phase = "REPLAN"
+                    self._update_belief_state()
                     self._clear_full_garden_plan()
                     self.message = (
                         f"Online: phat hien vat can tai {next_tile}, "
@@ -4374,12 +5500,23 @@ class FarmAIController:
                 reached = self._set_player_direction_to(
                     self._tile_center(self.and_or_actual_tile))
                 if reached:
+                    self.mode4_active_step = None
+                    self.mode4_completed_g += 1
                     self._finish_and_or_outcome()
                 return
 
             reached = self._set_player_direction_to(
                 self._tile_center(next_tile))
             if reached:
+                if self.mode == 4:
+                    center = self._tile_center(next_tile)
+                    self.player.pos.update(center)
+                    self.player.rect.center = (
+                        round(center.x), round(center.y))
+                    self.player.hitbox.center = self.player.rect.center
+                    self.player.direction.update(0, 0)
+                    self.mode4_active_step = None
+                    self.mode4_completed_g += 1
                 self.path.pop(0)
                 if self.mode == 6:
                     self.mode6_move_done += 1
@@ -4398,6 +5535,31 @@ class FarmAIController:
                 # Mode 4: tiáº¿p tá»¥c má»Ÿ rá»™ng táº§m nhĂ¬n khi di chuyá»ƒn
                 if self.mode == 4:
                     self._expand_vision(next_tile)
+                    if self.algorithm_name in (
+                            "Online A*", "Online BFS",
+                            "Belief-State BFS", "Belief BFS", "Belief A*"):
+                        reached_mode4_target = (
+                            next_tile == self.current_target
+                            or self.algorithm_name in (
+                                "Belief-State BFS", "Belief BFS", "Belief A*"))
+                        if (reached_mode4_target
+                                and next_tile in self.farm_tiles
+                                and next_tile not in self.done_tiles
+                                and next_tile not in self.discovered_blocked
+                                and next_tile not in self.enemy_done_tiles):
+                            self.path = []
+                            self.current_target = next_tile
+                            self.state = self._state_after_arrival(next_tile)
+                            self.message = (
+                                f"{self.algorithm_name}: xu ly cay tai {next_tile}")
+                        else:
+                            self._update_belief_state()
+                            self.message = (
+                                f"{self.algorithm_name}: tiep tuc theo path tu PQ")
+                            if not self.path:
+                                self.current_target = None
+                                self.state = "CHOOSE_TARGET"
+                                self.mode4_phase = "EXPLORE"
             return
 
         # --- FIX_CROW / WATER_RESCUE / TREAT_PEST / HOE / PLANT / WATER ---
@@ -4489,6 +5651,10 @@ class FarmAIController:
         self._draw_map_overlays(surface, offset)
         self._draw_map_foreground(surface, offset)
         self._draw_panel(surface)
+        if (self.mode == 4
+                and self.algorithm_name in (
+                    "Belief-State BFS", "Belief BFS", "Belief A*")):
+            self._draw_belief_minimap(surface)
 
     def draw(self, surface, offset):
         """Tuong thich nguoc: ve toan bo (bg no-op + fg). Cac noi goi moi
@@ -5072,6 +6238,27 @@ class FarmAIController:
             y = draw_text(
                 f"Da phat hien: {objective['blocked']} o bi chan",
                 x, y, Colors.TEXT_WARNING, font_small)
+        if self.mode == 4:
+            belief = self.belief_state or {}
+            y = draw_text(
+                f"Phase: {belief.get('phase', self.mode4_phase)} | "
+                f"Frontier: {belief.get('frontier', 0)} | "
+                f"Unknown: {belief.get('unknown', 0)}",
+                x, y, Colors.TEXT_STAT, font_small)
+            y = draw_text(
+                f"Belief worlds: {belief.get('belief_worlds', 0)} | "
+                f"Replan: {belief.get('replans', self.replan_count)}",
+                x, y, Colors.TEXT_STAT, font_small)
+            y = draw_text(
+                f"Known free: {belief.get('known_free', 0)} | "
+                f"Blocked: {belief.get('discovered_blocked', 0)} | "
+                f"Obs: {belief.get('belief_before', 0)} -> "
+                f"{belief.get('belief_after', 0)}",
+                x, y, Colors.TEXT_STAT, font_small)
+            if belief.get("inconsistent", False):
+                y = draw_text(
+                    "Inconsistent belief: no possible worlds remain",
+                    x, y, Colors.TEXT_WARNING, font_small)
 
         # --- Mode 5: CSP HUD realtime ---
         if self.mode == 5 and self.csp_phase == "replay":
