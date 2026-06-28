@@ -41,7 +41,7 @@ class FarmAIController:
             "Fog-of-war voi o sut/ngap an duoi suong"),
         5: ("NGAY 5 - KHU 5: O QUY HOACH TRUNG TAM", "CSP Backtracking",
             "Gan 4 loai cay ma khong vi pham rang buoc ke nhau",
-            "Hai o ke nhau khong duoc trong cung loai cay"),
+            "Khong cung crop; corn-tomato va wheat-carrot cung bi cam"),
         6: ("NGAY 6 - KHU 6: HANG CAY CAN BAO VE", "Minimax / Alpha-Beta",
             "Cay co gia tri va rui ro theo tinh trang; AGRI-1 di sua cay",
             "MAX sua cay; MIN pha huy; CHANCE dung rui ro rieng tung cay"),
@@ -63,6 +63,11 @@ class FarmAIController:
     IDSA_ITERATION_DELAY = 0.65
 
     # ------------------------------------------------------------------ init
+
+    # ------------------------------------------------------------------
+    # lifecycle / public controls
+    # ------------------------------------------------------------------
+
     def __init__(self, player, soil_layer, collision_sprites, farm_tiles,
                  mode=2, hidden_blocks=None, enemy_spawn=None,
                  terrain_costs=None, extra_walkable_tiles=None,
@@ -107,6 +112,11 @@ class FarmAIController:
         self.full_garden_leg_stats = {}
         self.full_garden_index = 0
         self.full_garden_stats = {}
+        self.mode1_ucs_tile_costs = {}
+        self.mode1_ucs_path_length_total = 0
+        self.mode1_ucs_current_leg_length = 0
+        self.mode1_ucs_extra_cost_total = 0
+        self.mode1_ucs_current_leg_extra_cost = 0
         self.mode2_total_g = 0
         self.mode2_current_leg_g = 0
         self.mode2_current_leg_start = None
@@ -296,6 +306,7 @@ class FarmAIController:
                 ys = [t[1] for t in self.farm_tiles]
                 self.enemy_tile = (max(xs) + 3, max(ys) + 2)
 
+
     def _default_algorithm(self, mode):
         options = algorithms.ALGORITHM_GROUPS.get(mode)
         if options:
@@ -303,8 +314,10 @@ class FarmAIController:
         defaults = {4: "Online A*", 5: "Backtrack", 6: "Minimax"}
         return defaults.get(mode, "BFS")
 
+
     def selectable_algorithms(self):
         return algorithms.ALGORITHM_GROUPS.get(self.mode, ())
+
 
     def set_algorithm(self, algorithm_name):
         options = self.selectable_algorithms()
@@ -323,6 +336,10 @@ class FarmAIController:
         self._reset_idsa_search()
         self.current_target = None
         self.state = "CHOOSE_TARGET"
+        self.mode1_ucs_path_length_total = 0
+        self.mode1_ucs_current_leg_length = 0
+        self.mode1_ucs_extra_cost_total = 0
+        self.mode1_ucs_current_leg_extra_cost = 0
         self.mode2_total_g = 0
         self.mode2_current_leg_g = 0
         self.mode2_current_leg_start = None
@@ -439,29 +456,6 @@ class FarmAIController:
 
         return True
 
-    def _clear_full_garden_plan(self):
-        self.full_garden_plan = []
-        self.full_mode2_walk_path = []
-        self.full_garden_leg_paths = {}
-        self.full_garden_leg_stats = {}
-        self.full_garden_index = 0
-        self.full_garden_stats = {}
-        self.chosen_target_path = None
-
-    def _advance_full_garden_plan(self, tile):
-        if not self.full_garden_plan:
-            return
-        if (self.full_garden_index < len(self.full_garden_plan)
-                and self.full_garden_plan[self.full_garden_index] == tile):
-            self.full_garden_index += 1
-        while self.full_garden_index < len(self.full_garden_plan):
-            planned = self.full_garden_plan[self.full_garden_index]
-            if (planned not in self.done_tiles
-                    and planned not in self.discovered_blocked
-                    and planned not in self.enemy_done_tiles):
-                break
-            self.full_garden_index += 1
-        self._apply_full_plan_stats()
 
     def cycle_algorithm(self, step=1):
         options = self.selectable_algorithms()
@@ -474,6 +468,7 @@ class FarmAIController:
         self.set_algorithm(options[(index + step) % len(options)])
         return self.algorithm_name
 
+
     def start(self):
         if self.state == "DONE":
             return
@@ -484,10 +479,12 @@ class FarmAIController:
         self.is_running = True
         self.message = f"Dang chay {self.algorithm_name}"
 
+
     def pause(self):
         self.is_running = False
         self.player.direction.update(0, 0)
         self.message = "Tam dung"
+
 
     def handle_panel_click(self, pos):
         for algorithm_name, rect in self.algorithm_buttons.items():
@@ -508,14 +505,47 @@ class FarmAIController:
                 return "reset"
         return None
     # -------------------------------------------------------- helpers chung
+
+    # ------------------------------------------------------------------
+    # shared helpers / map state
+    # ------------------------------------------------------------------
+
+    def _clear_full_garden_plan(self):
+        self.full_garden_plan = []
+        self.full_mode2_walk_path = []
+        self.full_garden_leg_paths = {}
+        self.full_garden_leg_stats = {}
+        self.full_garden_index = 0
+        self.full_garden_stats = {}
+        self.chosen_target_path = None
+
+
+    def _advance_full_garden_plan(self, tile):
+        if not self.full_garden_plan:
+            return
+        if (self.full_garden_index < len(self.full_garden_plan)
+                and self.full_garden_plan[self.full_garden_index] == tile):
+            self.full_garden_index += 1
+        while self.full_garden_index < len(self.full_garden_plan):
+            planned = self.full_garden_plan[self.full_garden_index]
+            if (planned not in self.done_tiles
+                    and planned not in self.discovered_blocked
+                    and planned not in self.enemy_done_tiles):
+                break
+            self.full_garden_index += 1
+        self._apply_full_plan_stats()
+
+
     def _tile_center(self, tile):
         x, y = tile
         return pygame.math.Vector2(
             x * TILE_SIZE + TILE_SIZE // 2,
             y * TILE_SIZE + TILE_SIZE // 2)
 
+
     def _world_to_tile(self, pos):
         return int(pos[0] // TILE_SIZE), int(pos[1] // TILE_SIZE)
+
 
     def _blocked_tiles(self, include_hidden=False):
         blocked = set()
@@ -536,6 +566,7 @@ class FarmAIController:
         if include_hidden:
             blocked |= self.hidden_blocked
         return blocked
+
 
     def _build_walkable_tiles(self):
         if self.mode not in (1, 4) or not self.farm_tiles:
@@ -562,6 +593,7 @@ class FarmAIController:
             walkable.add((target_x, target_y))
         return walkable
 
+
     def _neighbors(self, tile, blocked):
         x, y = tile
         for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
@@ -570,6 +602,734 @@ class FarmAIController:
                     and (self.walkable_tiles is None
                          or (nx, ny) in self.walkable_tiles):
                 yield (nx, ny)
+
+
+    def _is_adjacent_tile(self, a, b):
+        return self._heuristic(a, b) == 1
+
+
+    def _path_is_contiguous(self, start, path):
+        current = start
+        for tile in path:
+            if not self._is_adjacent_tile(current, tile):
+                return False
+            current = tile
+        return True
+
+
+    @staticmethod
+    def _heuristic(a, b):
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+    def _reconstruct(self, came_from, current):
+        path = [current]
+        while current in came_from:
+            current = came_from[current]
+            path.append(current)
+        path.reverse()
+        return path[1:]
+
+
+    def _load_visual_assets(self):
+        asset_dir = os.path.join("..", "graphics", "ai_visuals")
+        asset_names = {
+            "dry_plant": "dry_plant.png",
+            "urgent_plant": "urgent_plant.png",
+            "storm_damaged_plant": "storm_damaged_plant.png",
+            "healthy_plant": "healthy_plant.png",
+            "dead_plant": "dead_plant.png",
+            "storm_debris": "storm_debris.png",
+            "worm": "worm.png",
+            "black_worm": "black_worm.png",
+            "bug": "bug.png",
+            "crow": "crow.png",
+            "crow_damage": "crow_damage.png",
+        }
+        assets = {}
+        for key, filename in asset_names.items():
+            path = os.path.join(asset_dir, filename)
+            if os.path.exists(path):
+                image = pygame.image.load(path).convert_alpha()
+                assets[key] = pygame.transform.scale(image, (TILE_SIZE, TILE_SIZE))
+        return assets
+
+
+    def _blit_tile_asset(self, surface, offset, tile, asset_key, y_offset=0):
+        image = self.visual_assets.get(asset_key)
+        if image is None:
+            return
+        world = self._tile_center(tile)
+        rect = image.get_rect(center=(int(world.x - offset.x),
+                                      int(world.y - offset.y + y_offset)))
+        surface.blit(image, rect)
+
+
+    def _draw_crop_icon(self, surface, x, y, crop_type):
+        shadow = pygame.Surface((20, 10), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (30, 20, 10, 80), (0, 0, 20, 8))
+        surface.blit(shadow, (x - 10, y + 4))
+
+        if crop_type == "tomato":
+            pygame.draw.circle(surface, (220, 40, 40), (x, y), 10)
+            pygame.draw.circle(surface, (255, 100, 100), (x - 3, y - 3), 3)
+            pygame.draw.polygon(surface, (40, 160, 40), [
+                (x, y - 8), (x - 5, y - 5), (x - 2, y - 6),
+                (x, y - 3), (x + 2, y - 6), (x + 5, y - 5)])
+            pygame.draw.line(surface, (30, 120, 30), (x, y - 8), (x, y - 12), 2)
+        elif crop_type == "corn":
+            pygame.draw.ellipse(surface, (50, 160, 50), (x - 9, y - 8, 18, 20))
+            pygame.draw.ellipse(surface, (240, 200, 20), (x - 6, y - 12, 12, 22))
+            for dy in (-6, -2, 2, 6):
+                pygame.draw.line(surface, (180, 140, 0), (x - 5, y + dy), (x + 5, y + dy), 1)
+        elif crop_type == "carrot":
+            pygame.draw.polygon(surface, (250, 110, 10), [
+                (x - 6, y - 4), (x + 6, y - 4), (x, y + 10)])
+            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x - 4, y - 12), 2)
+            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x + 4, y - 12), 2)
+            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x, y - 14), 2)
+        elif crop_type == "wheat":
+            pygame.draw.line(surface, (220, 180, 60), (x, y - 12), (x, y + 8), 2)
+            for dy in range(-8, 6, 4):
+                pygame.draw.ellipse(surface, (240, 200, 80), (x - 5, y + dy, 5, 6))
+                pygame.draw.ellipse(surface, (240, 200, 80), (x + 1, y + dy - 2, 5, 6))
+
+
+    def _build_tile_conditions(self):
+        conditions = {}
+
+        # Mode 3: chi xep LOAI CAY/HINH ANH CAY.
+        # Diem cua Mode 3 duoc tinh trong _hill_score theo:
+        # dry=40, critical=30, pest=20, dead=10, sau do + Manhattan.
+        if self.mode == 3:
+            mode3_layout = {
+                # Layout toi uu theo cong thuc:
+                # score = diem_loai_cay + Manhattan(current, tile)
+                # dry=40, critical=30, pest=20, dead=10.
+                #
+                # Voi Hill Climbing dang di xuong (< current_score),
+                # robot se co xu huong di theo chuoi chinh:
+                # (33,22) dry -> (33,23) critical ->
+                # (32,23) pest -> (32,24) dead.
+                #
+                # Cac o ke ben canh duoc xep khong thap hon de tranh robot
+                # re ngang qua o dead/pest qua som.
+
+                # Hang tren: y = 22
+                (29, 22): "dead",
+                (30, 22): "dry",
+                (31, 22): "critical",
+                (32, 22): "dry",
+                (33, 22): "dry",
+
+                # Hang 2: y = 23
+                (29, 23): "dry",
+                (30, 23): "dry",
+                (31, 23): "critical",
+                (32, 23): "critical",
+                (33, 23): "dry",
+
+                # Hang 3: y = 24
+                (29, 24): "critical",
+                (30, 24): "dry",
+                (31, 24): "pest",
+                (32, 24): "pest",
+                (33, 24): "dry",
+
+                # Hang 4: y = 25
+                (29, 25): "pest",
+                (30, 25): "critical",
+                (31, 25): "dry",
+                (32, 25): "dead",
+                (33, 25): "pest",
+
+                # Hang duoi: y = 26
+                (29, 26): "dry",
+                (30, 26): "dead",
+                (31, 26): "critical",
+                (32, 26): "pest",
+                (33, 26): "dry",
+            }
+            return {
+                tile: mode3_layout.get(tile, "dry")
+                for tile in self.farm_tiles
+            }
+
+        if self.mode == 4:
+            condition_cycle = ("dry", "critical", "dry", "pest", "dry")
+            return {
+                tile: condition_cycle[index % len(condition_cycle)]
+                for index, tile in enumerate(self.farm_tiles)
+            }
+        if self.mode == 5:
+            return {tile: "replant" for tile in self.farm_tiles}
+        if self.mode == 6:
+            min_x = min(tile[0] for tile in self.farm_tiles)
+            min_y = min(tile[1] for tile in self.farm_tiles)
+            status_grid = (
+                ("healthy", "healthy", "critical", "healthy", "healthy"),
+                ("healthy", "dry", "disease", "critical", "healthy"),
+                ("dry", "disease", "rare", "disease", "dry"),
+                ("healthy", "critical", "disease", "dry", "healthy"),
+                ("healthy", "healthy", "critical", "healthy", "healthy"),
+            )
+            return {
+                tile: status_grid[tile[1] - min_y][tile[0] - min_x]
+                for tile in self.farm_tiles
+            }
+
+        for index, tile in enumerate(self.farm_tiles):
+            dryness = self.dryness.get(tile, 50)
+            if dryness >= 88 and self.mode != 3:
+                conditions[tile] = "dead"
+            elif self.mode == 2 and dryness >= 70:
+                conditions[tile] = "critical"
+            elif self.mode == 2 and index % 4 == 0:
+                conditions[tile] = "pest"
+            elif dryness >= 65:
+                conditions[tile] = "critical"
+            elif index % 5 == 0 and self.mode in (1, 3):
+                conditions[tile] = "pest"
+            elif index % 7 == 0 and self.mode in (3, 6):
+                conditions[tile] = "pest"
+            else:
+                conditions[tile] = "dry"
+        return conditions
+
+
+    def _condition_priority(self, tile):
+        priorities = {
+            "critical": 50,
+            "crow": 45,
+            "pest": 40,
+            "dead": 20,
+            "dry": 10,
+            "replant": 5,
+        }
+        return priorities.get(self._condition_for_tile(tile), 0)
+
+
+    def _build_danger_levels(self):
+        # Kept for older HUD/code paths. For Mode 2 test version, smaller
+        # means higher priority: dry=0, critical=1, pest/crow=2, dead=3.
+        priorities = {
+            "dry": 0,
+            "critical": 1,
+            "pest": 2,
+            "crow": 2,
+            "dead": 3,
+            "replant": 3,
+        }
+        levels = {}
+        for tile in self.farm_tiles:
+            levels[tile] = priorities.get(self._condition_for_tile(tile), 3)
+        return levels
+
+
+    def _care_value(self, tile):
+        return self._condition_priority(tile) + self.dryness.get(tile, 50) / 10.0
+
+
+    def _condition_asset(self, condition):
+        if condition == "healthy":
+            return "healthy_plant"
+        if condition == "disease":
+            return "urgent_plant"
+        if condition == "rare":
+            return "healthy_plant"
+        if condition == "dead":
+            return "dead_plant"
+        if condition == "critical":
+            return "storm_damaged_plant"
+        if condition == "dry":
+            return "dry_plant"
+        if condition == "pest":
+            return "healthy_plant"
+        return "dry_plant"
+
+
+    def _seed_for_tile(self, tile):
+        if self.mode == 5:
+            return self.seed_plan.get(tile, "corn")
+        if self.dryness.get(tile, 0) > 60:
+            return "tomato"
+        return "corn"
+
+
+    def _condition_for_tile(self, tile):
+        return self.tile_conditions.get(tile, "replant")
+
+
+    def _has_condition(self, tile):
+        return tile in self.tile_conditions
+
+
+    def _soil_cell(self, tile):
+        x, y = tile
+        if 0 <= y < self.rows and 0 <= x < self.cols:
+            return self.soil_layer.grid[y][x]
+        return []
+
+
+    def _next_cultivation_state(self, tile):
+        cell = self._soil_cell(tile)
+        if "X" not in cell:
+            return "HOE"
+        if "P" not in cell:
+            return "PLANT"
+        if "W" not in cell:
+            return "WATER"
+        return "DONE_TILE"
+
+
+    def _is_living_crop(self, tile):
+        return self._condition_for_tile(tile) in ("dry", "critical", "pest", "crow")
+
+
+    def _state_after_arrival(self, tile):
+        if self.mode == 6:
+            return "FIX_CROW"
+        if self.mode == 4:
+            self.mode4_phase = "RESCUE"
+            self._update_belief_state()
+        condition = self._condition_for_tile(tile)
+        if condition in ("dead", "replant"):
+            return self._next_cultivation_state(tile)
+        if condition in ("pest", "crow"):
+            return "TREAT_PEST"
+        return "WATER_RESCUE"
+
+
+    def _finish_rescue_target(self, tile, condition):
+        self.player.selected_tool = "water"
+        self.player.status = "down_water"
+        if hasattr(self.player, "watering"):
+            self.player.watering.play()
+        if condition == "critical":
+            self.message = f"Cap cuu cay thieu nuoc tai {tile}"
+        else:
+            self.message = f"Tuoi phuc hoi cay kho tai {tile}"
+        self.done_tiles.add(tile)
+        self._finish_mode1_ucs_leg(tile)
+        self._finish_mode2_leg_g(tile)
+        self._refresh_mode3_scores_after_action(tile)
+        self._advance_full_garden_plan(tile)
+        if self.mode == 4:
+            self.mode4_phase = "EXPLORE"
+            self._update_belief_state()
+        self.current_target = None
+        self.path = []
+        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
+        self.stop_after_current_target = False
+        self.wait_time = 0.45
+
+
+    def _finish_pest_target(self, tile, condition):
+        self.player.status = "down_idle"
+        if condition == "crow":
+            self.message = f"Duoi qua va bao ve cay tai {tile}"
+        else:
+            self.message = f"Phun sinh hoc xu ly sau benh tai {tile}"
+        self.done_tiles.add(tile)
+        self._finish_mode1_ucs_leg(tile)
+        self._finish_mode2_leg_g(tile)
+        self._refresh_mode3_scores_after_action(tile)
+        self._advance_full_garden_plan(tile)
+        if self.mode == 4:
+            self.mode4_phase = "EXPLORE"
+            self._update_belief_state()
+        self.current_target = None
+        self.path = []
+        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
+        self.stop_after_current_target = False
+        self.wait_time = 0.45
+
+
+    def _finish_cultivation_target(self, tile, message):
+        self.message = message
+        self.done_tiles.add(tile)
+        if self.mode == 5:
+            self.csp_seeded_tiles.add(tile)
+        self._finish_mode1_ucs_leg(tile)
+        self._finish_mode2_leg_g(tile)
+        self._refresh_mode3_scores_after_action(tile)
+        self._advance_full_garden_plan(tile)
+        if self.mode == 4:
+            self.mode4_phase = "EXPLORE"
+            self._update_belief_state()
+        self.current_target = None
+        self.path = []
+        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
+        self.stop_after_current_target = False
+        self.wait_time = 0.35
+
+
+    def _condition_label(self, condition):
+        labels = {
+            "healthy": "Cay khoe -> sua hu hong nhe",
+            "disease": "Cay sau benh -> sua va xu ly benh",
+            "rare": "Cay quy -> uu tien sua",
+            "dry": "Cay kho -> tuoi phuc hoi",
+            "critical": "Cay nguy cap -> cap cuu bang nuoc",
+            "pest": "Sau benh sau bao -> phun sinh hoc",
+            "crow": "Cay bi qua pha -> den sua cay",
+            "dead": "Cay chet -> don va trong lai",
+            "replant": "Dat trong -> lap ke hoach gieo lai",
+        }
+        return labels.get(condition, "Dat trong -> gieo lai")
+
+
+    def _target_label(self, tile):
+        return self._condition_label(self._condition_for_tile(tile))
+
+
+    def _target_summary(self, tile):
+        labels = {
+            "healthy": "Cay khoe",
+            "disease": "Cay sau benh",
+            "rare": "Cay quy",
+            "dry": "Cay kho",
+            "critical": "Cay nguy cap",
+            "pest": "Cay sau benh",
+            "crow": "Cay bi qua pha",
+            "dead": "Cay chet",
+            "replant": "O can gieo",
+        }
+        condition = self._condition_for_tile(tile)
+        return f"{tile} - {labels.get(condition, 'O can xu ly')}"
+
+
+    def _objective_snapshot(self):
+        """Return one progress format shared by every game mode."""
+        total = len(self.farm_tiles)
+        completed = len(self.done_tiles)
+        blocked = len(self.discovered_blocked) if self.mode == 4 else 0
+        lost = len(self.enemy_done_tiles) if self.mode == 6 else 0
+        resolved = min(total, completed + blocked + lost)
+        objective, unit = self.OBJECTIVE_INFO.get(
+            self.mode, ("Hoan thanh toan bo khu vuc", "nhiem vu"))
+
+        if self.state == "IDS_SEARCH":
+            current = (
+                f"IDS depth {self.ids_depth_limit} "
+                f"tu {self.ids_search_start}")
+        elif self.state == "IDSA_SEARCH":
+            current = (
+                f"IDSA f-limit {self.idsa_f_limit} "
+                f"toi {self.idsa_search_goal}")
+        elif self.current_target is None:
+            current = "Chua chon"
+        elif self._has_condition(self.current_target):
+            current = self._target_summary(self.current_target)
+        else:
+            current = f"O {self.current_target}"
+
+        if self.state == "DONE":
+            current = "Da hoan tat"
+
+        return {
+            "title": objective,
+            "unit": unit,
+            "total": total,
+            "completed": completed,
+            "blocked": blocked,
+            "lost": lost,
+            "resolved": resolved,
+            "remaining": max(0, total - resolved),
+            "current": current,
+        }
+
+    # -------------------------------------------------------------- MODE 1
+
+    # ------------------------------------------------------------------
+    # mode 1 and mode 2 path search
+    # ------------------------------------------------------------------
+
+    def _bfs(self, start, goal):
+        """Breadth-First Search â€” duyá»‡t theo lá»›p, khĂ´ng heuristic."""
+        return self._search_path(start, goal, "BFS")
+
+    # -------------------------------------------------------------- MODE 2
+
+    def _astar(self, start, goal):
+        """A* Search â€” f(n) = g(n) + h(n), heuristic Manhattan."""
+        return self._search_path(start, goal, "A*")
+
+
+    def _search_path(self, start, goal, algorithm_name=None):
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        blocked.discard(goal)
+        name = algorithm_name or self.algorithm_name
+        path, explored, fgh, stats = algorithms.find_path_by_algorithm(
+            name, start, goal, blocked, self._neighbors, self._search_heuristic,
+            self.counter, self._step_cost)
+        self.astar_current_fgh = fgh
+        stats["Algorithm"] = name
+        if self.mode == 2 and goal in self.farm_tiles:
+            g_leg = len(path)
+            self.mode2_current_leg_g = g_leg
+            self.mode2_current_leg_target = goal
+            display_g = self.mode2_total_g + g_leg
+            if name == "Greedy":
+                stats.pop("f(n)", None)
+                stats.pop("g(n)", None)
+                stats["Priority"] = "min h(n)"
+                self._apply_mode2_hud_stats(stats, start, goal)
+            else:
+                # For A*/IDSA, fgh returned by algorithms uses real accumulated
+                # g and the heuristic supplied above.
+                self._apply_mode2_hud_stats(
+                    stats, start, goal, self.astar_current_fgh, display_g)
+            stats["g leg"] = g_leg
+            stats["g completed"] = self.mode2_total_g
+        if self.mode == 1:
+            self.bfs_explored = set(explored)
+        elif self.mode == 2:
+            self.astar_explored = explored
+        elif name == "A*":
+            self.astar_explored = explored
+        self.stats = stats
+        return path
+
+
+    def _search_first_target(self, start, goals):
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        for goal in goals:
+            blocked.discard(goal)
+        path, target, explored, fgh, stats = (
+            algorithms.find_path_to_any_goal_by_algorithm(
+                self.algorithm_name, start, goals, blocked,
+                self._neighbors, self.counter, self._step_cost))
+        self.astar_current_fgh = fgh
+        stats["Algorithm"] = self.algorithm_name
+        stats["Target"] = f"{target}"
+        if self.mode == 1:
+            self.bfs_explored = set(explored)
+        elif self.mode == 2:
+            self.astar_explored = explored
+        self.stats = stats
+        self.chosen_target_path = path if target is not None else None
+        return target
+
+
+    def _reset_ids_search(self):
+        self.ids_depth_limit = 0
+        self.ids_search_timer = 0.0
+        self.ids_search_start = None
+        self.ids_search_goals = set()
+        self.ids_search_blocked = set()
+        self.ids_total_expansions = 0
+        self.ids_unique_explored = set()
+
+
+    def _begin_ids_search(self, start, goals):
+        self._reset_ids_search()
+        self.ids_search_start = start
+        self.ids_search_goals = set(goals)
+        self.ids_search_blocked = self._blocked_tiles()
+        self.ids_search_blocked.discard(start)
+        for goal in goals:
+            self.ids_search_blocked.discard(goal)
+        self.state = "IDS_SEARCH"
+        self.player.direction.update(0, 0)
+        self.message = f"IDS: bat dau lai tu {start}, depth limit 0"
+
+
+    def _update_ids_search(self, dt):
+        self.player.direction.update(0, 0)
+        if self.ids_search_timer > 0:
+            self.ids_search_timer = max(0, self.ids_search_timer - dt)
+            return
+
+        path, target, explored, cutoff = (
+            algorithms.depth_limited_search_to_any_goal(
+                self.ids_search_start,
+                self.ids_search_goals,
+                self.ids_search_blocked,
+                self._neighbors,
+                self.ids_depth_limit))
+
+        # Show only this iteration so every larger limit visibly restarts.
+        self.bfs_explored = set(explored)
+        self.ids_unique_explored.update(explored)
+        self.ids_total_expansions += len(explored)
+        self.stats = {
+            "Algorithm": "IDS",
+            "Depth limit": self.ids_depth_limit,
+            "Restart from": f"{self.ids_search_start}",
+            "This iteration": len(explored),
+            "Total expansions": self.ids_total_expansions,
+            "Unique explored": len(self.ids_unique_explored),
+            "Target": f"{target}",
+        }
+
+        if target is not None:
+            self.current_target = target
+            self.path = path
+            self.state = "MOVE"
+            self.message = (
+                f"IDS tim thay {target} o depth {self.ids_depth_limit}")
+            self.ids_search_timer = 0.0
+            return
+
+        if not cutoff:
+            self.state = "DONE"
+            self.message = "IDS: khong con node de duyet"
+            return
+
+        finished_limit = self.ids_depth_limit
+        self.ids_depth_limit += 1
+        self.ids_search_timer = self.IDS_ITERATION_DELAY
+        self.message = (
+            f"IDS limit {finished_limit} chua thay; "
+            f"quay lai {self.ids_search_start}, tang len "
+            f"{self.ids_depth_limit}")
+
+
+    def _reset_idsa_search(self):
+        self.idsa_f_limit = 0
+        self.idsa_search_timer = 0.0
+        self.idsa_search_start = None
+        self.idsa_search_goal = None
+        self.idsa_search_blocked = set()
+        self.idsa_total_expansions = 0
+        self.idsa_unique_explored = set()
+
+
+    def _begin_idsa_search(self, start, goal):
+        self._reset_idsa_search()
+        self.idsa_search_start = start
+        self.idsa_search_goal = goal
+        self.idsa_f_limit = self._search_heuristic(start, goal)
+        self.idsa_search_blocked = self._blocked_tiles()
+        self.idsa_search_blocked.discard(start)
+        self.idsa_search_blocked.discard(goal)
+        self.current_target = goal
+        self.state = "IDSA_SEARCH"
+        self.player.direction.update(0, 0)
+        self.message = (
+            f"IDSA: bat dau lai tu {start}, f-limit "
+            f"{self.idsa_f_limit}")
+
+
+    def _update_idsa_search(self, dt):
+        self.player.direction.update(0, 0)
+        if self.idsa_search_timer > 0:
+            self.idsa_search_timer = max(0, self.idsa_search_timer - dt)
+            return
+
+        next_limit, path, explored, hit_depth_guard = (
+            algorithms.idastar_iteration(
+                self.idsa_search_start,
+                self.idsa_search_goal,
+                self.idsa_search_blocked,
+                self._neighbors,
+                self._search_heuristic,
+                self.idsa_f_limit))
+
+        self.astar_explored = set(explored)
+        self.idsa_unique_explored.update(explored)
+        self.idsa_total_expansions += len(explored)
+        current_node = self.idsa_search_start
+        priority, distance_h, condition_cost, h_val = self._mode2_h_parts(
+            current_node, self.idsa_search_goal)
+        g_leg = len(path) if path is not None else 0
+        g_val = self.mode2_total_g + g_leg
+        f_val = g_val + h_val
+        self.stats = {
+            "Algorithm": "IDSA",
+            "f(n)": f"{f_val}",
+            "g(n)": f"{g_val}",
+            "h(n)": f"{h_val}",
+            "h distance": f"{distance_h}",
+            "h condition": (
+                f"2 * {priority} = {condition_cost} "
+                f"({self._condition_for_tile(self.idsa_search_goal)})"),
+            "h formula": "Manhattan + 2 * condition",
+            "f limit": self.idsa_f_limit,
+            "g leg": g_leg,
+            "g completed": self.mode2_total_g,
+            "g formula": "+1 per move",
+            "Restart from": f"{self.idsa_search_start}",
+            "This iteration": len(explored),
+            "Total expansions": self.idsa_total_expansions,
+            "Unique explored": len(self.idsa_unique_explored),
+            "Target": f"{self.idsa_search_goal}",
+        }
+        if hit_depth_guard:
+            self.stats["Stopped by guard"] = "yes"
+
+        if path is not None:
+            self.mode2_current_leg_g = len(path)
+            self.mode2_current_leg_target = self.idsa_search_goal
+            self.path = path
+            self.state = "MOVE"
+            self.message = (
+                f"IDSA tim thay {self.idsa_search_goal} voi "
+                f"f-limit {self.idsa_f_limit}")
+            self.idsa_search_timer = 0.0
+            return
+
+        if next_limit == algorithms.INF:
+            self.state = "DONE"
+            self.message = "IDSA: khong con node de duyet"
+            return
+
+        finished_limit = self.idsa_f_limit
+        self.idsa_f_limit = next_limit
+        self.idsa_search_timer = self.IDSA_ITERATION_DELAY
+        self.message = (
+            f"IDSA f-limit {finished_limit} chua thay; "
+            f"quay lai {self.idsa_search_start}, tang len "
+            f"{self.idsa_f_limit}")
+
+
+    def _mode2_condition_h(self, tile):
+        """Heuristic bonus for Mode 2 target condition.
+
+        Smaller value = higher priority because Greedy/A* use min-heap:
+            dry      = 0
+            critical = 1
+            pest     = 2
+            dead     = 3
+
+        This is intentionally separate from Mode 3 score.
+        """
+        priorities = {
+            "dry": 0,
+            "critical": 1,
+            "pest": 2,
+            "crow": 2,
+            "dead": 3,
+            "replant": 3,
+        }
+        return priorities.get(self._condition_for_tile(tile), 3)
+
+
+    def _search_heuristic(self, a, b):
+        """Heuristic used by Greedy, A* and IDA*.
+
+        Mode 2 uses the formula requested for informed search:
+
+            h(n) = Manhattan(current_node, target) + 2 * condition(target)
+
+        Important: ``a`` is the current expanded node, not the original
+        spawn point. Therefore A* and IDA* recalculate h(n) for every node
+        they expand. ``b`` is the current target/goal being evaluated.
+        """
+        if self.mode in (2, 4) and b in self.farm_tiles:
+            return self._heuristic(a, b) + 2 * self._mode2_condition_h(b)
+        return self._heuristic(a, b)
+
+
+    def _mode2_h_parts(self, current_node, target):
+        priority = self._mode2_condition_h(target)
+        distance = self._heuristic(current_node, target)
+        condition_cost = 2 * priority
+        return priority, distance, condition_cost, distance + condition_cost
+
 
     def _apply_mode2_hud_stats(
             self, stats, current_node, target, fgh=None, display_g=None):
@@ -595,6 +1355,381 @@ class FarmAIController:
         stats["h formula"] = "Manhattan + 2 * condition"
         stats["g formula"] = "+1 per move"
         return stats
+
+
+    def _ucs_task_cost(self, tile):
+        condition = self._condition_for_tile(tile)
+        action_time = {
+            "critical": 2.0,
+            "dry": 2.0,
+            "pest": 3.5,
+            "crow": 3.5,
+            "replant": 4.0,
+            "dead": 5.0,
+        }
+        rescue_value = {
+            "critical": 1.4,
+            "pest": 1.0,
+            "crow": 1.0,
+            "dry": 0.4,
+            "replant": 0.0,
+            "dead": 0.0,
+        }
+        dryness = max(0, min(self.dryness.get(tile, 50), 100)) / 100.0
+        living_pressure = 0.4 * dryness if condition in (
+            "critical", "dry", "pest", "crow") else 0
+        return max(
+            0.5,
+            action_time.get(condition, 2.5)
+            - rescue_value.get(condition, 0)
+            - living_pressure)
+
+
+    def _mode1_ucs_condition_cost(self, tile):
+        if tile in self.done_tiles:
+            return 0
+        condition_costs = {
+            "dry": 0,
+            "critical": 1,
+            "pest": 2,
+            "crow": 2,
+            "dead": 3,
+            "replant": 3,
+        }
+        return condition_costs.get(self._condition_for_tile(tile), 0)
+
+
+    def _prepare_mode1_ucs_costs(self):
+        tiles = set(self.walkable_tiles)
+        tiles.update(self.farm_tiles)
+        tiles.update(self.terrain_costs)
+        self.mode1_ucs_tile_costs = {}
+        for tile in tiles:
+            terrain_cost = 5 if tile in self.terrain_costs else 0
+            condition_cost = 0
+            if tile in self.farm_tiles:
+                condition_cost = self._mode1_ucs_condition_cost(tile)
+            self.mode1_ucs_tile_costs[tile] = {
+                "step": 1,
+                "terrain": terrain_cost,
+                "condition": condition_cost,
+                "total": 1 + terrain_cost + condition_cost,
+            }
+
+
+    def _mode1_ucs_step_cost(self, current, next_tile):
+        costs = self.mode1_ucs_tile_costs.get(next_tile)
+        if costs is None:
+            terrain_cost = 5 if next_tile in self.terrain_costs else 0
+            condition_cost = 0
+            if next_tile in self.farm_tiles:
+                condition_cost = self._mode1_ucs_condition_cost(next_tile)
+            return 1 + terrain_cost + condition_cost
+        return costs["total"]
+
+
+    def _mode1_ucs_path_extra_cost(self, path):
+        extra_cost = 0
+        for tile in path:
+            costs = self.mode1_ucs_tile_costs.get(tile)
+            if costs is None:
+                terrain_cost = 5 if tile in self.terrain_costs else 0
+                condition_cost = 0
+                if tile in self.farm_tiles:
+                    condition_cost = self._mode1_ucs_condition_cost(tile)
+                extra_cost += terrain_cost + condition_cost
+            else:
+                extra_cost += costs["terrain"] + costs["condition"]
+        return extra_cost
+
+
+    def _step_cost(self, current, next_tile):
+        # In Mode 2, A*/IDA* g(n) must be the real number of moves:
+        # each move adds exactly +1. Terrain/condition belongs to h(n),
+        # not to g(n), so f(n) remains easy to explain: f = steps + h.
+        if self.mode == 2:
+            return 1
+
+        if self.mode == 1 and self.algorithm_name == "UCS":
+            return self._mode1_ucs_step_cost(current, next_tile)
+
+        terrain_cost = self.terrain_costs.get(next_tile, 0)
+        if self.mode == 1 and next_tile in self.farm_tiles:
+            return 1 + terrain_cost + self._ucs_task_cost(next_tile)
+        return 1 + terrain_cost
+
+
+    def _finish_mode1_ucs_leg(self, tile):
+        if self.mode != 1 or self.algorithm_name != "UCS":
+            return
+        if tile != self.current_target:
+            return
+        self.mode1_ucs_path_length_total += self.mode1_ucs_current_leg_length
+        self.mode1_ucs_extra_cost_total += (
+            self.mode1_ucs_current_leg_extra_cost)
+        self.mode1_ucs_current_leg_length = 0
+        self.mode1_ucs_current_leg_extra_cost = 0
+
+
+    def _finish_mode2_leg_g(self, tile):
+        if self.mode != 2 or tile != self.mode2_current_leg_target:
+            return
+        self.mode2_total_g += self.mode2_current_leg_g
+        self.mode2_current_leg_g = 0
+        self.mode2_current_leg_target = None
+        self.mode2_current_leg_start = None
+        self.mode2_current_step_stats = []
+        self.mode2_current_step_index = 0
+
+
+    def _mode2_priority_path_to_any_goal(self, start, remaining):
+        """Mode 2: BFS-style search with a priority queue.
+
+        This is intentionally simple and stable:
+        - expand only 4-direction neighbors from _neighbors();
+        - store came_from parent for every node;
+        - reconstruct a tile-by-tile path;
+        - never jump directly to a target.
+
+        Priority:
+        - Greedy: priority = h(n)
+        - A*/IDSA: priority = g(n) + h(n)
+
+        h(n) is computed from the node currently being expanded to the best
+        remaining target:
+            h(n) = Manhattan(n, target) + 2 * condition(target)
+        """
+        goals = {
+            tile for tile in remaining
+            if tile not in self.done_tiles
+            and tile not in self.discovered_blocked
+            and tile not in self.enemy_done_tiles
+        }
+        if not goals:
+            return None, [], set(), (0, 0, 0), {
+                "Algorithm": self.algorithm_name,
+                "Path length": 0,
+            }
+
+        if start in goals:
+            target = start
+            priority, distance, condition_cost, h_val = self._mode2_h_parts(
+                start, target)
+            stats = {
+                "Algorithm": self.algorithm_name,
+                "Target": f"{target}",
+                "Path length": 0,
+                "Nodes explored": 1,
+                "h(n)": f"{h_val}",
+                "h distance": f"{distance}",
+                "h condition": (
+                    f"2 * {priority} = {condition_cost} "
+                    f"({self._condition_for_tile(target)})"),
+                "h formula": "Manhattan + 2 * condition",
+                "Search style": "BFS + priority queue",
+            }
+            return target, [], {start}, (h_val, 0, h_val), stats
+
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        for goal in goals:
+            blocked.discard(goal)
+
+        def best_h_from(node):
+            # Smaller tuple wins. This is recalculated from the current node,
+            # not from the original spawn.
+            best = None
+            for target in goals:
+                priority, distance, condition_cost, h_val = self._mode2_h_parts(
+                    node, target)
+                key = (h_val, priority, distance, target, condition_cost)
+                if best is None or key < best:
+                    best = key
+            return best
+
+        start_h, _, _, _, _ = best_h_from(start)
+        open_set = []
+        heapq.heappush(
+            open_set,
+            (start_h, start_h, 0, next(self.counter), start)
+        )
+        came_from = {}
+        g_score = {start: 0}
+        closed = set()
+        explored_order = []
+        max_frontier = 1
+
+        while open_set:
+            _, _, _, _, current = heapq.heappop(open_set)
+            current_g = g_score[current]
+            if current in closed:
+                continue
+            closed.add(current)
+            explored_order.append(current)
+
+            if current in goals:
+                target = current
+                path = self._reconstruct(came_from, current)
+                priority, distance, condition_cost, h_start = self._mode2_h_parts(
+                    start, target)
+                g_val = len(path)
+                f_val = g_val + h_start
+                fgh = (f_val, g_val, h_start)
+                stats = {
+                    "Algorithm": self.algorithm_name,
+                    "Target": f"{target}",
+                    "Path length": len(path),
+                    "Nodes explored": len(explored_order),
+                    "Frontier max": max_frontier,
+                    "Search style": "BFS + priority queue",
+                    "Parent rule": "came_from reconstructs each step",
+                    "f(n)": f"{f_val}",
+                    "g(n)": f"{g_val}",
+                    "h(n)": f"{h_start}",
+                    "h distance": f"{distance}",
+                    "h condition": (
+                        f"2 * {priority} = {condition_cost} "
+                        f"({self._condition_for_tile(target)})"),
+                    "h formula": "Manhattan + 2 * condition",
+                    "g formula": "+1 per move",
+                }
+                if self.algorithm_name == "Greedy":
+                    stats.pop("f(n)", None)
+                    stats.pop("g(n)", None)
+                    stats["Priority"] = "min h(n)"
+                elif self.algorithm_name == "IDSA":
+                    stats["Note"] = "IDSA visualized with priority frontier"
+                return target, path, set(explored_order), fgh, stats
+
+            for next_tile in self._neighbors(current, blocked):
+                tentative_g = current_g + 1
+                if tentative_g >= g_score.get(next_tile, float("inf")):
+                    continue
+                came_from[next_tile] = current
+                g_score[next_tile] = tentative_g
+                h_val, condition_priority, distance, _, _ = best_h_from(next_tile)
+                if self.algorithm_name == "Greedy":
+                    frontier_priority = h_val
+                else:
+                    frontier_priority = tentative_g + h_val
+                heapq.heappush(
+                    open_set,
+                    (
+                        frontier_priority,
+                        h_val,
+                        -tentative_g,
+                        next(self.counter),
+                        next_tile,
+                    )
+                )
+                max_frontier = max(max_frontier, len(open_set))
+
+        return None, [], set(explored_order), (0, 0, 0), {
+            "Algorithm": self.algorithm_name,
+            "Path length": 0,
+            "Nodes explored": len(explored_order),
+            "Search style": "BFS + priority queue",
+            "Result": "No reachable target",
+        }
+
+
+    def _mode2_plan_one_leg(self, parent, target):
+        """Plan one Mode-2 leg from parent to target.
+
+        The search algorithm still owns the path.  The only change is that
+        h(n) is evaluated with the expanded node n and this leg's target:
+
+            Greedy priority = h(n)
+            A*/IDA* priority = g(n) + h(n)
+            g(n) = +1 for every move
+            h(n) = Manhattan(n,target) + 2 * condition(target)
+        """
+        blocked = self._blocked_tiles()
+        blocked.discard(parent)
+        blocked.discard(target)
+        return algorithms.find_path_by_algorithm(
+            self.algorithm_name, parent, target, blocked,
+            self._neighbors, self._search_heuristic,
+            self.counter, self._step_cost)
+
+
+    def _mode2_set_leg_runtime_stats(
+            self, parent, target, path, explored, fgh, sort_key,
+            step_stats=None):
+        g_leg = len(path)
+        self.mode2_current_leg_g = g_leg
+        self.mode2_current_leg_start = parent
+        self.mode2_current_leg_target = target
+        self.mode2_current_step_index = 0
+        if step_stats is None:
+            self.mode2_current_step_stats = self._mode2_build_step_stats(
+                parent, target, path, len(explored), sort_key)
+        else:
+            self.mode2_current_step_stats = [dict(stats) for stats in step_stats]
+        self.astar_current_fgh = fgh
+        self.astar_explored = set(explored)
+        self._mode2_apply_precomputed_step_stats(0)
+
+
+    def _mode2_build_step_stats(
+            self, parent, target, path, explored_count, sort_key,
+            completed_g=None):
+        if completed_g is None:
+            completed_g = self.mode2_total_g
+        nodes = [parent] + list(path)
+        result = []
+        priority, distance, condition_cost, h = self._mode2_h_parts(
+            parent, target)
+        g_val = completed_g + len(path)
+        f_val = g_val + h
+        for step_index, node in enumerate(nodes):
+            next_node = nodes[step_index + 1] if step_index + 1 < len(nodes) else target
+            stats = {
+                "Algorithm": self.algorithm_name,
+                "Target": f"{target}",
+                "f(n)": f"{f_val}",
+                "g(n)": f"{g_val}",
+                "h(n)": f"{h}",
+                "h distance": f"{distance}",
+                "h condition": (
+                    f"2 * {priority} = {condition_cost} "
+                    f"({self._condition_for_tile(target)})"),
+                "h formula": "Manhattan + 2 * condition",
+                "Current node": f"{node}",
+                "Next node": f"{next_node}",
+                "Path length": len(path),
+                "Path remaining": max(0, len(path) - step_index),
+                "Nodes explored": explored_count,
+                "g completed": completed_g,
+                "g leg": len(path),
+                "Target rule": "min score from current parent node",
+                "Selected target": f"{target}",
+                "Parent node": f"{parent}",
+                "score(target)": sort_key[0],
+                "Tie-break": "score, condition, Manhattan, tile",
+            }
+            if self.algorithm_name == "Greedy":
+                stats.pop("f(n)", None)
+                stats.pop("g(n)", None)
+                stats["Priority"] = "min h(n)"
+            result.append(stats)
+        return result
+
+
+    def _mode2_apply_precomputed_step_stats(self, step_index):
+        if not self.mode2_current_step_stats:
+            return
+        step_index = max(
+            0, min(step_index, len(self.mode2_current_step_stats) - 1))
+        self.mode2_current_step_index = step_index
+        stats = dict(self.mode2_current_step_stats[step_index])
+        f_val = stats.get("f(n)")
+        g_val = stats.get("g(n)")
+        h_val = stats.get("h(n)")
+        if f_val is not None and g_val is not None and h_val is not None:
+            self.astar_current_fgh = (int(f_val), int(g_val), int(h_val))
+        self.stats = stats
+
 
     def _build_mode2_frontier_full_plan(self, remaining, start):
         """Build the whole Mode-2 route with a priority BFS frontier.
@@ -785,289 +1920,81 @@ class FarmAIController:
         self._apply_full_plan_stats()
         return self.full_garden_plan
 
-    def _finish_mode2_leg_g(self, tile):
-        if self.mode != 2 or tile != self.mode2_current_leg_target:
-            return
-        self.mode2_total_g += self.mode2_current_leg_g
-        self.mode2_current_leg_g = 0
-        self.mode2_current_leg_target = None
-        self.mode2_current_leg_start = None
-        self.mode2_current_step_stats = []
-        self.mode2_current_step_index = 0
 
-    def _is_adjacent_tile(self, a, b):
-        return self._heuristic(a, b) == 1
+    # ------------------------------------------------------------------
+    # mode 3 local search
+    # ------------------------------------------------------------------
 
-    def _mode2_apply_precomputed_step_stats(self, step_index):
-        if not self.mode2_current_step_stats:
-            return
-        step_index = max(
-            0, min(step_index, len(self.mode2_current_step_stats) - 1))
-        self.mode2_current_step_index = step_index
-        stats = dict(self.mode2_current_step_stats[step_index])
-        f_val = stats.get("f(n)")
-        g_val = stats.get("g(n)")
-        h_val = stats.get("h(n)")
-        if f_val is not None and g_val is not None and h_val is not None:
-            self.astar_current_fgh = (int(f_val), int(g_val), int(h_val))
-        self.stats = stats
+    def _dfs_traversal_neighbors(self, tile, blocked):
+        x, y = tile
+        for nx, ny in ((x, y + 1), (x - 1, y), (x + 1, y), (x, y - 1)):
+            if 0 <= nx < self.cols and 0 <= ny < self.rows \
+                    and (nx, ny) not in blocked \
+                    and (self.walkable_tiles is None
+                         or (nx, ny) in self.walkable_tiles):
+                yield (nx, ny)
 
-    def _mode2_build_step_stats(
-            self, parent, target, path, explored_count, sort_key,
-            completed_g=None):
-        if completed_g is None:
-            completed_g = self.mode2_total_g
-        nodes = [parent] + list(path)
-        result = []
-        priority, distance, condition_cost, h = self._mode2_h_parts(
-            parent, target)
-        g_val = completed_g + len(path)
-        f_val = g_val + h
-        for step_index, node in enumerate(nodes):
-            next_node = nodes[step_index + 1] if step_index + 1 < len(nodes) else target
-            stats = {
-                "Algorithm": self.algorithm_name,
-                "Target": f"{target}",
-                "f(n)": f"{f_val}",
-                "g(n)": f"{g_val}",
-                "h(n)": f"{h}",
-                "h distance": f"{distance}",
-                "h condition": (
-                    f"2 * {priority} = {condition_cost} "
-                    f"({self._condition_for_tile(target)})"),
-                "h formula": "Manhattan + 2 * condition",
-                "Current node": f"{node}",
-                "Next node": f"{next_node}",
-                "Path length": len(path),
-                "Path remaining": max(0, len(path) - step_index),
-                "Nodes explored": explored_count,
-                "g completed": completed_g,
-                "g leg": len(path),
-                "Target rule": "min score from current parent node",
-                "Selected target": f"{target}",
-                "Parent node": f"{parent}",
-                "score(target)": sort_key[0],
-                "Tie-break": "score, condition, Manhattan, tile",
-            }
-            if self.algorithm_name == "Greedy":
-                stats.pop("f(n)", None)
-                stats.pop("g(n)", None)
-                stats["Priority"] = "min h(n)"
-            result.append(stats)
-        return result
 
-    def _mode2_condition_h(self, tile):
-        """Heuristic bonus for Mode 2 target condition.
-
-        Smaller value = higher priority because Greedy/A* use min-heap:
-            dry      = 0
-            critical = 1
-            pest     = 2
-            dead     = 3
-
-        This is intentionally separate from Mode 3 score.
-        """
-        priorities = {
-            "dry": 0,
-            "critical": 1,
-            "pest": 2,
-            "crow": 2,
-            "dead": 3,
-            "replant": 3,
-        }
-        return priorities.get(self._condition_for_tile(tile), 3)
-
-    def _mode2_h_parts(self, current_node, target):
-        priority = self._mode2_condition_h(target)
-        distance = self._heuristic(current_node, target)
-        condition_cost = 2 * priority
-        return priority, distance, condition_cost, distance + condition_cost
-
-    def _mode2_plan_one_leg(self, parent, target):
-        """Plan one Mode-2 leg from parent to target.
-
-        The search algorithm still owns the path.  The only change is that
-        h(n) is evaluated with the expanded node n and this leg's target:
-
-            Greedy priority = h(n)
-            A*/IDA* priority = g(n) + h(n)
-            g(n) = +1 for every move
-            h(n) = Manhattan(n,target) + 2 * condition(target)
-        """
-        blocked = self._blocked_tiles()
-        blocked.discard(parent)
-        blocked.discard(target)
-        return algorithms.find_path_by_algorithm(
-            self.algorithm_name, parent, target, blocked,
-            self._neighbors, self._search_heuristic,
-            self.counter, self._step_cost)
-
-    def _mode2_priority_path_to_any_goal(self, start, remaining):
-        """Mode 2: BFS-style search with a priority queue.
-
-        This is intentionally simple and stable:
-        - expand only 4-direction neighbors from _neighbors();
-        - store came_from parent for every node;
-        - reconstruct a tile-by-tile path;
-        - never jump directly to a target.
-
-        Priority:
-        - Greedy: priority = h(n)
-        - A*/IDSA: priority = g(n) + h(n)
-
-        h(n) is computed from the node currently being expanded to the best
-        remaining target:
-            h(n) = Manhattan(n, target) + 2 * condition(target)
-        """
-        goals = {
-            tile for tile in remaining
-            if tile not in self.done_tiles
-            and tile not in self.discovered_blocked
-            and tile not in self.enemy_done_tiles
-        }
-        if not goals:
-            return None, [], set(), (0, 0, 0), {
-                "Algorithm": self.algorithm_name,
-                "Path length": 0,
-            }
-
-        if start in goals:
-            target = start
-            priority, distance, condition_cost, h_val = self._mode2_h_parts(
-                start, target)
-            stats = {
-                "Algorithm": self.algorithm_name,
-                "Target": f"{target}",
-                "Path length": 0,
-                "Nodes explored": 1,
-                "h(n)": f"{h_val}",
-                "h distance": f"{distance}",
-                "h condition": (
-                    f"2 * {priority} = {condition_cost} "
-                    f"({self._condition_for_tile(target)})"),
-                "h formula": "Manhattan + 2 * condition",
-                "Search style": "BFS + priority queue",
-            }
-            return target, [], {start}, (h_val, 0, h_val), stats
-
+    def _build_dfs_walk(self, start):
         blocked = self._blocked_tiles()
         blocked.discard(start)
-        for goal in goals:
+        for goal in self.farm_tiles:
             blocked.discard(goal)
 
-        def best_h_from(node):
-            # Smaller tuple wins. This is recalculated from the current node,
-            # not from the original spawn.
-            best = None
-            for target in goals:
-                priority, distance, condition_cost, h_val = self._mode2_h_parts(
-                    node, target)
-                key = (h_val, priority, distance, target, condition_cost)
-                if best is None or key < best:
-                    best = key
-            return best
-
-        start_h, _, _, _, _ = best_h_from(start)
-        open_set = []
-        heapq.heappush(
-            open_set,
-            (start_h, start_h, 0, next(self.counter), start)
-        )
-        came_from = {}
-        g_score = {start: 0}
-        closed = set()
+        visited = set()
+        walk = [start]
         explored_order = []
-        max_frontier = 1
 
-        while open_set:
-            _, _, _, _, current = heapq.heappop(open_set)
-            current_g = g_score[current]
-            if current in closed:
-                continue
-            closed.add(current)
-            explored_order.append(current)
-
-            if current in goals:
-                target = current
-                path = self._reconstruct(came_from, current)
-                priority, distance, condition_cost, h_start = self._mode2_h_parts(
-                    start, target)
-                g_val = len(path)
-                f_val = g_val + h_start
-                fgh = (f_val, g_val, h_start)
-                stats = {
-                    "Algorithm": self.algorithm_name,
-                    "Target": f"{target}",
-                    "Path length": len(path),
-                    "Nodes explored": len(explored_order),
-                    "Frontier max": max_frontier,
-                    "Search style": "BFS + priority queue",
-                    "Parent rule": "came_from reconstructs each step",
-                    "f(n)": f"{f_val}",
-                    "g(n)": f"{g_val}",
-                    "h(n)": f"{h_start}",
-                    "h distance": f"{distance}",
-                    "h condition": (
-                        f"2 * {priority} = {condition_cost} "
-                        f"({self._condition_for_tile(target)})"),
-                    "h formula": "Manhattan + 2 * condition",
-                    "g formula": "+1 per move",
-                }
-                if self.algorithm_name == "Greedy":
-                    stats.pop("f(n)", None)
-                    stats.pop("g(n)", None)
-                    stats["Priority"] = "min h(n)"
-                elif self.algorithm_name == "IDSA":
-                    stats["Note"] = "IDSA visualized with priority frontier"
-                return target, path, set(explored_order), fgh, stats
-
-            for next_tile in self._neighbors(current, blocked):
-                tentative_g = current_g + 1
-                if tentative_g >= g_score.get(next_tile, float("inf")):
+        def visit(tile):
+            visited.add(tile)
+            explored_order.append(tile)
+            for next_tile in self._dfs_traversal_neighbors(tile, blocked):
+                if next_tile in visited:
                     continue
-                came_from[next_tile] = current
-                g_score[next_tile] = tentative_g
-                h_val, condition_priority, distance, _, _ = best_h_from(next_tile)
-                if self.algorithm_name == "Greedy":
-                    frontier_priority = h_val
-                else:
-                    frontier_priority = tentative_g + h_val
-                heapq.heappush(
-                    open_set,
-                    (
-                        frontier_priority,
-                        h_val,
-                        -tentative_g,
-                        next(self.counter),
-                        next_tile,
-                    )
-                )
-                max_frontier = max(max_frontier, len(open_set))
+                walk.append(next_tile)
+                visit(next_tile)
+                walk.append(tile)
 
-        return None, [], set(explored_order), (0, 0, 0), {
-            "Algorithm": self.algorithm_name,
-            "Path length": 0,
-            "Nodes explored": len(explored_order),
-            "Search style": "BFS + priority queue",
-            "Result": "No reachable target",
-        }
+        visit(start)
+        self.dfs_walk = walk
+        self.dfs_walk_index = 0
+        self.dfs_explored_order = explored_order
 
-    def _mode2_set_leg_runtime_stats(
-            self, parent, target, path, explored, fgh, sort_key,
-            step_stats=None):
-        g_leg = len(path)
-        self.mode2_current_leg_g = g_leg
-        self.mode2_current_leg_start = parent
-        self.mode2_current_leg_target = target
-        self.mode2_current_step_index = 0
-        if step_stats is None:
-            self.mode2_current_step_stats = self._mode2_build_step_stats(
-                parent, target, path, len(explored), sort_key)
-        else:
-            self.mode2_current_step_stats = [dict(stats) for stats in step_stats]
-        self.astar_current_fgh = fgh
-        self.astar_explored = set(explored)
-        self._mode2_apply_precomputed_step_stats(0)
+
+    def _dfs_traversal_choose(self, remaining, start):
+        if self.dfs_walk is None:
+            self._build_dfs_walk(start)
+
+        if self.dfs_walk[self.dfs_walk_index] != start:
+            try:
+                self.dfs_walk_index = self.dfs_walk.index(
+                    start, self.dfs_walk_index)
+            except ValueError:
+                self._build_dfs_walk(start)
+
+        path = []
+        remaining_set = set(remaining)
+        for index in range(self.dfs_walk_index + 1, len(self.dfs_walk)):
+            tile = self.dfs_walk[index]
+            path.append(tile)
+            if tile in remaining_set:
+                self.dfs_walk_index = index
+                self.chosen_target_path = path
+                explored = set(self.dfs_walk[:index + 1])
+                self.bfs_explored = explored
+                self.stats = {
+                    "Nodes explored": len(explored),
+                    "Path length": len(path),
+                    "Stack max": len(self.dfs_explored_order),
+                    "Algorithm": "DFS",
+                    "Target": f"{tile}",
+                }
+                return tile
+
+        self.chosen_target_path = None
+        return None
+
+    # -------------------------------------------------------------- MODE 3
 
     def _mode3_turn_penalty(self):
         """Penalty tang dan sau moi cay da chon/xu ly.
@@ -1081,13 +2008,59 @@ class FarmAIController:
         # Vi Manhattan cua o ke ben la +1, tru 2 se tao chenhlech -1.
         return len(self.done_tiles) + 1
 
-    def _path_is_contiguous(self, start, path):
-        current = start
-        for tile in path:
-            if not self._is_adjacent_tile(current, tile):
-                return False
-            current = tile
-        return True
+
+    def _hill_score(self, tile, start):
+        """Mode 3 score = fixed score by tree type + Manhattan - turn penalty.
+
+        dry      = 40
+        critical = 30
+        pest     = 20
+        dead     = 10
+
+        candidate_score = type_score + Manhattan(start, tile) - turn_penalty
+        current_score   = type_score + 0
+
+        turn_penalty tang sau moi cay da xu ly, giup 2 cay cung loai nam ke
+        nhau van co the tao score giam dan de robot tiep tuc di.
+        """
+        type_scores = {
+            "dry": 40,
+            "critical": 30,
+            "pest": 20,
+            "dead": 10,
+        }
+        condition = self._condition_for_tile(tile)
+        base_score = type_scores.get(condition, 0)
+        score = base_score + self._heuristic(start, tile)
+
+        # Chi tru penalty cho cac ung vien chua xu ly, khong tru vao o hien tai.
+        # Neu tru ca current va candidate thi hieu ung se bi triet tieu.
+        if self.mode == 3 and tile != start and tile not in self.done_tiles:
+            score -= self._mode3_turn_penalty()
+
+        return score
+
+
+    def _local_scores(self, start=None, remaining=None):
+        """Tinh lai score theo vi tri hien tai moi buoc.
+
+        Mode 3 score duoc tinh lai moi buoc theo:
+        type_score + Manhattan(start, tile) - turn_penalty.
+        turn_penalty tang theo so cay da xu ly de giup robot di tiep
+        khi gap 2 cay cung loai nam ke nhau.
+        """
+        start = start or self._world_to_tile(self.player.rect.center)
+        tiles = list(remaining) if remaining is not None else list(self.farm_tiles)
+        if start in self.farm_tiles and start not in tiles:
+            tiles.append(start)
+
+        scores = {
+            tile: self._hill_score(tile, start)
+            for tile in tiles
+        }
+        self.hc_scores = scores
+        return scores
+
 
     def _refresh_mode3_scores_after_action(self, current_tile):
         """Cap nhat lai score ngay sau khi xu ly xong 1 cay Mode 3."""
@@ -1107,6 +2080,267 @@ class FarmAIController:
         stats["Completed"] = f"{len(self.done_tiles)}/{len(self.farm_tiles)}"
         stats["Score refreshed"] = f"after {current_tile}"
         self.stats = stats
+
+
+    def _nearest_remaining(self, remaining, start):
+        return min(remaining, key=lambda tile: (self._heuristic(start, tile), tile))
+
+
+    def _remaining_neighbors(self, remaining, center):
+        return [
+            tile for tile in remaining
+            if abs(tile[0] - center[0]) + abs(tile[1] - center[1]) == 1
+        ]
+
+
+    def _set_local_stats(self, algorithm, target, score, extra=None):
+        condition = self._condition_for_tile(target) if target is not None else "none"
+        stats = {
+            "Local algorithm": algorithm,
+            "Current score": f"{score:.0f}",
+            "Target": f"{target}" if target is not None else "None",
+            "Target type": condition,
+            "Score formula": "type + Manhattan - turn",
+        }
+        if extra:
+            stats.update(extra)
+        self.stats = stats
+        self.hc_current_score = score
+        self.hc_best_neighbor_score = score
+
+
+    def _hill_climbing_step_choose(self, remaining, start):
+        """Hill Climbing bien the di xuong: chon lang gieng co score nho hon."""
+        scores = self._local_scores(start, remaining)
+
+        if start not in self.dryness:
+            target = self._nearest_remaining(remaining, start)
+            current_score = scores.get(target, 0)
+            self._set_local_stats("Hill Climbing", target, current_score, {
+                "Hill steps": 0,
+                "Trace": [target],
+                "Start rule": "Nearest target first",
+                "Turn penalty": f"-{self._mode3_turn_penalty()} candidate",
+            })
+            return target
+
+        current_score = self._hill_score(start, start)
+        neighbors = self._remaining_neighbors(remaining, start)
+        lower_neighbors = [
+            tile for tile in neighbors
+            if scores.get(tile, 0) < current_score
+        ]
+        if not lower_neighbors:
+            self._set_local_stats("Hill Climbing", None, current_score, {
+                "Hill steps": 0,
+                "Trace": [start],
+                "Stop rule": "No lower neighbor",
+                "Remaining tiles": len(remaining),
+                "Coverage": f"{len(self.done_tiles)}/{len(self.farm_tiles)}",
+                "Suggestion": "No adjacent tile has a lower score",
+            })
+            self.state = "DONE"
+            return None
+
+        # Test variant: di xuong nhanh.
+        # lower_neighbors chi gom cac o co score nho hon current_score.
+        # min o day chon o co score thap nhat trong cac lang gieng thap hon.
+        target = min(
+            lower_neighbors,
+            key=lambda tile: (scores.get(tile, 0), self._heuristic(start, tile), tile))
+        target_score = scores.get(target, 0)
+        self._set_local_stats("Hill Climbing", target, target_score, {
+            "Hill steps": 1,
+            "Trace": [start, target],
+            "Stop rule": "Move to lowest lower neighbor",
+            "Turn penalty": f"-{self._mode3_turn_penalty()} candidate",
+        })
+        return target
+
+
+    def _climb_from_tile(self, start_tile, remaining, scores):
+        # "Downhill" variant: follow steepest descent (lowest score neighbour).
+        current = start_tile
+        trace = [current]
+        current_score = scores.get(current, 0)
+        while True:
+            neighbors = [
+                tile for tile in self._remaining_neighbors(remaining, current)
+                if tile != current and scores.get(tile, 0) < current_score
+            ]
+            if not neighbors:
+                return current, current_score, trace
+            current = min(
+                neighbors,
+                key=lambda tile: (scores.get(tile, 0), self._heuristic(current, tile), tile))
+            current_score = scores.get(current, 0)
+            trace.append(current)
+
+
+    def _restart_hill_choose(self, remaining, start):
+        """Restart Hill: di xuong nhu Hill, neu ket thi khoi dong lai o tile co score cao nhat (xa nhat)."""
+        scores = self._local_scores(start, remaining)
+        if start not in self.dryness:
+            target = self._nearest_remaining(remaining, start)
+            self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
+                "Start rule": "Nearest target first",
+                "Restarts": 0,
+                "Trace": [target],
+            })
+            return target
+
+        current_score = self._hill_score(start, start)
+        lower_neighbors = [
+            tile for tile in self._remaining_neighbors(remaining, start)
+            if scores.get(tile, 0) < current_score
+        ]
+        if lower_neighbors:
+            target = min(
+                lower_neighbors,
+                key=lambda tile: (scores.get(tile, 0),
+                                  self._heuristic(start, tile), tile))
+            self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
+                "Restarts": 0,
+                "Trace": [start, target],
+                "Rule": "Continue downhill",
+            })
+            return target
+
+        # Bi ket cuc bo: restart tai tile co score cao nhat (chua xu ly)
+        target = max(
+            remaining,
+            key=lambda tile: (scores.get(tile, 0), -self._heuristic(start, tile), tile))
+        self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
+            "Restarts": 1,
+            "Trace": [target],
+            "Rule": "Restart at highest unvisited tile",
+        })
+        return target
+
+
+    def _local_beam_step_choose(self, remaining, start, beam_width=3):
+        """Local Beam: giu k ung vien, sinh tat ca lang gieng, chon k tot nhat."""
+        scores = self._local_scores(start, remaining)
+        if start not in self.dryness:
+            beam = sorted(
+                remaining,
+                key=lambda tile: (self._heuristic(start, tile), scores.get(tile, 0), tile)
+            )[:beam_width]
+        else:
+            seed = self._remaining_neighbors(remaining, start)
+            if not seed:
+                seed = list(remaining)
+            beam = sorted(
+                seed,
+                key=lambda tile: (scores.get(tile, 0), self._heuristic(start, tile), tile)
+            )[:beam_width]
+
+        children = []
+        for tile in beam:
+            children.extend(self._remaining_neighbors(remaining, tile))
+        pool = set(beam) | set(children)
+        next_beam = sorted(
+            pool,
+            key=lambda tile: (scores.get(tile, 0), self._heuristic(start, tile), tile)
+        )[:max(1, min(beam_width, len(pool)))]
+        target = next_beam[0] if next_beam else None
+        target_score = scores.get(target, 0) if target is not None else 0
+        self._set_local_stats("Local Beam", target, target_score, {
+            "Beam width": beam_width,
+            "Beam": f"{next_beam}",
+            "Generated": len(children),
+            "Rule": "Lowest score in successor beam",
+        })
+        return target
+
+
+    def _annealing_step_choose(self, remaining, start):
+        """Simulated Annealing: chon lang gieng, chap nhan buoc te hon theo nhiet do."""
+        scores = self._local_scores(start, remaining)
+        if start not in self.dryness:
+            target = self._nearest_remaining(remaining, start)
+            self._set_local_stats("Annealing", target, scores.get(target, 0), {
+                "Start rule": "Nearest target first",
+                "Temperature": f"{self.anneal_temperature:.1f}",
+            })
+            return target
+
+        neighbors = self._remaining_neighbors(remaining, start)
+        if not neighbors:
+            self._set_local_stats("Annealing", None, scores.get(start, 0), {
+                "Stop rule": "No neighbor state",
+                "Temperature": f"{self.anneal_temperature:.1f}",
+            })
+            self.state = "DONE"
+            return None
+
+        current_score = self._hill_score(start, start)
+        ordered = list(neighbors)
+        random.shuffle(ordered)
+        accepted = None
+        accepted_delta = 0
+        accepted_worse = False
+        for candidate in ordered:
+            delta = scores.get(candidate, 0) - current_score
+            # Downhill: delta < 0 means score decreased = improvement
+            if delta <= 0:
+                accepted = candidate
+                accepted_delta = delta
+                break
+            # Accept worse (higher score) with probability e^(-delta/T)
+            probability = math.exp(-delta / max(self.anneal_temperature, 0.001))
+            if random.random() < probability:
+                accepted = candidate
+                accepted_delta = delta
+                accepted_worse = True
+                break
+
+        self.anneal_temperature = max(0.1, self.anneal_temperature * 0.90)
+        if accepted is None:
+            self._set_local_stats("Annealing", None, current_score, {
+                "Rejected": len(ordered),
+                "Temperature": f"{self.anneal_temperature:.1f}",
+                "Stop rule": "No accepted neighbor",
+            })
+            self.state = "DONE"
+            return None
+
+        self._set_local_stats("Annealing", accepted, scores.get(accepted, 0), {
+            "Delta": f"{accepted_delta:.0f}",
+            "Accepted worse": "yes" if accepted_worse else "no",
+            "Temperature": f"{self.anneal_temperature:.1f}",
+        })
+        return accepted
+
+
+    def _local_search_choose(self, remaining, start):
+        """Chon muc tieu bang thuat toan local search dang duoc chon."""
+        if self.algorithm_name == "Hill Climbing":
+            return self._hill_climbing_step_choose(remaining, start)
+        if self.algorithm_name == "Restart Hill":
+            return self._restart_hill_choose(remaining, start)
+        if self.algorithm_name == "Local Beam":
+            return self._local_beam_step_choose(remaining, start)
+        if self.algorithm_name == "Annealing":
+            return self._annealing_step_choose(remaining, start)
+
+        current_best, current_score, self.hc_scores, self.stats = (
+            algorithms.local_search_choose(
+                self.algorithm_name, remaining, start, self.dryness,
+                self._heuristic))
+        trace = self.stats.get("Trace")
+        if self.algorithm_name == "Hill Climbing" and trace:
+            self.chosen_target_path = list(trace)
+            self.stop_after_current_target = True
+        self.hc_current_score = current_score
+        self.hc_best_neighbor_score = current_score
+        return current_best
+
+    # -------------------------------------------------------------- MODE 4
+
+    # ------------------------------------------------------------------
+    # mode 4 online / belief / AND-OR search
+    # ------------------------------------------------------------------
 
     def _belief_neighbors(self, tile, blocked, goal=None, risk_map=None):
         x, y = tile
@@ -1137,400 +2371,6 @@ class FarmAIController:
         for _, _, _, _, nt in candidates:
             yield nt
 
-    def _dfs_traversal_neighbors(self, tile, blocked):
-        x, y = tile
-        for nx, ny in ((x, y + 1), (x - 1, y), (x + 1, y), (x, y - 1)):
-            if 0 <= nx < self.cols and 0 <= ny < self.rows \
-                    and (nx, ny) not in blocked \
-                    and (self.walkable_tiles is None
-                         or (nx, ny) in self.walkable_tiles):
-                yield (nx, ny)
-
-    @staticmethod
-    def _heuristic(a, b):
-        return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-    def _mode2_condition_h(self, tile):
-        """Heuristic bonus for Mode 2 target condition.
-
-        Smaller value = higher priority because Greedy/A* use min-heap:
-            dry      = 0
-            critical = 1
-            pest     = 2
-            dead     = 3
-
-        This is intentionally separate from Mode 3 score.
-        """
-        priorities = {
-            "dry": 0,
-            "critical": 1,
-            "pest": 2,
-            "crow": 2,
-            "dead": 3,
-            "replant": 3,
-        }
-        return priorities.get(self._condition_for_tile(tile), 3)
-
-    def _search_heuristic(self, a, b):
-        """Heuristic used by Greedy, A* and IDA*.
-
-        Mode 2 uses the formula requested for informed search:
-
-            h(n) = Manhattan(current_node, target) + 2 * condition(target)
-
-        Important: ``a`` is the current expanded node, not the original
-        spawn point. Therefore A* and IDA* recalculate h(n) for every node
-        they expand. ``b`` is the current target/goal being evaluated.
-        """
-        if self.mode in (2, 4) and b in self.farm_tiles:
-            return self._heuristic(a, b) + 2 * self._mode2_condition_h(b)
-        return self._heuristic(a, b)
-
-    def _mode2_h_parts(self, current_node, target):
-        priority = self._mode2_condition_h(target)
-        distance = self._heuristic(current_node, target)
-        condition_cost = 2 * priority
-        return priority, distance, condition_cost, distance + condition_cost
-
-    def _apply_mode2_hud_stats(
-            self, stats, current_node, target, fgh=None, display_g=None):
-        priority, distance, condition_cost, h = self._mode2_h_parts(
-            current_node, target)
-        condition = self._condition_for_tile(target)
-
-        if fgh is not None and self.algorithm_name != "Greedy":
-            _, g_val, _ = fgh
-            if display_g is not None:
-                g_val = display_g
-            h_val = h
-            f_val = g_val + h_val
-            stats["f(n)"] = f"{f_val}"
-            stats["g(n)"] = f"{g_val}"
-            stats["h(n)"] = f"{h_val}"
-        else:
-            stats["h(n)"] = f"{h}"
-
-        stats["h distance"] = f"{distance}"
-        stats["h condition"] = (
-            f"2 * {priority} = {condition_cost} ({condition})")
-        stats["h formula"] = "Manhattan + 2 * condition"
-        stats["g formula"] = "+1 per move"
-        return stats
-
-    def _ucs_task_cost(self, tile):
-        condition = self._condition_for_tile(tile)
-        action_time = {
-            "critical": 2.0,
-            "dry": 2.0,
-            "pest": 3.5,
-            "crow": 3.5,
-            "replant": 4.0,
-            "dead": 5.0,
-        }
-        rescue_value = {
-            "critical": 1.4,
-            "pest": 1.0,
-            "crow": 1.0,
-            "dry": 0.4,
-            "replant": 0.0,
-            "dead": 0.0,
-        }
-        dryness = max(0, min(self.dryness.get(tile, 50), 100)) / 100.0
-        living_pressure = 0.4 * dryness if condition in (
-            "critical", "dry", "pest", "crow") else 0
-        return max(
-            0.5,
-            action_time.get(condition, 2.5)
-            - rescue_value.get(condition, 0)
-            - living_pressure)
-
-    def _step_cost(self, current, next_tile):
-        # In Mode 2, A*/IDA* g(n) must be the real number of moves:
-        # each move adds exactly +1. Terrain/condition belongs to h(n),
-        # not to g(n), so f(n) remains easy to explain: f = steps + h.
-        if self.mode == 2:
-            return 1
-
-        terrain_cost = self.terrain_costs.get(next_tile, 0)
-        if self.mode == 1 and next_tile in self.farm_tiles:
-            return 1 + terrain_cost + self._ucs_task_cost(next_tile)
-        return 1 + terrain_cost
-
-    def _reconstruct(self, came_from, current):
-        path = [current]
-        while current in came_from:
-            current = came_from[current]
-            path.append(current)
-        path.reverse()
-        return path[1:]
-
-    def _load_visual_assets(self):
-        asset_dir = os.path.join("..", "graphics", "ai_visuals")
-        asset_names = {
-            "dry_plant": "dry_plant.png",
-            "urgent_plant": "urgent_plant.png",
-            "storm_damaged_plant": "storm_damaged_plant.png",
-            "healthy_plant": "healthy_plant.png",
-            "dead_plant": "dead_plant.png",
-            "storm_debris": "storm_debris.png",
-            "worm": "worm.png",
-            "black_worm": "black_worm.png",
-            "bug": "bug.png",
-            "crow": "crow.png",
-            "crow_damage": "crow_damage.png",
-        }
-        assets = {}
-        for key, filename in asset_names.items():
-            path = os.path.join(asset_dir, filename)
-            if os.path.exists(path):
-                image = pygame.image.load(path).convert_alpha()
-                assets[key] = pygame.transform.scale(image, (TILE_SIZE, TILE_SIZE))
-        return assets
-
-    def _blit_tile_asset(self, surface, offset, tile, asset_key, y_offset=0):
-        image = self.visual_assets.get(asset_key)
-        if image is None:
-            return
-        world = self._tile_center(tile)
-        rect = image.get_rect(center=(int(world.x - offset.x),
-                                      int(world.y - offset.y + y_offset)))
-        surface.blit(image, rect)
-
-    def _draw_crop_icon(self, surface, x, y, crop_type):
-        shadow = pygame.Surface((20, 10), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow, (30, 20, 10, 80), (0, 0, 20, 8))
-        surface.blit(shadow, (x - 10, y + 4))
-
-        if crop_type == "tomato":
-            pygame.draw.circle(surface, (220, 40, 40), (x, y), 10)
-            pygame.draw.circle(surface, (255, 100, 100), (x - 3, y - 3), 3)
-            pygame.draw.polygon(surface, (40, 160, 40), [
-                (x, y - 8), (x - 5, y - 5), (x - 2, y - 6),
-                (x, y - 3), (x + 2, y - 6), (x + 5, y - 5)])
-            pygame.draw.line(surface, (30, 120, 30), (x, y - 8), (x, y - 12), 2)
-        elif crop_type == "corn":
-            pygame.draw.ellipse(surface, (50, 160, 50), (x - 9, y - 8, 18, 20))
-            pygame.draw.ellipse(surface, (240, 200, 20), (x - 6, y - 12, 12, 22))
-            for dy in (-6, -2, 2, 6):
-                pygame.draw.line(surface, (180, 140, 0), (x - 5, y + dy), (x + 5, y + dy), 1)
-        elif crop_type == "carrot":
-            pygame.draw.polygon(surface, (250, 110, 10), [
-                (x - 6, y - 4), (x + 6, y - 4), (x, y + 10)])
-            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x - 4, y - 12), 2)
-            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x + 4, y - 12), 2)
-            pygame.draw.line(surface, (60, 180, 60), (x, y - 4), (x, y - 14), 2)
-        elif crop_type == "wheat":
-            pygame.draw.line(surface, (220, 180, 60), (x, y - 12), (x, y + 8), 2)
-            for dy in range(-8, 6, 4):
-                pygame.draw.ellipse(surface, (240, 200, 80), (x - 5, y + dy, 5, 6))
-                pygame.draw.ellipse(surface, (240, 200, 80), (x + 1, y + dy - 2, 5, 6))
-
-    def _build_tile_conditions(self):
-        conditions = {}
-
-        # Mode 3: chi xep LOAI CAY/HINH ANH CAY.
-        # Diem cua Mode 3 duoc tinh trong _hill_score theo:
-        # dry=40, critical=30, pest=20, dead=10, sau do + Manhattan.
-        if self.mode == 3:
-            mode3_layout = {
-                # Layout toi uu theo cong thuc:
-                # score = diem_loai_cay + Manhattan(current, tile)
-                # dry=40, critical=30, pest=20, dead=10.
-                #
-                # Voi Hill Climbing dang di xuong (< current_score),
-                # robot se co xu huong di theo chuoi chinh:
-                # (33,22) dry -> (33,23) critical ->
-                # (32,23) pest -> (32,24) dead.
-                #
-                # Cac o ke ben canh duoc xep khong thap hon de tranh robot
-                # re ngang qua o dead/pest qua som.
-
-                # Hang tren: y = 22
-                (29, 22): "dead",
-                (30, 22): "dry",
-                (31, 22): "critical",
-                (32, 22): "dry",
-                (33, 22): "dry",
-
-                # Hang 2: y = 23
-                (29, 23): "dry",
-                (30, 23): "dry",
-                (31, 23): "critical",
-                (32, 23): "critical",
-                (33, 23): "dry",
-
-                # Hang 3: y = 24
-                (29, 24): "critical",
-                (30, 24): "dry",
-                (31, 24): "pest",
-                (32, 24): "pest",
-                (33, 24): "dry",
-
-                # Hang 4: y = 25
-                (29, 25): "pest",
-                (30, 25): "critical",
-                (31, 25): "dry",
-                (32, 25): "dead",
-                (33, 25): "pest",
-
-                # Hang duoi: y = 26
-                (29, 26): "dry",
-                (30, 26): "dead",
-                (31, 26): "critical",
-                (32, 26): "pest",
-                (33, 26): "dry",
-            }
-            return {
-                tile: mode3_layout.get(tile, "dry")
-                for tile in self.farm_tiles
-            }
-
-        if self.mode == 4:
-            condition_cycle = ("dry", "critical", "dry", "pest", "dry")
-            return {
-                tile: condition_cycle[index % len(condition_cycle)]
-                for index, tile in enumerate(self.farm_tiles)
-            }
-        if self.mode == 5:
-            return {tile: "replant" for tile in self.farm_tiles}
-        if self.mode == 6:
-            min_x = min(tile[0] for tile in self.farm_tiles)
-            min_y = min(tile[1] for tile in self.farm_tiles)
-            status_grid = (
-                ("healthy", "healthy", "critical", "healthy", "healthy"),
-                ("healthy", "dry", "disease", "critical", "healthy"),
-                ("dry", "disease", "rare", "disease", "dry"),
-                ("healthy", "critical", "disease", "dry", "healthy"),
-                ("healthy", "healthy", "critical", "healthy", "healthy"),
-            )
-            return {
-                tile: status_grid[tile[1] - min_y][tile[0] - min_x]
-                for tile in self.farm_tiles
-            }
-
-        for index, tile in enumerate(self.farm_tiles):
-            dryness = self.dryness.get(tile, 50)
-            if dryness >= 88 and self.mode != 3:
-                conditions[tile] = "dead"
-            elif self.mode == 2 and dryness >= 70:
-                conditions[tile] = "critical"
-            elif self.mode == 2 and index % 4 == 0:
-                conditions[tile] = "pest"
-            elif dryness >= 65:
-                conditions[tile] = "critical"
-            elif index % 5 == 0 and self.mode in (1, 3):
-                conditions[tile] = "pest"
-            elif index % 7 == 0 and self.mode in (3, 6):
-                conditions[tile] = "pest"
-            else:
-                conditions[tile] = "dry"
-        return conditions
-
-    def _condition_priority(self, tile):
-        priorities = {
-            "critical": 50,
-            "crow": 45,
-            "pest": 40,
-            "dead": 20,
-            "dry": 10,
-            "replant": 5,
-        }
-        return priorities.get(self._condition_for_tile(tile), 0)
-
-    def _build_danger_levels(self):
-        # Kept for older HUD/code paths. For Mode 2 test version, smaller
-        # means higher priority: dry=0, critical=1, pest/crow=2, dead=3.
-        priorities = {
-            "dry": 0,
-            "critical": 1,
-            "pest": 2,
-            "crow": 2,
-            "dead": 3,
-            "replant": 3,
-        }
-        levels = {}
-        for tile in self.farm_tiles:
-            levels[tile] = priorities.get(self._condition_for_tile(tile), 3)
-        return levels
-
-    def _care_value(self, tile):
-        return self._condition_priority(tile) + self.dryness.get(tile, 50) / 10.0
-
-    def _condition_asset(self, condition):
-        if condition == "healthy":
-            return "healthy_plant"
-        if condition == "disease":
-            return "urgent_plant"
-        if condition == "rare":
-            return "healthy_plant"
-        if condition == "dead":
-            return "dead_plant"
-        if condition == "critical":
-            return "storm_damaged_plant"
-        if condition == "dry":
-            return "dry_plant"
-        if condition == "pest":
-            return "healthy_plant"
-        return "dry_plant"
-
-    def _draw_resolved_asset(self, surface, offset, tile):
-        condition = self._condition_for_tile(tile)
-        if (self.mode == 6
-                or condition in ("dry", "critical", "pest", "crow")):
-            self._blit_tile_asset(surface, offset, tile, "healthy_plant", y_offset=-6)
-
-    def _draw_task_tile_marker(self, surface, offset, tile):
-        world = self._tile_center(tile)
-        sx = int(world.x - offset.x)
-        sy = int(world.y - offset.y)
-        marker = pygame.Surface((TILE_SIZE - 10, TILE_SIZE - 10),
-                                pygame.SRCALPHA)
-        pygame.draw.rect(marker, Colors.TASK_MARKER_FILL, marker.get_rect(),
-                         border_radius=6)
-        surface.blit(marker, (sx - TILE_SIZE // 2 + 5,
-                              sy - TILE_SIZE // 2 + 5))
-        rect = pygame.Rect(0, 0, TILE_SIZE - 10, TILE_SIZE - 10)
-        rect.center = (sx, sy)
-        pygame.draw.rect(surface, Colors.TASK_MARKER_BORDER, rect, 1,
-                         border_radius=5)
-        corner = 10
-        color = Colors.TASK_MARKER_CORNER
-        pygame.draw.line(surface, color, rect.topleft, (rect.left + corner, rect.top), 2)
-        pygame.draw.line(surface, color, rect.topleft, (rect.left, rect.top + corner), 2)
-        pygame.draw.line(surface, color, rect.topright, (rect.right - corner, rect.top), 2)
-        pygame.draw.line(surface, color, rect.topright, (rect.right, rect.top + corner), 2)
-        pygame.draw.line(surface, color, rect.bottomleft, (rect.left + corner, rect.bottom), 2)
-        pygame.draw.line(surface, color, rect.bottomleft, (rect.left, rect.bottom - corner), 2)
-        pygame.draw.line(surface, color, rect.bottomright, (rect.right - corner, rect.bottom), 2)
-        pygame.draw.line(surface, color, rect.bottomright, (rect.right, rect.bottom - corner), 2)
-
-    def _draw_mist_effect(self, surface):
-        mist = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        width, height = surface.get_size()
-        mist.fill(Colors.MIST_BASE)
-        bands = [
-            (0.08, 0.20, 1.20, 68, 46),
-            (0.16, 0.36, 0.95, 62, 42),
-            (0.24, 0.50, 1.10, 66, 44),
-            (0.34, 0.24, 0.95, 60, 40),
-            (0.46, 0.44, 1.05, 48, 34),
-            (0.60, 0.30, 0.82, 34, 26),
-            (0.74, 0.52, 0.90, 28, 22),
-            (0.88, 0.26, 0.75, 22, 18),
-        ]
-        for index, (y_ratio, speed, scale, alpha, thickness) in enumerate(bands):
-            y = int(height * y_ratio + math.sin(self.fog_time * 0.8 + index) * 14)
-            drift = int((self.fog_time * 44 * speed + index * 155) % (width + 360)) - 360
-            color = (*Colors.MIST_BAND, alpha)
-            pygame.draw.ellipse(mist, color, (drift, y, int(420 * scale), thickness))
-            pygame.draw.ellipse(mist, color, (drift + int(210 * scale), y + 12, int(360 * scale), thickness))
-            pygame.draw.ellipse(
-                mist, (*Colors.MIST_BAND, max(18, alpha - 14)),
-                (drift - int(260 * scale), y + 26, int(340 * scale), max(18, thickness - 10)))
-            pygame.draw.ellipse(
-                mist, (*Colors.MIST_HIGHLIGHT, max(14, alpha - 20)),
-                (drift + int(430 * scale), y - 10, int(280 * scale), max(16, thickness - 12)))
-        surface.blit(mist, (0, 0))
 
     def _draw_belief_minimap(self, surface):
         if not self.rows or not self.cols:
@@ -1602,854 +2442,36 @@ class FarmAIController:
                 cell)
             pygame.draw.rect(surface, (65, 235, 95), rect)
 
-    def _seed_for_tile(self, tile):
-        if self.mode == 5:
-            return self.seed_plan.get(tile, "corn")
-        if self.dryness.get(tile, 0) > 60:
-            return "tomato"
-        return "corn"
 
-    def _condition_for_tile(self, tile):
-        return self.tile_conditions.get(tile, "replant")
-
-    def _has_condition(self, tile):
-        return tile in self.tile_conditions
-
-    def _soil_cell(self, tile):
-        x, y = tile
-        if 0 <= y < self.rows and 0 <= x < self.cols:
-            return self.soil_layer.grid[y][x]
-        return []
-
-    def _next_cultivation_state(self, tile):
-        cell = self._soil_cell(tile)
-        if "X" not in cell:
-            return "HOE"
-        if "P" not in cell:
-            return "PLANT"
-        if "W" not in cell:
-            return "WATER"
-        return "DONE_TILE"
-
-    def _is_living_crop(self, tile):
-        return self._condition_for_tile(tile) in ("dry", "critical", "pest", "crow")
-
-    def _enemy_retreat_tile(self, damaged_tile):
-        if not self.farm_tiles:
-            return (damaged_tile[0], damaged_tile[1] + 1)
-        min_y = min(t[1] for t in self.farm_tiles)
-        max_y = max(t[1] for t in self.farm_tiles)
-        mid_y = (min_y + max_y) / 2
-        retreat_x = max(1, min(self.cols - 2, damaged_tile[0]))
-        if damaged_tile[1] <= mid_y:
-            retreat_y = max(1, min_y - 2)
-        else:
-            retreat_y = min(self.rows - 2, max_y + 2)
-        return (retreat_x, retreat_y)
-
-    def _state_after_arrival(self, tile):
-        if self.mode == 6:
-            return "FIX_CROW"
-        if self.mode == 4:
-            self.mode4_phase = "RESCUE"
-            self._update_belief_state()
-        condition = self._condition_for_tile(tile)
-        if condition in ("dead", "replant"):
-            return self._next_cultivation_state(tile)
-        if condition in ("pest", "crow"):
-            return "TREAT_PEST"
-        return "WATER_RESCUE"
-
-    def _finish_mode2_leg_g(self, tile):
-        if self.mode != 2 or tile != self.mode2_current_leg_target:
-            return
-        self.mode2_total_g += self.mode2_current_leg_g
-        self.mode2_current_leg_g = 0
-        self.mode2_current_leg_target = None
-        self.mode2_current_leg_start = None
-        self.mode2_current_step_stats = []
-        self.mode2_current_step_index = 0
-
-    def _finish_rescue_target(self, tile, condition):
-        self.player.selected_tool = "water"
-        self.player.status = "down_water"
-        if hasattr(self.player, "watering"):
-            self.player.watering.play()
-        if condition == "critical":
-            self.message = f"Cap cuu cay thieu nuoc tai {tile}"
-        else:
-            self.message = f"Tuoi phuc hoi cay kho tai {tile}"
-        self.done_tiles.add(tile)
-        self._finish_mode2_leg_g(tile)
-        self._refresh_mode3_scores_after_action(tile)
-        self._advance_full_garden_plan(tile)
-        if self.mode == 4:
-            self.mode4_phase = "EXPLORE"
-            self._update_belief_state()
-        self.current_target = None
-        self.path = []
-        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
-        self.stop_after_current_target = False
-        self.wait_time = 0.45
-
-    def _finish_pest_target(self, tile, condition):
-        self.player.status = "down_idle"
-        if condition == "crow":
-            self.message = f"Duoi qua va bao ve cay tai {tile}"
-        else:
-            self.message = f"Phun sinh hoc xu ly sau benh tai {tile}"
-        self.done_tiles.add(tile)
-        self._finish_mode2_leg_g(tile)
-        self._refresh_mode3_scores_after_action(tile)
-        self._advance_full_garden_plan(tile)
-        if self.mode == 4:
-            self.mode4_phase = "EXPLORE"
-            self._update_belief_state()
-        self.current_target = None
-        self.path = []
-        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
-        self.stop_after_current_target = False
-        self.wait_time = 0.45
-
-    def _finish_cultivation_target(self, tile, message):
-        self.message = message
-        self.done_tiles.add(tile)
-        if self.mode == 5:
-            self.csp_seeded_tiles.add(tile)
-        self._finish_mode2_leg_g(tile)
-        self._refresh_mode3_scores_after_action(tile)
-        self._advance_full_garden_plan(tile)
-        if self.mode == 4:
-            self.mode4_phase = "EXPLORE"
-            self._update_belief_state()
-        self.current_target = None
-        self.path = []
-        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
-        self.stop_after_current_target = False
-        self.wait_time = 0.35
-
-    def _update_mode6_fix(self, tile):
-        """Fix crow damage in exactly the same time the crow needs to destroy."""
-        now = pygame.time.get_ticks()
-        if self.mode6_fix_target != tile or not self.mode6_fix_until:
-            self.mode6_fix_target = tile
-            self.mode6_fix_until = (
-                now + int(self.MODE6_ACTION_TIME * 1000))
-            self.player.selected_tool = "water"
-            self.player.status = "down_water"
-            self.mode6_phase = f"FIX {tile}"
-            self.message = (
-                f"AGRI-1 dang sua cay bi qua pha {tile}: "
-                f"{self.MODE6_ACTION_TIME:.1f}s")
-            return
-        if now < self.mode6_fix_until:
-            remaining = (self.mode6_fix_until - now) / 1000
-            self.message = f"AGRI-1 dang sua {tile}: {remaining:.1f}s"
-            return
-
-        self.done_tiles.add(tile)
-        self._advance_full_garden_plan(tile)
-        self.current_target = None
-        self.path = []
-        self.mode6_fix_until = 0
-        self.mode6_fix_target = None
-        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
-        self.stop_after_current_target = False
-        self.mode6_phase = f"Da sua {tile}"
-        self.message = f"AGRI-1 da sua cay {tile}"
-
-    def _condition_label(self, condition):
-        labels = {
-            "healthy": "Cay khoe -> sua hu hong nhe",
-            "disease": "Cay sau benh -> sua va xu ly benh",
-            "rare": "Cay quy -> uu tien sua",
-            "dry": "Cay kho -> tuoi phuc hoi",
-            "critical": "Cay nguy cap -> cap cuu bang nuoc",
-            "pest": "Sau benh sau bao -> phun sinh hoc",
-            "crow": "Cay bi qua pha -> den sua cay",
-            "dead": "Cay chet -> don va trong lai",
-            "replant": "Dat trong -> lap ke hoach gieo lai",
-        }
-        return labels.get(condition, "Dat trong -> gieo lai")
-
-    def _target_label(self, tile):
-        return self._condition_label(self._condition_for_tile(tile))
-
-    def _target_summary(self, tile):
-        labels = {
-            "healthy": "Cay khoe",
-            "disease": "Cay sau benh",
-            "rare": "Cay quy",
-            "dry": "Cay kho",
-            "critical": "Cay nguy cap",
-            "pest": "Cay sau benh",
-            "crow": "Cay bi qua pha",
-            "dead": "Cay chet",
-            "replant": "O can gieo",
-        }
-        condition = self._condition_for_tile(tile)
-        return f"{tile} - {labels.get(condition, 'O can xu ly')}"
-
-    def _objective_snapshot(self):
-        """Return one progress format shared by every game mode."""
-        total = len(self.farm_tiles)
-        completed = len(self.done_tiles)
-        blocked = len(self.discovered_blocked) if self.mode == 4 else 0
-        lost = len(self.enemy_done_tiles) if self.mode == 6 else 0
-        resolved = min(total, completed + blocked + lost)
-        objective, unit = self.OBJECTIVE_INFO.get(
-            self.mode, ("Hoan thanh toan bo khu vuc", "nhiem vu"))
-
-        if self.state == "IDS_SEARCH":
-            current = (
-                f"IDS depth {self.ids_depth_limit} "
-                f"tu {self.ids_search_start}")
-        elif self.state == "IDSA_SEARCH":
-            current = (
-                f"IDSA f-limit {self.idsa_f_limit} "
-                f"toi {self.idsa_search_goal}")
-        elif self.current_target is None:
-            current = "Chua chon"
-        elif self._has_condition(self.current_target):
-            current = self._target_summary(self.current_target)
-        else:
-            current = f"O {self.current_target}"
-
-        if self.state == "DONE":
-            current = "Da hoan tat"
-
-        return {
-            "title": objective,
-            "unit": unit,
-            "total": total,
-            "completed": completed,
-            "blocked": blocked,
-            "lost": lost,
-            "resolved": resolved,
-            "remaining": max(0, total - resolved),
-            "current": current,
-        }
-
-    # -------------------------------------------------------------- MODE 1
-    def _bfs(self, start, goal):
-        """Breadth-First Search â€” duyá»‡t theo lá»›p, khĂ´ng heuristic."""
-        return self._search_path(start, goal, "BFS")
-
-    # -------------------------------------------------------------- MODE 2
-    def _astar(self, start, goal):
-        """A* Search â€” f(n) = g(n) + h(n), heuristic Manhattan."""
-        return self._search_path(start, goal, "A*")
-
-    def _search_path(self, start, goal, algorithm_name=None):
-        blocked = self._blocked_tiles()
-        blocked.discard(start)
-        blocked.discard(goal)
-        name = algorithm_name or self.algorithm_name
-        path, explored, fgh, stats = algorithms.find_path_by_algorithm(
-            name, start, goal, blocked, self._neighbors, self._search_heuristic,
-            self.counter, self._step_cost)
-        self.astar_current_fgh = fgh
-        stats["Algorithm"] = name
-        if self.mode == 2 and goal in self.farm_tiles:
-            g_leg = len(path)
-            self.mode2_current_leg_g = g_leg
-            self.mode2_current_leg_target = goal
-            display_g = self.mode2_total_g + g_leg
-            if name == "Greedy":
-                stats.pop("f(n)", None)
-                stats.pop("g(n)", None)
-                stats["Priority"] = "min h(n)"
-                self._apply_mode2_hud_stats(stats, start, goal)
-            else:
-                # For A*/IDSA, fgh returned by algorithms uses real accumulated
-                # g and the heuristic supplied above.
-                self._apply_mode2_hud_stats(
-                    stats, start, goal, self.astar_current_fgh, display_g)
-            stats["g leg"] = g_leg
-            stats["g completed"] = self.mode2_total_g
-        if self.mode == 1:
-            self.bfs_explored = set(explored)
-        elif self.mode == 2:
-            self.astar_explored = explored
-        elif name == "A*":
-            self.astar_explored = explored
-        self.stats = stats
-        return path
-
-    def _search_first_target(self, start, goals):
-        blocked = self._blocked_tiles()
-        blocked.discard(start)
-        for goal in goals:
-            blocked.discard(goal)
-        path, target, explored, fgh, stats = (
-            algorithms.find_path_to_any_goal_by_algorithm(
-                self.algorithm_name, start, goals, blocked,
-                self._neighbors, self.counter, self._step_cost))
-        self.astar_current_fgh = fgh
-        stats["Algorithm"] = self.algorithm_name
-        stats["Target"] = f"{target}"
-        if self.mode == 1:
-            self.bfs_explored = set(explored)
-        elif self.mode == 2:
-            self.astar_explored = explored
-        self.stats = stats
-        self.chosen_target_path = path if target is not None else None
-        return target
-
-    def _reset_ids_search(self):
-        self.ids_depth_limit = 0
-        self.ids_search_timer = 0.0
-        self.ids_search_start = None
-        self.ids_search_goals = set()
-        self.ids_search_blocked = set()
-        self.ids_total_expansions = 0
-        self.ids_unique_explored = set()
-
-    def _begin_ids_search(self, start, goals):
-        self._reset_ids_search()
-        self.ids_search_start = start
-        self.ids_search_goals = set(goals)
-        self.ids_search_blocked = self._blocked_tiles()
-        self.ids_search_blocked.discard(start)
-        for goal in goals:
-            self.ids_search_blocked.discard(goal)
-        self.state = "IDS_SEARCH"
-        self.player.direction.update(0, 0)
-        self.message = f"IDS: bat dau lai tu {start}, depth limit 0"
-
-    def _update_ids_search(self, dt):
-        self.player.direction.update(0, 0)
-        if self.ids_search_timer > 0:
-            self.ids_search_timer = max(0, self.ids_search_timer - dt)
-            return
-
-        path, target, explored, cutoff = (
-            algorithms.depth_limited_search_to_any_goal(
-                self.ids_search_start,
-                self.ids_search_goals,
-                self.ids_search_blocked,
-                self._neighbors,
-                self.ids_depth_limit))
-
-        # Show only this iteration so every larger limit visibly restarts.
-        self.bfs_explored = set(explored)
-        self.ids_unique_explored.update(explored)
-        self.ids_total_expansions += len(explored)
-        self.stats = {
-            "Algorithm": "IDS",
-            "Depth limit": self.ids_depth_limit,
-            "Restart from": f"{self.ids_search_start}",
-            "This iteration": len(explored),
-            "Total expansions": self.ids_total_expansions,
-            "Unique explored": len(self.ids_unique_explored),
-            "Target": f"{target}",
-        }
-
-        if target is not None:
-            self.current_target = target
-            self.path = path
-            self.state = "MOVE"
-            self.message = (
-                f"IDS tim thay {target} o depth {self.ids_depth_limit}")
-            self.ids_search_timer = 0.0
-            return
-
-        if not cutoff:
-            self.state = "DONE"
-            self.message = "IDS: khong con node de duyet"
-            return
-
-        finished_limit = self.ids_depth_limit
-        self.ids_depth_limit += 1
-        self.ids_search_timer = self.IDS_ITERATION_DELAY
-        self.message = (
-            f"IDS limit {finished_limit} chua thay; "
-            f"quay lai {self.ids_search_start}, tang len "
-            f"{self.ids_depth_limit}")
-
-    def _reset_idsa_search(self):
-        self.idsa_f_limit = 0
-        self.idsa_search_timer = 0.0
-        self.idsa_search_start = None
-        self.idsa_search_goal = None
-        self.idsa_search_blocked = set()
-        self.idsa_total_expansions = 0
-        self.idsa_unique_explored = set()
-
-    def _begin_idsa_search(self, start, goal):
-        self._reset_idsa_search()
-        self.idsa_search_start = start
-        self.idsa_search_goal = goal
-        self.idsa_f_limit = self._search_heuristic(start, goal)
-        self.idsa_search_blocked = self._blocked_tiles()
-        self.idsa_search_blocked.discard(start)
-        self.idsa_search_blocked.discard(goal)
-        self.current_target = goal
-        self.state = "IDSA_SEARCH"
-        self.player.direction.update(0, 0)
-        self.message = (
-            f"IDSA: bat dau lai tu {start}, f-limit "
-            f"{self.idsa_f_limit}")
-
-    def _update_idsa_search(self, dt):
-        self.player.direction.update(0, 0)
-        if self.idsa_search_timer > 0:
-            self.idsa_search_timer = max(0, self.idsa_search_timer - dt)
-            return
-
-        next_limit, path, explored, hit_depth_guard = (
-            algorithms.idastar_iteration(
-                self.idsa_search_start,
-                self.idsa_search_goal,
-                self.idsa_search_blocked,
-                self._neighbors,
-                self._search_heuristic,
-                self.idsa_f_limit))
-
-        self.astar_explored = set(explored)
-        self.idsa_unique_explored.update(explored)
-        self.idsa_total_expansions += len(explored)
-        current_node = self.idsa_search_start
-        priority, distance_h, condition_cost, h_val = self._mode2_h_parts(
-            current_node, self.idsa_search_goal)
-        g_leg = len(path) if path is not None else 0
-        g_val = self.mode2_total_g + g_leg
-        f_val = g_val + h_val
-        self.stats = {
-            "Algorithm": "IDSA",
-            "f(n)": f"{f_val}",
-            "g(n)": f"{g_val}",
-            "h(n)": f"{h_val}",
-            "h distance": f"{distance_h}",
-            "h condition": (
-                f"2 * {priority} = {condition_cost} "
-                f"({self._condition_for_tile(self.idsa_search_goal)})"),
-            "h formula": "Manhattan + 2 * condition",
-            "f limit": self.idsa_f_limit,
-            "g leg": g_leg,
-            "g completed": self.mode2_total_g,
-            "g formula": "+1 per move",
-            "Restart from": f"{self.idsa_search_start}",
-            "This iteration": len(explored),
-            "Total expansions": self.idsa_total_expansions,
-            "Unique explored": len(self.idsa_unique_explored),
-            "Target": f"{self.idsa_search_goal}",
-        }
-        if hit_depth_guard:
-            self.stats["Stopped by guard"] = "yes"
-
-        if path is not None:
-            self.mode2_current_leg_g = len(path)
-            self.mode2_current_leg_target = self.idsa_search_goal
-            self.path = path
-            self.state = "MOVE"
-            self.message = (
-                f"IDSA tim thay {self.idsa_search_goal} voi "
-                f"f-limit {self.idsa_f_limit}")
-            self.idsa_search_timer = 0.0
-            return
-
-        if next_limit == algorithms.INF:
-            self.state = "DONE"
-            self.message = "IDSA: khong con node de duyet"
-            return
-
-        finished_limit = self.idsa_f_limit
-        self.idsa_f_limit = next_limit
-        self.idsa_search_timer = self.IDSA_ITERATION_DELAY
-        self.message = (
-            f"IDSA f-limit {finished_limit} chua thay; "
-            f"quay lai {self.idsa_search_start}, tang len "
-            f"{self.idsa_f_limit}")
-
-    def _build_dfs_walk(self, start):
-        blocked = self._blocked_tiles()
-        blocked.discard(start)
-        for goal in self.farm_tiles:
-            blocked.discard(goal)
-
-        visited = set()
-        walk = [start]
-        explored_order = []
-
-        def visit(tile):
-            visited.add(tile)
-            explored_order.append(tile)
-            for next_tile in self._dfs_traversal_neighbors(tile, blocked):
-                if next_tile in visited:
-                    continue
-                walk.append(next_tile)
-                visit(next_tile)
-                walk.append(tile)
-
-        visit(start)
-        self.dfs_walk = walk
-        self.dfs_walk_index = 0
-        self.dfs_explored_order = explored_order
-
-    def _dfs_traversal_choose(self, remaining, start):
-        if self.dfs_walk is None:
-            self._build_dfs_walk(start)
-
-        if self.dfs_walk[self.dfs_walk_index] != start:
-            try:
-                self.dfs_walk_index = self.dfs_walk.index(
-                    start, self.dfs_walk_index)
-            except ValueError:
-                self._build_dfs_walk(start)
-
-        path = []
-        remaining_set = set(remaining)
-        for index in range(self.dfs_walk_index + 1, len(self.dfs_walk)):
-            tile = self.dfs_walk[index]
-            path.append(tile)
-            if tile in remaining_set:
-                self.dfs_walk_index = index
-                self.chosen_target_path = path
-                explored = set(self.dfs_walk[:index + 1])
-                self.bfs_explored = explored
-                self.stats = {
-                    "Nodes explored": len(explored),
-                    "Path length": len(path),
-                    "Stack max": len(self.dfs_explored_order),
-                    "Algorithm": "DFS",
-                    "Target": f"{tile}",
-                }
-                return tile
-
-        self.chosen_target_path = None
-        return None
-
-    # -------------------------------------------------------------- MODE 3
-    def _mode3_turn_penalty(self):
-        """Penalty tang dan sau moi cay da chon/xu ly.
-
-        Muc dich: neu 2 cay cung loai nam ke nhau, o tiep theo van co
-        the co score nho hon current score de robot di tiep.
-        """
-        if self.mode != 3:
-            return 0
-        # +1 de sau khi xu ly cay dau tien, o ung vien tiep theo bi tru 2.
-        # Vi Manhattan cua o ke ben la +1, tru 2 se tao chenhlech -1.
-        return len(self.done_tiles) + 1
-
-    def _hill_score(self, tile, start):
-        """Mode 3 score = fixed score by tree type + Manhattan - turn penalty.
-
-        dry      = 40
-        critical = 30
-        pest     = 20
-        dead     = 10
-
-        candidate_score = type_score + Manhattan(start, tile) - turn_penalty
-        current_score   = type_score + 0
-
-        turn_penalty tang sau moi cay da xu ly, giup 2 cay cung loai nam ke
-        nhau van co the tao score giam dan de robot tiep tuc di.
-        """
-        type_scores = {
-            "dry": 40,
-            "critical": 30,
-            "pest": 20,
-            "dead": 10,
-        }
-        condition = self._condition_for_tile(tile)
-        base_score = type_scores.get(condition, 0)
-        score = base_score + self._heuristic(start, tile)
-
-        # Chi tru penalty cho cac ung vien chua xu ly, khong tru vao o hien tai.
-        # Neu tru ca current va candidate thi hieu ung se bi triet tieu.
-        if self.mode == 3 and tile != start and tile not in self.done_tiles:
-            score -= self._mode3_turn_penalty()
-
-        return score
-
-    def _local_scores(self, start=None, remaining=None):
-        """Tinh lai score theo vi tri hien tai moi buoc.
-
-        Mode 3 score duoc tinh lai moi buoc theo:
-        type_score + Manhattan(start, tile) - turn_penalty.
-        turn_penalty tang theo so cay da xu ly de giup robot di tiep
-        khi gap 2 cay cung loai nam ke nhau.
-        """
-        start = start or self._world_to_tile(self.player.rect.center)
-        tiles = list(remaining) if remaining is not None else list(self.farm_tiles)
-        if start in self.farm_tiles and start not in tiles:
-            tiles.append(start)
-
-        scores = {
-            tile: self._hill_score(tile, start)
-            for tile in tiles
-        }
-        self.hc_scores = scores
-        return scores
-
-    def _refresh_mode3_scores_after_action(self, current_tile):
-        """Cap nhat lai score ngay sau khi xu ly xong 1 cay Mode 3."""
-        if self.mode != 3:
-            return
-        remaining = [
-            tile for tile in self.farm_tiles
-            if tile not in self.done_tiles
-            and tile not in self.discovered_blocked
-            and tile not in self.enemy_done_tiles
+    def _draw_mist_effect(self, surface):
+        mist = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        width, height = surface.get_size()
+        mist.fill(Colors.MIST_BASE)
+        bands = [
+            (0.08, 0.20, 1.20, 68, 46),
+            (0.16, 0.36, 0.95, 62, 42),
+            (0.24, 0.50, 1.10, 66, 44),
+            (0.34, 0.24, 0.95, 60, 40),
+            (0.46, 0.44, 1.05, 48, 34),
+            (0.60, 0.30, 0.82, 34, 26),
+            (0.74, 0.52, 0.90, 28, 22),
+            (0.88, 0.26, 0.75, 22, 18),
         ]
-        if remaining:
-            self._local_scores(current_tile, remaining)
-        else:
-            self.hc_scores = {}
-        stats = dict(self.stats or {})
-        stats["Completed"] = f"{len(self.done_tiles)}/{len(self.farm_tiles)}"
-        stats["Score refreshed"] = f"after {current_tile}"
-        self.stats = stats
+        for index, (y_ratio, speed, scale, alpha, thickness) in enumerate(bands):
+            y = int(height * y_ratio + math.sin(self.fog_time * 0.8 + index) * 14)
+            drift = int((self.fog_time * 44 * speed + index * 155) % (width + 360)) - 360
+            color = (*Colors.MIST_BAND, alpha)
+            pygame.draw.ellipse(mist, color, (drift, y, int(420 * scale), thickness))
+            pygame.draw.ellipse(mist, color, (drift + int(210 * scale), y + 12, int(360 * scale), thickness))
+            pygame.draw.ellipse(
+                mist, (*Colors.MIST_BAND, max(18, alpha - 14)),
+                (drift - int(260 * scale), y + 26, int(340 * scale), max(18, thickness - 10)))
+            pygame.draw.ellipse(
+                mist, (*Colors.MIST_HIGHLIGHT, max(14, alpha - 20)),
+                (drift + int(430 * scale), y - 10, int(280 * scale), max(16, thickness - 12)))
+        surface.blit(mist, (0, 0))
 
-    def _nearest_remaining(self, remaining, start):
-        return min(remaining, key=lambda tile: (self._heuristic(start, tile), tile))
 
-    def _remaining_neighbors(self, remaining, center):
-        return [
-            tile for tile in remaining
-            if abs(tile[0] - center[0]) + abs(tile[1] - center[1]) == 1
-        ]
-
-    def _set_local_stats(self, algorithm, target, score, extra=None):
-        condition = self._condition_for_tile(target) if target is not None else "none"
-        stats = {
-            "Local algorithm": algorithm,
-            "Current score": f"{score:.0f}",
-            "Target": f"{target}" if target is not None else "None",
-            "Target type": condition,
-            "Score formula": "type + Manhattan - turn",
-        }
-        if extra:
-            stats.update(extra)
-        self.stats = stats
-        self.hc_current_score = score
-        self.hc_best_neighbor_score = score
-
-    def _hill_climbing_step_choose(self, remaining, start):
-        """Hill Climbing bien the di xuong: chon lang gieng co score nho hon."""
-        scores = self._local_scores(start, remaining)
-
-        if start not in self.dryness:
-            target = self._nearest_remaining(remaining, start)
-            current_score = scores.get(target, 0)
-            self._set_local_stats("Hill Climbing", target, current_score, {
-                "Hill steps": 0,
-                "Trace": [target],
-                "Start rule": "Nearest target first",
-                "Turn penalty": f"-{self._mode3_turn_penalty()} candidate",
-            })
-            return target
-
-        current_score = self._hill_score(start, start)
-        neighbors = self._remaining_neighbors(remaining, start)
-        lower_neighbors = [
-            tile for tile in neighbors
-            if scores.get(tile, 0) < current_score
-        ]
-        if not lower_neighbors:
-            self._set_local_stats("Hill Climbing", None, current_score, {
-                "Hill steps": 0,
-                "Trace": [start],
-                "Stop rule": "No lower neighbor",
-                "Remaining tiles": len(remaining),
-                "Coverage": f"{len(self.done_tiles)}/{len(self.farm_tiles)}",
-                "Suggestion": "No adjacent tile has a lower score",
-            })
-            self.state = "DONE"
-            return None
-
-        # Test variant: di xuong nhanh.
-        # lower_neighbors chi gom cac o co score nho hon current_score.
-        # min o day chon o co score thap nhat trong cac lang gieng thap hon.
-        target = min(
-            lower_neighbors,
-            key=lambda tile: (scores.get(tile, 0), self._heuristic(start, tile), tile))
-        target_score = scores.get(target, 0)
-        self._set_local_stats("Hill Climbing", target, target_score, {
-            "Hill steps": 1,
-            "Trace": [start, target],
-            "Stop rule": "Move to lowest lower neighbor",
-            "Turn penalty": f"-{self._mode3_turn_penalty()} candidate",
-        })
-        return target
-
-    def _climb_from_tile(self, start_tile, remaining, scores):
-        # "Downhill" variant: follow steepest descent (lowest score neighbour).
-        current = start_tile
-        trace = [current]
-        current_score = scores.get(current, 0)
-        while True:
-            neighbors = [
-                tile for tile in self._remaining_neighbors(remaining, current)
-                if tile != current and scores.get(tile, 0) < current_score
-            ]
-            if not neighbors:
-                return current, current_score, trace
-            current = min(
-                neighbors,
-                key=lambda tile: (scores.get(tile, 0), self._heuristic(current, tile), tile))
-            current_score = scores.get(current, 0)
-            trace.append(current)
-
-    def _restart_hill_choose(self, remaining, start):
-        """Restart Hill: di xuong nhu Hill, neu ket thi khoi dong lai o tile co score cao nhat (xa nhat)."""
-        scores = self._local_scores(start, remaining)
-        if start not in self.dryness:
-            target = self._nearest_remaining(remaining, start)
-            self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
-                "Start rule": "Nearest target first",
-                "Restarts": 0,
-                "Trace": [target],
-            })
-            return target
-
-        current_score = self._hill_score(start, start)
-        lower_neighbors = [
-            tile for tile in self._remaining_neighbors(remaining, start)
-            if scores.get(tile, 0) < current_score
-        ]
-        if lower_neighbors:
-            target = min(
-                lower_neighbors,
-                key=lambda tile: (scores.get(tile, 0),
-                                  self._heuristic(start, tile), tile))
-            self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
-                "Restarts": 0,
-                "Trace": [start, target],
-                "Rule": "Continue downhill",
-            })
-            return target
-
-        # Bi ket cuc bo: restart tai tile co score cao nhat (chua xu ly)
-        target = max(
-            remaining,
-            key=lambda tile: (scores.get(tile, 0), -self._heuristic(start, tile), tile))
-        self._set_local_stats("Restart Hill", target, scores.get(target, 0), {
-            "Restarts": 1,
-            "Trace": [target],
-            "Rule": "Restart at highest unvisited tile",
-        })
-        return target
-
-    def _local_beam_step_choose(self, remaining, start, beam_width=3):
-        """Local Beam: giu k ung vien, sinh tat ca lang gieng, chon k tot nhat."""
-        scores = self._local_scores(start, remaining)
-        if start not in self.dryness:
-            beam = sorted(
-                remaining,
-                key=lambda tile: (self._heuristic(start, tile), scores.get(tile, 0), tile)
-            )[:beam_width]
-        else:
-            seed = self._remaining_neighbors(remaining, start)
-            if not seed:
-                seed = list(remaining)
-            beam = sorted(
-                seed,
-                key=lambda tile: (scores.get(tile, 0), self._heuristic(start, tile), tile)
-            )[:beam_width]
-
-        children = []
-        for tile in beam:
-            children.extend(self._remaining_neighbors(remaining, tile))
-        pool = set(beam) | set(children)
-        next_beam = sorted(
-            pool,
-            key=lambda tile: (scores.get(tile, 0), self._heuristic(start, tile), tile)
-        )[:max(1, min(beam_width, len(pool)))]
-        target = next_beam[0] if next_beam else None
-        target_score = scores.get(target, 0) if target is not None else 0
-        self._set_local_stats("Local Beam", target, target_score, {
-            "Beam width": beam_width,
-            "Beam": f"{next_beam}",
-            "Generated": len(children),
-            "Rule": "Lowest score in successor beam",
-        })
-        return target
-
-    def _annealing_step_choose(self, remaining, start):
-        """Simulated Annealing: chon lang gieng, chap nhan buoc te hon theo nhiet do."""
-        scores = self._local_scores(start, remaining)
-        if start not in self.dryness:
-            target = self._nearest_remaining(remaining, start)
-            self._set_local_stats("Annealing", target, scores.get(target, 0), {
-                "Start rule": "Nearest target first",
-                "Temperature": f"{self.anneal_temperature:.1f}",
-            })
-            return target
-
-        neighbors = self._remaining_neighbors(remaining, start)
-        if not neighbors:
-            self._set_local_stats("Annealing", None, scores.get(start, 0), {
-                "Stop rule": "No neighbor state",
-                "Temperature": f"{self.anneal_temperature:.1f}",
-            })
-            self.state = "DONE"
-            return None
-
-        current_score = self._hill_score(start, start)
-        ordered = list(neighbors)
-        random.shuffle(ordered)
-        accepted = None
-        accepted_delta = 0
-        accepted_worse = False
-        for candidate in ordered:
-            delta = scores.get(candidate, 0) - current_score
-            # Downhill: delta < 0 means score decreased = improvement
-            if delta <= 0:
-                accepted = candidate
-                accepted_delta = delta
-                break
-            # Accept worse (higher score) with probability e^(-delta/T)
-            probability = math.exp(-delta / max(self.anneal_temperature, 0.001))
-            if random.random() < probability:
-                accepted = candidate
-                accepted_delta = delta
-                accepted_worse = True
-                break
-
-        self.anneal_temperature = max(0.1, self.anneal_temperature * 0.90)
-        if accepted is None:
-            self._set_local_stats("Annealing", None, current_score, {
-                "Rejected": len(ordered),
-                "Temperature": f"{self.anneal_temperature:.1f}",
-                "Stop rule": "No accepted neighbor",
-            })
-            self.state = "DONE"
-            return None
-
-        self._set_local_stats("Annealing", accepted, scores.get(accepted, 0), {
-            "Delta": f"{accepted_delta:.0f}",
-            "Accepted worse": "yes" if accepted_worse else "no",
-            "Temperature": f"{self.anneal_temperature:.1f}",
-        })
-        return accepted
-
-    def _local_search_choose(self, remaining, start):
-        """Chon muc tieu bang thuat toan local search dang duoc chon."""
-        if self.algorithm_name == "Hill Climbing":
-            return self._hill_climbing_step_choose(remaining, start)
-        if self.algorithm_name == "Restart Hill":
-            return self._restart_hill_choose(remaining, start)
-        if self.algorithm_name == "Local Beam":
-            return self._local_beam_step_choose(remaining, start)
-        if self.algorithm_name == "Annealing":
-            return self._annealing_step_choose(remaining, start)
-
-        current_best, current_score, self.hc_scores, self.stats = (
-            algorithms.local_search_choose(
-                self.algorithm_name, remaining, start, self.dryness,
-                self._heuristic))
-        trace = self.stats.get("Trace")
-        if self.algorithm_name == "Hill Climbing" and trace:
-            self.chosen_target_path = list(trace)
-            self.stop_after_current_target = True
-        self.hc_current_score = current_score
-        self.hc_best_neighbor_score = current_score
-        return current_best
-
-    # -------------------------------------------------------------- MODE 4
     def _compute_frontier_tiles(self):
         if self.mode != 4:
             return set()
@@ -2467,6 +2489,7 @@ class FarmAIController:
                     break
         return frontier
 
+
     def _mode4_initial_known_free(self):
         known = {self.spawn_tile}
         if self.mode4_entry_tile is not None:
@@ -2477,9 +2500,11 @@ class FarmAIController:
             and tile not in self.hidden_blocked
         }
 
+
     def _mode4_unknown_tiles(self):
         candidates = set(self.farm_tiles)
         return candidates - self.known_free - self.discovered_blocked
+
 
     def _init_mode4_belief(self):
         if self.mode != 4:
@@ -2497,6 +2522,7 @@ class FarmAIController:
         self._last_risk_map = algorithms.belief_risk_map(
             self.belief_worlds, self.belief_unknown_tiles)
 
+
     def _rebuild_mode4_belief_from_observations(self):
         self.belief_unknown_tiles = self._mode4_unknown_tiles()
         remaining_hidden_budget = max(
@@ -2513,6 +2539,7 @@ class FarmAIController:
         self.belief_inconsistent = not self.belief_worlds
         self._last_risk_map = algorithms.belief_risk_map(
             self.belief_worlds, self.belief_unknown_tiles)
+
 
     def _update_belief_state(self):
         if self.mode != 4:
@@ -2536,6 +2563,7 @@ class FarmAIController:
             "phase": self.mode4_phase,
         }
 
+
     def _belief_bfs_plan(self, start, goal, blocked):
         path, explored, bfs_stats = algorithms.belief_state_bfs(
             start, goal, blocked, self.belief_worlds,
@@ -2551,6 +2579,7 @@ class FarmAIController:
             "Risky steps": risky_steps,
         })
         return path, explored, (0, len(path), 0), stats
+
 
     def _choose_mode4_target(self, remaining, start):
         if self.algorithm_name in ("Belief-State BFS", "Belief BFS", "Belief A*"):
@@ -2677,6 +2706,7 @@ class FarmAIController:
             self.stats.update(stats)
         return target
 
+
     def _mode4_belief_tile_possible(self, tile):
         if tile in self.discovered_blocked:
             return False
@@ -2685,6 +2715,7 @@ class FarmAIController:
         if not self.belief_worlds:
             return False
         return any(tile not in world for world in self.belief_worlds)
+
 
     def _mode4_belief_add_four_neighbors(self, tile):
         if not self.mode4_belief_bfs_started:
@@ -2716,6 +2747,7 @@ class FarmAIController:
             len(self.mode4_belief_bfs_queue))
         return added
 
+
     def _mode4_belief_tree_path(self, start, target):
         if start == target:
             return []
@@ -2745,6 +2777,7 @@ class FarmAIController:
         up_path = start_chain[1:start_index[lca] + 1]
         down_path = list(reversed(target_chain[:target_lca_index]))
         return up_path + down_path
+
 
     def _mode4_belief_state_target(self, start, remaining):
         added = self._mode4_belief_add_four_neighbors(start)
@@ -2808,6 +2841,7 @@ class FarmAIController:
             "Policy": "global BFS traversal; no per-target BFS call",
         }
 
+
     def _mode4_online_astar_reset(self, start=None, remaining=None):
         self.mode4_online_astar_open = []
         self.mode4_online_astar_queued = set()
@@ -2821,12 +2855,14 @@ class FarmAIController:
         self.mode4_online_astar_frontier_max = 0
         self.mode4_online_astar_started = False
 
+
     def _mode4_online_bfs_reset(self):
         self.mode4_online_bfs_queue = deque()
         self.mode4_online_bfs_queued = set()
         self.mode4_online_bfs_parent = {}
         self.mode4_online_bfs_explored = set()
         self.mode4_online_bfs_frontier_max = 0
+
 
     def _mode4_belief_bfs_reset(self):
         self.mode4_belief_bfs_queue = deque()
@@ -2835,6 +2871,7 @@ class FarmAIController:
         self.mode4_belief_bfs_explored = set()
         self.mode4_belief_bfs_frontier_max = 0
         self.mode4_belief_bfs_started = False
+
 
     def _mode4_online_bfs_add_adjacent_farms(self, current, remaining_set,
                                              blocked):
@@ -2856,6 +2893,7 @@ class FarmAIController:
             self.mode4_online_bfs_frontier_max,
             len(self.mode4_online_bfs_queue))
         return added
+
 
     def _mode4_online_bfs_frontier_target(self, start, remaining):
         remaining_set = {
@@ -2930,6 +2968,7 @@ class FarmAIController:
             "Target rule": "popleft() first discovered farm",
         }
 
+
     def _mode4_online_astar_push_farm_candidate(self, current, candidate,
                                                 remaining_set, blocked):
         if candidate not in remaining_set:
@@ -2967,6 +3006,7 @@ class FarmAIController:
             len(self.mode4_online_astar_open))
         return True
 
+
     def _mode4_online_astar_add_adjacent_farms(self, current, remaining_set,
                                                blocked):
         added = 0
@@ -2975,6 +3015,7 @@ class FarmAIController:
                     current, candidate, remaining_set, blocked):
                 added += 1
         return added
+
 
     def _mode4_online_astar_frontier_target(self, start, remaining):
         """Mode 4 Online A*: persistent PQ containing only adjacent farms."""
@@ -3078,6 +3119,7 @@ class FarmAIController:
             "Neighbor rule": "add farm tiles in 4 adjacent directions",
         }
 
+
     def _update_mode4_online_astar_hud(self, current, next_tile, target):
         if (self.mode != 4
                 or self.algorithm_name != "Online A*"
@@ -3104,6 +3146,7 @@ class FarmAIController:
             "Target rule": "heapq.heappop(farm frontier)",
             "Neighbor rule": "add farm tiles in 4 adjacent directions",
         })
+
 
     def _mode4_priority_queue_astar_to_any_goal(self, start, remaining,
                                                 step_cost=None):
@@ -3252,6 +3295,7 @@ class FarmAIController:
         }
 
 
+
     def _expand_vision(self, center):
         """Má»Ÿ rá»™ng vĂ¹ng Ä‘Ă£ khĂ¡m phĂ¡ quanh center."""
         before_explored = set(self.explored_tiles)
@@ -3290,6 +3334,7 @@ class FarmAIController:
                 self.belief_worlds, self.belief_unknown_tiles)
         self._update_belief_state()
 
+
     def _and_or_seen_targets_now(self):
         return frozenset(
             tile for tile in self.farm_tiles
@@ -3298,6 +3343,7 @@ class FarmAIController:
             and tile not in self.discovered_blocked
             and tile not in self.enemy_done_tiles
         )
+
 
     def _and_or_planning_targets(self, start, seen_targets):
         ordered = sorted(
@@ -3311,6 +3357,7 @@ class FarmAIController:
         )
         return frozenset(ordered)
 
+
     def _and_or_target_valid(self, tile):
         return (
             tile in self.farm_tiles
@@ -3318,6 +3365,7 @@ class FarmAIController:
             and tile not in self.discovered_blocked
             and tile not in self.enemy_done_tiles
         )
+
 
     def _online_plan(self, start, goal):
         """Online Search: chá»‰ biáº¿t váº­t cáº£n Ä‘Ă£ khĂ¡m phĂ¡, phĂ¡t hiá»‡n thĂªm khi Ä‘i."""
@@ -3478,6 +3526,7 @@ class FarmAIController:
         self._update_belief_state()
         return path
 
+
     def _sample_and_or_outcome(self, current, intended):
         dx = intended[0] - current[0]
         dy = intended[1] - current[1]
@@ -3506,9 +3555,11 @@ class FarmAIController:
             return actual, probability, "Correct direction"
         return actual, probability, "Wrong direction; replan from actual tile"
 
+
     def _and_or_reset_navigation(self):
         """Clear transient navigation state for the current stochastic step."""
         self.and_or_visited.clear()
+
 
     def _finish_and_or_outcome(self):
         intended = self.and_or_intended_tile
@@ -3635,8 +3686,13 @@ class FarmAIController:
 
     # -------------------------------------------------------------- MODE 5
 
+
+    # ------------------------------------------------------------------
+    # mode 5 CSP
+    # ------------------------------------------------------------------
+
     def _solve_csp_crop_plan(self):
-        """CSP Backtracking: gĂ¡n corn/tomato sao cho 2 Ă´ ká» khĂ¡c loáº¡i."""
+        """Solve Mode 5 CSP with shared adjacency constraints for 4 crops."""
         assignment, self.csp_steps, self.stats = algorithms.solve_csp_crop_plan(
             self.farm_tiles, algorithm=self.algorithm_name
         )
@@ -3644,6 +3700,7 @@ class FarmAIController:
 
 
     # --- CSP animation phases ---
+
 
     def _begin_csp_analyze(self):
         """Phase 1: Robot dung yen, highlight cac cap rang buoc ke nhau."""
@@ -3671,6 +3728,9 @@ class FarmAIController:
         )
         self.stats["CSP phase"] = "Phan tich rang buoc"
         self.stats["Rang buoc"] = f"{len(pairs)} cap ke nhau"
+        self.stats["Constraint"] = (
+            "no same; no corn-tomato; no wheat-carrot")
+
 
     def _update_csp_analyze(self, dt):
         """Phase 1 update: highlight cap rang buoc lan luot roi sang replay."""
@@ -3685,6 +3745,7 @@ class FarmAIController:
         if self.csp_analyze_timer >= self.csp_analyze_duration:
             self._begin_csp_replay()
 
+
     def _begin_csp_replay(self):
         """Phase 2: Tao chuoi quyet dinh CSP va thuc hien tung buoc."""
         # Solve at run time, after the constraint-analysis phase, instead
@@ -3696,7 +3757,7 @@ class FarmAIController:
         self.csp_display = {}
         if self.algorithm_name in ("Fwd Check", "AC-3"):
             self.csp_domains = {
-                tile: ["corn", "tomato", "wheat", "carrot"]
+                tile: list(algorithms.CSP_CROPS)
                 for tile in self.farm_tiles
             }
         else:
@@ -3709,18 +3770,30 @@ class FarmAIController:
                 f"Min-Conflicts: Gieo ngau nhien toan bo ruong, "
                 f"sau do sua {bt} xung dot..."
             )
+        elif self.algorithm_name == "Backtrack":
+            self.message = (
+                f"Backtrack: di tuan tu tung o, thu crop ngau nhien "
+                f"({total} buoc, {bt} backtrack)..."
+            )
+        elif self.algorithm_name in ("Fwd Check", "AC-3"):
+            self.message = (
+                f"{self.algorithm_name}: thu gan va cat domain "
+                f"({total} buoc, {bt} backtrack)..."
+            )
         else:
             self.message = (
-                f"{self.algorithm_name}: bat dau thu ngau nhien "
+                f"{self.algorithm_name}: bat dau thu rang buoc "
                 f"({total} buoc, {bt} backtrack)..."
             )
         self.stats["CSP phase"] = "Tim va thu truc tiep"
         self.stats["Tong buoc"] = total
 
+
     def _csp_set_speech(self, text, duration=1.2, tile=None):
         self.csp_speech = text
         self.csp_speech_timer = duration  # giu lai de tuong thich, nhung khong dung de xoa
         self.csp_speech_tile = tile if tile is not None else self.csp_walk_target
+
 
     def _csp_start_moving(self, path, act_duration=0.25):
         """Bat dau robot di den tile moi: xoa speech bubble cu, set walk state."""
@@ -3729,6 +3802,7 @@ class FarmAIController:
         self.csp_walk_path = path
         self.csp_walk_state = "moving"
         self.csp_walk_act_duration = act_duration
+
 
     def _csp_queue_speech(self, text, duration, will_move):
         """Fix 2: chi hien speech bubble ("suy nghi") khi robot DA DEN tile.
@@ -3744,6 +3818,7 @@ class FarmAIController:
             self.csp_speech_pending = None
             self._csp_set_speech(text, duration)
 
+
     def _csp_find_conflict_neighbors(self, tile, crop):
         """Tra ve cac o ke dang vi pham rang buoc CSP voi crop nay."""
         x, y = tile
@@ -3757,6 +3832,7 @@ class FarmAIController:
                 conflicts.add(nb)
         return conflicts
 
+
     def _csp_all_conflicting_tiles(self):
         """Quet toan bo csp_assigned hien tai, tra ve tap TAT CA tile dang
         vi pham rang buoc voi mot hang xom. Dung de
@@ -3769,10 +3845,22 @@ class FarmAIController:
                 bad.add(tile)
         return bad
 
+
+    def _update_csp_flash_timers(self, dt):
+        """Keep temporary red backtrack flashes moving even while the robot walks."""
+        for tile in list(self.csp_flash_timers):
+            self.csp_flash_timers[tile] -= dt
+            if self.csp_flash_timers[tile] <= 0:
+                del self.csp_flash_timers[tile]
+                if tile in self.csp_display and self.csp_display[tile][1] == "backtrack":
+                    self.csp_display.pop(tile, None)
+
+
     def _update_csp_replay(self, dt):
         """Phase 2: Robot di den tung o, thu crop, highlight xung dot, backtrack."""
         # Speech bubble KHONG dung timer de xoa - chi xoa khi robot bat dau move sang tile moi
         # (xem cho csp_walk_state chuyen sang "moving" ben duoi)
+        self._update_csp_flash_timers(dt)
 
         # Cap nhat conflict highlight timer
         if self.csp_conflict_timer > 0:
@@ -4064,13 +4152,6 @@ class FarmAIController:
         else:
             self.stats["Backtracks"] = self.csp_backtracks_live
 
-        # Flash timers
-        for tile in list(self.csp_flash_timers):
-            self.csp_flash_timers[tile] -= dt
-            if self.csp_flash_timers[tile] <= 0:
-                del self.csp_flash_timers[tile]
-                if tile in self.csp_display and self.csp_display[tile][1] == "backtrack":
-                    self.csp_display.pop(tile, None)
 
     def _begin_csp_ready(self):
         """Phase 3: Ke hoach xong, robot bat dau thuc thi."""
@@ -4105,6 +4186,56 @@ class FarmAIController:
         self.wait_time = 0.8
 
     # -------------------------------------------------------------- MODE 6
+
+    # ------------------------------------------------------------------
+    # mode 6 adversarial search
+    # ------------------------------------------------------------------
+
+    def _enemy_retreat_tile(self, damaged_tile):
+        if not self.farm_tiles:
+            return (damaged_tile[0], damaged_tile[1] + 1)
+        min_y = min(t[1] for t in self.farm_tiles)
+        max_y = max(t[1] for t in self.farm_tiles)
+        mid_y = (min_y + max_y) / 2
+        retreat_x = max(1, min(self.cols - 2, damaged_tile[0]))
+        if damaged_tile[1] <= mid_y:
+            retreat_y = max(1, min_y - 2)
+        else:
+            retreat_y = min(self.rows - 2, max_y + 2)
+        return (retreat_x, retreat_y)
+
+
+    def _update_mode6_fix(self, tile):
+        """Fix crow damage in exactly the same time the crow needs to destroy."""
+        now = pygame.time.get_ticks()
+        if self.mode6_fix_target != tile or not self.mode6_fix_until:
+            self.mode6_fix_target = tile
+            self.mode6_fix_until = (
+                now + int(self.MODE6_ACTION_TIME * 1000))
+            self.player.selected_tool = "water"
+            self.player.status = "down_water"
+            self.mode6_phase = f"FIX {tile}"
+            self.message = (
+                f"AGRI-1 dang sua cay bi qua pha {tile}: "
+                f"{self.MODE6_ACTION_TIME:.1f}s")
+            return
+        if now < self.mode6_fix_until:
+            remaining = (self.mode6_fix_until - now) / 1000
+            self.message = f"AGRI-1 dang sua {tile}: {remaining:.1f}s"
+            return
+
+        self.done_tiles.add(tile)
+        self._advance_full_garden_plan(tile)
+        self.current_target = None
+        self.path = []
+        self.mode6_fix_until = 0
+        self.mode6_fix_target = None
+        self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
+        self.stop_after_current_target = False
+        self.mode6_phase = f"Da sua {tile}"
+        self.message = f"AGRI-1 da sua cay {tile}"
+
+
     def _adversarial_choose(self, remaining, player_start):
         """Choose MAX's move, then resolve only the nearest live child.
 
@@ -4172,6 +4303,7 @@ class FarmAIController:
         )
         return best_tile
 
+
     def _mode6_weighted_target(self, targets):
         """Sample one CHANCE target with the tree's normalized risk weights."""
         candidates = sorted(set(targets))
@@ -4190,6 +4322,7 @@ class FarmAIController:
         if sum(weights) <= 0:
             weights = [1.0] * len(candidates)
         return random.choices(candidates, weights=weights, k=1)[0]
+
 
     def _update_mode6_step_hud(self, phase=None, current=None, next_tile=None):
         """Refresh algorithm-specific Mode-6 information every live step."""
@@ -4255,14 +4388,17 @@ class FarmAIController:
         # Keep the live fields first so the panel always shows current steps.
         self.stats = live
 
+
     def _enemy_destroy_remaining(self):
         if not self.enemy_destroy_until:
             return 0.0
         remaining_ms = self.enemy_destroy_until - pygame.time.get_ticks()
         return max(0.0, remaining_ms / 1000)
 
+
     def _enemy_is_destroying(self):
         return self._enemy_destroy_remaining() > 0
+
 
     def _enemy_remaining_targets(self):
         return [t for t in self.farm_tiles
@@ -4270,6 +4406,7 @@ class FarmAIController:
                 and t not in self.discovered_blocked
                 and t not in self.enemy_done_tiles
                 and t != self.current_target]
+
 
     def _choose_enemy_target(self):
         if not self.enemy_tile and self.algorithm_name != "Expectimax":
@@ -4280,6 +4417,7 @@ class FarmAIController:
             return
         self.enemy_target = min(
             remaining, key=lambda tile: self._heuristic(self.enemy_tile, tile))
+
 
     def _release_conflicting_locks(self):
         if self.mode != 6:
@@ -4299,11 +4437,13 @@ class FarmAIController:
             self.state = "CHOOSE_TARGET"
             self.message = "Player re-plan vi qua da lock muc tieu"
 
+
     def _update_enemy_strategy(self, dt):
         if self.mode != 6:
             return
         # The selected game tree supplies every MIN/chance response.
         return
+
 
     def _resolve_mode6_outcome(self, target):
         """Apply the sampled MIN/CHANCE outcome to the live farm."""
@@ -4377,6 +4517,7 @@ class FarmAIController:
             f"{sampled_probability * 100:.1f}%")
         return damaged_tile
 
+
     def _plan_enemy_path(self, target):
         """Plan a legal four-direction path without changing player HUD stats."""
         if not self.enemy_tile or not target:
@@ -4394,6 +4535,7 @@ class FarmAIController:
         self.mode6_enemy_move_total = len(path)
         self.mode6_enemy_move_done = 0
         return path
+
 
     def _move_enemy_towards(self, dt):
         """Di chuyá»ƒn enemy dáº§n dáº§n tá»›i target."""
@@ -4484,6 +4626,11 @@ class FarmAIController:
             )
 
     # -------------------------------------------------------- path dispatch
+
+    # ------------------------------------------------------------------
+    # target selection / update / drawing
+    # ------------------------------------------------------------------
+
     def _path_for_mode(self, start, goal):
         if self.mode in (1, 2):
             return self._search_path(start, goal)
@@ -4491,11 +4638,13 @@ class FarmAIController:
             return self._online_plan(start, goal)
         return self._astar(start, goal)
 
+
     def _full_plan_enabled(self):
         # Mode 3 must run step-by-step through _local_search_choose(),
         # not through build_local_search_full_plan(), otherwise it uses
         # the old full-plan score and can stop/route incorrectly.
         return self.mode in (1, 2, 5)
+
 
     def _apply_full_plan_stats(self):
         if not self.full_garden_plan:
@@ -4509,440 +4658,21 @@ class FarmAIController:
             f"{min(self.full_garden_index + 1, len(self.full_garden_plan))}/"
             f"{len(self.full_garden_plan)}")
         stats["Completed"] = f"{len(self.done_tiles)}/{len(self.farm_tiles)}"
+        if self.algorithm_name == "UCS" and "Target g(n)" in stats:
+            index = min(self.full_garden_index, len(self.full_garden_plan) - 1)
+            current_plan_target = self.full_garden_plan[index]
+            current_g = stats["Target g(n)"].get(current_plan_target, 0)
+            stats["g(n)"] = current_g
+            stats["Cost"] = current_g
+            stats["Target"] = f"{current_plan_target}"
+            stats["Cumulative path length"] = (
+                self.mode1_ucs_path_length_total
+                + self.mode1_ucs_current_leg_length)
+            stats["Terrain + condition cost"] = (
+                self.mode1_ucs_extra_cost_total
+                + self.mode1_ucs_current_leg_extra_cost)
         self.stats = stats
 
-    def _mode2_priority_path_to_any_goal(self, start, remaining):
-        """Mode 2: BFS-style search with a priority queue.
-
-        This is intentionally simple and stable:
-        - expand only 4-direction neighbors from _neighbors();
-        - store came_from parent for every node;
-        - reconstruct a tile-by-tile path;
-        - never jump directly to a target.
-
-        Priority:
-        - Greedy: priority = h(n)
-        - A*/IDSA: priority = g(n) + h(n)
-
-        h(n) is computed from the node currently being expanded to the best
-        remaining target:
-            h(n) = Manhattan(n, target) + 2 * condition(target)
-        """
-        goals = {
-            tile for tile in remaining
-            if tile not in self.done_tiles
-            and tile not in self.discovered_blocked
-            and tile not in self.enemy_done_tiles
-        }
-        if not goals:
-            return None, [], set(), (0, 0, 0), {
-                "Algorithm": self.algorithm_name,
-                "Path length": 0,
-            }
-
-        if start in goals:
-            target = start
-            priority, distance, condition_cost, h_val = self._mode2_h_parts(
-                start, target)
-            stats = {
-                "Algorithm": self.algorithm_name,
-                "Target": f"{target}",
-                "Path length": 0,
-                "Nodes explored": 1,
-                "h(n)": f"{h_val}",
-                "h distance": f"{distance}",
-                "h condition": (
-                    f"2 * {priority} = {condition_cost} "
-                    f"({self._condition_for_tile(target)})"),
-                "h formula": "Manhattan + 2 * condition",
-                "Search style": "BFS + priority queue",
-            }
-            return target, [], {start}, (h_val, 0, h_val), stats
-
-        blocked = self._blocked_tiles()
-        blocked.discard(start)
-        for goal in goals:
-            blocked.discard(goal)
-
-        def best_h_from(node):
-            # Smaller tuple wins. This is recalculated from the current node,
-            # not from the original spawn.
-            best = None
-            for target in goals:
-                priority, distance, condition_cost, h_val = self._mode2_h_parts(
-                    node, target)
-                key = (h_val, priority, distance, target, condition_cost)
-                if best is None or key < best:
-                    best = key
-            return best
-
-        start_h, _, _, _, _ = best_h_from(start)
-        open_set = []
-        heapq.heappush(
-            open_set,
-            (start_h, start_h, 0, next(self.counter), start)
-        )
-        came_from = {}
-        g_score = {start: 0}
-        closed = set()
-        explored_order = []
-        max_frontier = 1
-
-        while open_set:
-            _, _, _, _, current = heapq.heappop(open_set)
-            current_g = g_score[current]
-            if current in closed:
-                continue
-            closed.add(current)
-            explored_order.append(current)
-
-            if current in goals:
-                target = current
-                path = self._reconstruct(came_from, current)
-                priority, distance, condition_cost, h_start = self._mode2_h_parts(
-                    start, target)
-                g_val = len(path)
-                f_val = g_val + h_start
-                fgh = (f_val, g_val, h_start)
-                stats = {
-                    "Algorithm": self.algorithm_name,
-                    "Target": f"{target}",
-                    "Path length": len(path),
-                    "Nodes explored": len(explored_order),
-                    "Frontier max": max_frontier,
-                    "Search style": "BFS + priority queue",
-                    "Parent rule": "came_from reconstructs each step",
-                    "f(n)": f"{f_val}",
-                    "g(n)": f"{g_val}",
-                    "h(n)": f"{h_start}",
-                    "h distance": f"{distance}",
-                    "h condition": (
-                        f"2 * {priority} = {condition_cost} "
-                        f"({self._condition_for_tile(target)})"),
-                    "h formula": "Manhattan + 2 * condition",
-                    "g formula": "+1 per move",
-                }
-                if self.algorithm_name == "Greedy":
-                    stats.pop("f(n)", None)
-                    stats.pop("g(n)", None)
-                    stats["Priority"] = "min h(n)"
-                elif self.algorithm_name == "IDSA":
-                    stats["Note"] = "IDSA visualized with priority frontier"
-                return target, path, set(explored_order), fgh, stats
-
-            for next_tile in self._neighbors(current, blocked):
-                tentative_g = current_g + 1
-                if tentative_g >= g_score.get(next_tile, float("inf")):
-                    continue
-                came_from[next_tile] = current
-                g_score[next_tile] = tentative_g
-                h_val, condition_priority, distance, _, _ = best_h_from(next_tile)
-                if self.algorithm_name == "Greedy":
-                    frontier_priority = h_val
-                else:
-                    frontier_priority = tentative_g + h_val
-                heapq.heappush(
-                    open_set,
-                    (
-                        frontier_priority,
-                        h_val,
-                        -tentative_g,
-                        next(self.counter),
-                        next_tile,
-                    )
-                )
-                max_frontier = max(max_frontier, len(open_set))
-
-        return None, [], set(explored_order), (0, 0, 0), {
-            "Algorithm": self.algorithm_name,
-            "Path length": 0,
-            "Nodes explored": len(explored_order),
-            "Search style": "BFS + priority queue",
-            "Result": "No reachable target",
-        }
-
-    def _mode2_plan_one_leg(self, parent, target):
-        """Plan one Mode-2 leg from parent to target.
-
-        The search algorithm still owns the path.  The only change is that
-        h(n) is evaluated with the expanded node n and this leg's target:
-
-            Greedy priority = h(n)
-            A*/IDA* priority = g(n) + h(n)
-            g(n) = +1 for every move
-            h(n) = Manhattan(n,target) + 2 * condition(target)
-        """
-        blocked = self._blocked_tiles()
-        blocked.discard(parent)
-        blocked.discard(target)
-        return algorithms.find_path_by_algorithm(
-            self.algorithm_name, parent, target, blocked,
-            self._neighbors, self._search_heuristic,
-            self.counter, self._step_cost)
-
-    def _mode2_set_leg_runtime_stats(
-            self, parent, target, path, explored, fgh, sort_key,
-            step_stats=None):
-        g_leg = len(path)
-        self.mode2_current_leg_g = g_leg
-        self.mode2_current_leg_start = parent
-        self.mode2_current_leg_target = target
-        self.mode2_current_step_index = 0
-        if step_stats is None:
-            self.mode2_current_step_stats = self._mode2_build_step_stats(
-                parent, target, path, len(explored), sort_key)
-        else:
-            self.mode2_current_step_stats = [dict(stats) for stats in step_stats]
-        self.astar_current_fgh = fgh
-        self.astar_explored = set(explored)
-        self._mode2_apply_precomputed_step_stats(0)
-
-    def _mode2_build_step_stats(
-            self, parent, target, path, explored_count, sort_key,
-            completed_g=None):
-        if completed_g is None:
-            completed_g = self.mode2_total_g
-        nodes = [parent] + list(path)
-        result = []
-        priority, distance, condition_cost, h = self._mode2_h_parts(
-            parent, target)
-        g_val = completed_g + len(path)
-        f_val = g_val + h
-        for step_index, node in enumerate(nodes):
-            next_node = nodes[step_index + 1] if step_index + 1 < len(nodes) else target
-            stats = {
-                "Algorithm": self.algorithm_name,
-                "Target": f"{target}",
-                "f(n)": f"{f_val}",
-                "g(n)": f"{g_val}",
-                "h(n)": f"{h}",
-                "h distance": f"{distance}",
-                "h condition": (
-                    f"2 * {priority} = {condition_cost} "
-                    f"({self._condition_for_tile(target)})"),
-                "h formula": "Manhattan + 2 * condition",
-                "Current node": f"{node}",
-                "Next node": f"{next_node}",
-                "Path length": len(path),
-                "Path remaining": max(0, len(path) - step_index),
-                "Nodes explored": explored_count,
-                "g completed": completed_g,
-                "g leg": len(path),
-                "Target rule": "min score from current parent node",
-                "Selected target": f"{target}",
-                "Parent node": f"{parent}",
-                "score(target)": sort_key[0],
-                "Tie-break": "score, condition, Manhattan, tile",
-            }
-            if self.algorithm_name == "Greedy":
-                stats.pop("f(n)", None)
-                stats.pop("g(n)", None)
-                stats["Priority"] = "min h(n)"
-            result.append(stats)
-        return result
-
-    def _mode2_apply_precomputed_step_stats(self, step_index):
-        if not self.mode2_current_step_stats:
-            return
-        step_index = max(
-            0, min(step_index, len(self.mode2_current_step_stats) - 1))
-        self.mode2_current_step_index = step_index
-        stats = dict(self.mode2_current_step_stats[step_index])
-        f_val = stats.get("f(n)")
-        g_val = stats.get("g(n)")
-        h_val = stats.get("h(n)")
-        if f_val is not None and g_val is not None and h_val is not None:
-            self.astar_current_fgh = (int(f_val), int(g_val), int(h_val))
-        self.stats = stats
-
-    def _build_mode2_frontier_full_plan(self, remaining, start):
-        """Build the whole Mode-2 route with a priority BFS frontier.
-
-        The robot executes the saved route later.  This planner is the only
-        place where Mode 2 decides target order and path legs.
-        """
-        self._clear_full_garden_plan()
-
-        remaining_set = {
-            tile for tile in remaining
-            if tile in self.farm_tiles
-            and tile not in self.done_tiles
-            and tile not in self.discovered_blocked
-            and tile not in self.enemy_done_tiles
-        }
-        if not remaining_set:
-            return []
-
-        blocked = self._blocked_tiles()
-        blocked.discard(start)
-        for tile in remaining_set:
-            blocked.discard(tile)
-
-        plan = []
-        planned = set()
-        full_walk_path = []
-        leg_paths = {}
-        leg_stats = {}
-        explored_all = set()
-        frontier = []
-        queued = set()
-        current = start
-        total_g = self.mode2_total_g
-        last_fgh = (0, 0, 0)
-        max_frontier = 0
-
-        def nearest_remaining_distance(candidate):
-            open_targets = remaining_set - planned
-            if not open_targets:
-                return 0
-            return min(self._heuristic(candidate, target)
-                       for target in open_targets)
-
-        def push_frontier_neighbors(center):
-            nonlocal max_frontier
-            x, y = center
-            for candidate in (
-                    (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
-                if candidate not in remaining_set:
-                    continue
-                if candidate in planned or candidate in queued:
-                    continue
-                if candidate in blocked:
-                    continue
-                if candidate not in self.farm_tiles:
-                    continue
-
-                condition_priority = self._mode2_condition_h(candidate)
-                g_val = total_g + len(full_walk_path) + 1
-                h_val = (
-                    nearest_remaining_distance(candidate)
-                    + 2 * condition_priority)
-                if self.algorithm_name == "Greedy":
-                    heapq.heappush(
-                        frontier,
-                        (
-                            h_val,
-                            condition_priority,
-                            candidate,
-                            next(self.counter),
-                            center,
-                        )
-                    )
-                else:
-                    priority = g_val + h_val
-                    heapq.heappush(
-                        frontier,
-                        (
-                            priority,
-                            h_val,
-                            -g_val,
-                            condition_priority,
-                            candidate,
-                            next(self.counter),
-                            center,
-                        )
-                    )
-                queued.add(candidate)
-            max_frontier = max(max_frontier, len(frontier))
-
-        def push_next_frontier(center):
-            push_frontier_neighbors(center)
-
-        def save_leg(parent, target, path, explored):
-            nonlocal current, last_fgh
-            if path and not self._path_is_contiguous(parent, path):
-                return False
-
-            completed_g = total_g + len(full_walk_path)
-            priority, distance, _, h_before = self._mode2_h_parts(
-                parent, target)
-            g_leg = len(path)
-            fgh = (completed_g + g_leg + h_before,
-                   completed_g + g_leg,
-                   h_before)
-            sort_key = (h_before, priority, distance, target)
-            step_stats = self._mode2_build_step_stats(
-                parent, target, path, len(explored), sort_key, completed_g)
-
-            plan.append(target)
-            planned.add(target)
-            full_walk_path.extend(path)
-            leg_paths[target] = (parent, list(path), fgh, h_before, g_leg)
-            leg_stats[target] = (
-                parent, list(path), set(explored), fgh, sort_key, step_stats)
-            explored_all.update(explored)
-            last_fgh = fgh
-            current = target
-            return True
-
-        while len(planned) < len(remaining_set):
-            if current in remaining_set and current not in planned:
-                if not save_leg(current, current, [], {current}):
-                    break
-                push_next_frontier(current)
-                continue
-
-            if not frontier:
-                target, path, explored, _, _ = (
-                    self._mode2_priority_path_to_any_goal(
-                        current, remaining_set - planned))
-                if target is None:
-                    break
-                if not save_leg(current, target, path, explored):
-                    break
-                push_next_frontier(target)
-                continue
-
-            if self.algorithm_name == "Greedy":
-                _, _, target, _, _ = heapq.heappop(frontier)
-            else:
-                _, _, _, _, target, _, _ = heapq.heappop(frontier)
-            queued.discard(target)
-            if target in planned or target not in remaining_set:
-                continue
-            if target in blocked or target not in self.farm_tiles:
-                continue
-
-            if self._is_adjacent_tile(current, target):
-                path, explored = [target], {current, target}
-            else:
-                path, explored, _, _ = self._mode2_plan_one_leg(
-                    current, target)
-                if not path and current != target:
-                    continue
-
-            if not save_leg(current, target, path, explored):
-                continue
-            push_next_frontier(target)
-
-        self.full_garden_plan = list(plan)
-        self.full_mode2_walk_path = list(full_walk_path)
-        self.full_garden_leg_paths = leg_paths
-        self.full_garden_leg_stats = leg_stats
-        self.full_garden_index = 0
-        self.full_garden_stats = {
-            "Algorithm": self.algorithm_name,
-            "Planning mode": "Mode 2 frontier full traversal",
-            "Plan targets": len(plan),
-            "Plan travel g": len(full_walk_path),
-            "Walk path length": len(full_walk_path),
-            "Frontier max": max_frontier,
-            "Frontier rule": "push only 4-neighbor farm tiles",
-            "Priority": (
-                "h(n)" if self.algorithm_name == "Greedy"
-                else "f(n) = g(n) + h(n)"),
-            "Tie-break": (
-                "h, condition, tile"
-                if self.algorithm_name == "Greedy"
-                else "priority, h, -g, condition, tile"),
-            "h formula": "Manhattan(candidate, nearest remaining) + 2 * condition(candidate)",
-            "g formula": "planned real steps + 1",
-            "Path source": "precomputed full walk path",
-        }
-        self.astar_current_fgh = last_fgh
-        self.astar_explored = set(explored_all)
-        self._apply_full_plan_stats()
-        return self.full_garden_plan
 
     def _build_full_garden_plan(self, remaining, start):
         self._clear_full_garden_plan()
@@ -4959,6 +4689,8 @@ class FarmAIController:
             self.full_garden_plan = list(plan)
             self.full_garden_stats = stats
         elif self.mode == 1:
+            if self.algorithm_name == "UCS":
+                self._prepare_mode1_ucs_costs()
             blocked = self._blocked_tiles()
             blocked.discard(start)
             for goal in remaining:
@@ -4972,6 +4704,12 @@ class FarmAIController:
             self.full_garden_stats = stats
             self.astar_current_fgh = fgh
             self.bfs_explored = set(explored)
+            if self.algorithm_name == "UCS":
+                self.full_garden_stats["Priority"] = "g(n)"
+                self.full_garden_stats["UCS rule"] = (
+                    "UCS priority = g(n), expand 4-neighbor like A*, no h(n)")
+                self.full_garden_stats["g(n) formula"] = (
+                    "path_length + terrain_cost + condition_cost")
         elif self.mode == 2:
             return self._build_mode2_frontier_full_plan(remaining, start)
         elif self.mode == 4:
@@ -5012,6 +4750,7 @@ class FarmAIController:
 
         self._apply_full_plan_stats()
         return self.full_garden_plan
+
 
     def _next_full_garden_target(self, remaining, start):
         if not self._full_plan_enabled():
@@ -5086,6 +4825,7 @@ class FarmAIController:
             return self._next_full_garden_target(remaining, start)
         return None
 
+
     def _choose_target(self, remaining, start):
         if self.mode == 3:
             return self._local_search_choose(remaining, start)
@@ -5119,6 +4859,7 @@ class FarmAIController:
         return target
 
     # ---------------------------------------------------- player direction
+
     def _set_player_direction_to(self, world_pos):
         """Di chuyá»ƒn player vá» world_pos. Tráº£ vá» True khi Ä‘Ă£ Ä‘áº¿n nÆ¡i."""
         delta = pygame.math.Vector2(world_pos) - self.player.pos
@@ -5140,6 +4881,7 @@ class FarmAIController:
         return False
 
     # ============================================================= UPDATE
+
     def update(self, dt):
         if self.mode == 4:
             self.fog_time += dt
@@ -5335,6 +5077,10 @@ class FarmAIController:
                 self.chosen_target_path = None
             else:
                 self.path = self._path_for_mode(start, target)
+            if self.mode == 1 and self.algorithm_name == "UCS":
+                self.mode1_ucs_current_leg_length = len(self.path)
+                self.mode1_ucs_current_leg_extra_cost = (
+                    self._mode1_ucs_path_extra_cost(self.path))
             if (self.mode == 2 and self.path
                     and not self._path_is_contiguous(start, self.path)):
                 self.chosen_target_path = None
@@ -5635,11 +5381,13 @@ class FarmAIController:
             return
 
     # ============================================================= DRAW
+
     def draw_bg(self, surface, offset):
         """Khong con dung de ve map overlays nua (xem ghi chu o draw_fg).
         Giu lai ham nay (no-op) de tuong thich nguoc voi noi da goi
         draw_bg() truoc khi ve sprites, tranh phai sua lai level.py."""
         pass
+
 
     def draw_fg(self, surface, offset):
         """Ve TOAN BO overlay AI (task markers, fog, CSP highlight, duong
@@ -5656,6 +5404,7 @@ class FarmAIController:
                     "Belief-State BFS", "Belief BFS", "Belief A*")):
             self._draw_belief_minimap(surface)
 
+
     def draw(self, surface, offset):
         """Tuong thich nguoc: ve toan bo (bg no-op + fg). Cac noi goi moi
         nen goi draw_fg() mot lan SAU khi sprites/player da ve xong."""
@@ -5663,6 +5412,40 @@ class FarmAIController:
         self.draw_fg(surface, offset)
 
     # ------------------------------------------------------ map overlays
+
+    def _draw_resolved_asset(self, surface, offset, tile):
+        condition = self._condition_for_tile(tile)
+        if (self.mode == 6
+                or condition in ("dry", "critical", "pest", "crow")):
+            self._blit_tile_asset(surface, offset, tile, "healthy_plant", y_offset=-6)
+
+
+    def _draw_task_tile_marker(self, surface, offset, tile):
+        world = self._tile_center(tile)
+        sx = int(world.x - offset.x)
+        sy = int(world.y - offset.y)
+        marker = pygame.Surface((TILE_SIZE - 10, TILE_SIZE - 10),
+                                pygame.SRCALPHA)
+        pygame.draw.rect(marker, Colors.TASK_MARKER_FILL, marker.get_rect(),
+                         border_radius=6)
+        surface.blit(marker, (sx - TILE_SIZE // 2 + 5,
+                              sy - TILE_SIZE // 2 + 5))
+        rect = pygame.Rect(0, 0, TILE_SIZE - 10, TILE_SIZE - 10)
+        rect.center = (sx, sy)
+        pygame.draw.rect(surface, Colors.TASK_MARKER_BORDER, rect, 1,
+                         border_radius=5)
+        corner = 10
+        color = Colors.TASK_MARKER_CORNER
+        pygame.draw.line(surface, color, rect.topleft, (rect.left + corner, rect.top), 2)
+        pygame.draw.line(surface, color, rect.topleft, (rect.left, rect.top + corner), 2)
+        pygame.draw.line(surface, color, rect.topright, (rect.right - corner, rect.top), 2)
+        pygame.draw.line(surface, color, rect.topright, (rect.right, rect.top + corner), 2)
+        pygame.draw.line(surface, color, rect.bottomleft, (rect.left + corner, rect.bottom), 2)
+        pygame.draw.line(surface, color, rect.bottomleft, (rect.left, rect.bottom - corner), 2)
+        pygame.draw.line(surface, color, rect.bottomright, (rect.right - corner, rect.bottom), 2)
+        pygame.draw.line(surface, color, rect.bottomright, (rect.right, rect.bottom - corner), 2)
+
+
     def _draw_map_overlays(self, surface, offset):
         """Váº½ thĂ´ng tin thuáº­t toĂ¡n lĂªn map (explored nodes, scores, fog, enemy...)."""
 
@@ -5688,9 +5471,9 @@ class FarmAIController:
                     self._blit_tile_asset(
                         surface, offset, tile, asset_key, y_offset=-6)
                 if condition == "disease":
-                    self._blit_tile_asset(surface, offset, tile, "bug", y_offset=2)
+                    self._blit_tile_asset(surface, offset, tile, "worm", y_offset=2)
                 if condition == "pest":
-                    self._blit_tile_asset(surface, offset, tile, "bug", y_offset=2)
+                    self._blit_tile_asset(surface, offset, tile, "worm", y_offset=2)
                 if self.mode == 6 and condition == "critical":
                     world = self._tile_center(tile)
                     cx = int(world.x - offset.x)
@@ -6061,6 +5844,7 @@ class FarmAIController:
                 pygame.draw.circle(surface, Colors.PATH, p, 5)
 
     # -------------------------------------------------- map foreground
+
     def _draw_map_foreground(self, surface, offset):
         """Ve cac overlay PHAI nam TREN sprites/player: speech bubble va
         "BACKTRACK!" flash text phia tren dau robot trong luc CSP replay.
@@ -6112,6 +5896,7 @@ class FarmAIController:
             surface.blit(bt_surf, (px - bt_surf.get_width()//2, py))
 
     # ------------------------------------------------------------ panel
+
     def _draw_panel(self, surface):
         """Draw the left control panel with algorithm selection and run buttons."""
         font = pygame.font.Font(None, 22)
@@ -6404,7 +6189,17 @@ class FarmAIController:
         if self.stats and self.mode != 6:
             y = draw_text("THONG KE", x, y, Colors.TEXT_MUTED, font_small)
             stats_bottom = panel.bottom - 42
-            for key, val in list(self.stats.items())[:7]:
+            stats_items = list(self.stats.items())
+            if self.algorithm_name == "UCS" and "g(n)" in self.stats:
+                preferred = [("g(n)", self.stats["g(n)"])]
+                if "Target" in self.stats:
+                    preferred.append(("Target", self.stats["Target"]))
+                preferred_keys = {key for key, _ in preferred}
+                stats_items = preferred + [
+                    (key, val) for key, val in stats_items
+                    if key not in preferred_keys
+                ]
+            for key, val in stats_items[:7]:
                 if y + font_small.get_height() + 6 > stats_bottom:
                     break
                 y = draw_text(f"{key}: {val}", x, y, Colors.TEXT_STAT, font_small)

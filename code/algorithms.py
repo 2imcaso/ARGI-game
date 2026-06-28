@@ -17,6 +17,11 @@ ONLINE_ALGORITHMS = (
     "AND-OR Search",
 )
 CSP_ALGORITHMS = ("Backtrack", "Fwd Check", "AC-3", "Min Conflict")
+CSP_CROPS = ("corn", "tomato", "wheat", "carrot")
+CSP_FORBIDDEN_PAIRS = {
+    frozenset(("corn", "tomato")),
+    frozenset(("wheat", "carrot")),
+}
 ADVERSARIAL_ALGORITHMS = (
     "Minimax",
     "Alpha-Beta",
@@ -26,7 +31,13 @@ ADVERSARIAL_ALGORITHMS = (
 
 def csp_crop_pair_valid(left, right):
     """Return whether two adjacent Mode 5 crops satisfy all binary constraints."""
-    return left != right
+    if left is None or right is None:
+        return True
+    if left == right:
+        return False
+    if frozenset((left, right)) in CSP_FORBIDDEN_PAIRS:
+        return False
+    return True
 
 ALGORITHM_GROUPS = {
     1: UNINFORMED_ALGORITHMS,
@@ -628,38 +639,61 @@ def ids_to_any_goal(start, goals, blocked, neighbors, max_depth=200):
 
 
 def ucs_to_any_goal(start, goals, blocked, neighbors, counter,
-                    step_cost=unit_step_cost):
+                    step_cost=unit_step_cost, initial_cost=0):
     goals = set(goals)
     open_set = []
-    heapq.heappush(open_set, (0, next(counter), start))
+    heapq.heappush(open_set, (initial_cost, 0, initial_cost, next(counter), start))
     came_from = {}
-    best_cost = {start: 0}
+    g_score = {start: initial_cost}
     explored = set()
+    closed = set()
+    max_frontier = 1
+    last_neighbors = 0
+    last_pushed = 1
 
     while open_set:
-        cost, _, current = heapq.heappop(open_set)
-        if cost > best_cost.get(current, INF):
+        current_g, _, _, _, current = heapq.heappop(open_set)
+        if current_g > g_score.get(current, INF):
             continue
+        if current in closed:
+            continue
+        closed.add(current)
         explored.add(current)
+
+        neighbor_list = list(neighbors(current, blocked))
+        last_neighbors = len(neighbor_list)
+        last_pushed = 0
+        for next_tile in neighbor_list:
+            new_g = current_g + step_cost(current, next_tile)
+            if new_g < g_score.get(next_tile, INF):
+                g_score[next_tile] = new_g
+                came_from[next_tile] = current
+                heapq.heappush(
+                    open_set,
+                    (new_g, new_g, new_g, next(counter), next_tile))
+                last_pushed += 1
+        max_frontier = max(max_frontier, len(open_set))
 
         if current in goals:
             path = reconstruct_path(came_from, current)
             return path, current, explored, {
                 "Nodes explored": len(explored),
                 "Path length": len(path),
-                "Cost": cost,
+                "Frontier max": max_frontier,
+                "Cost": current_g,
+                "g(n)": current_g,
+                "Priority": "g(n)",
+                "PQ rule": "push 4-neighbor with priority = tentative g(n)",
+                "Neighbor rule": "expand 4-neighbor like A*, no h(n)",
+                "Last expanded": f"{current}",
+                "Neighbors considered": f"{last_neighbors}",
+                "Pushed to PQ": f"{last_pushed}",
             }
-
-        for next_tile in neighbors(current, blocked):
-            next_cost = cost + step_cost(current, next_tile)
-            if next_cost < best_cost.get(next_tile, INF):
-                best_cost[next_tile] = next_cost
-                came_from[next_tile] = current
-                heapq.heappush(open_set, (next_cost, next(counter), next_tile))
 
     return [], None, explored, {
         "Nodes explored": len(explored),
         "Path length": 0,
+        "Frontier max": max_frontier,
     }
 
 
@@ -814,29 +848,57 @@ def ucs_full_traversal_plan(start, goals, blocked, neighbors, counter,
                             step_cost=unit_step_cost):
     goals = set(goals)
     open_set = []
-    heapq.heappush(open_set, (0, next(counter), start))
-    best_cost = {start: 0}
+    heapq.heappush(open_set, (0, 0, next(counter), start))
+    came_from = {}
+    g_score = {start: 0}
+    closed = set()
     explored = []
     plan = []
+    target_g = []
+    max_frontier = 1
+    last_neighbors = 0
+    last_pushed = 1
 
     while open_set and len(plan) < len(goals):
-        cost, _, current = heapq.heappop(open_set)
-        if cost > best_cost.get(current, INF):
+        current_g, _, _, current = heapq.heappop(open_set)
+        if current_g > g_score.get(current, INF):
             continue
+        if current in closed:
+            continue
+        closed.add(current)
         explored.append(current)
+
+        neighbor_list = list(neighbors(current, blocked))
+        last_neighbors = len(neighbor_list)
+        last_pushed = 0
+        for next_tile in neighbor_list:
+            tentative_g = current_g + step_cost(current, next_tile)
+            if tentative_g < g_score.get(next_tile, INF):
+                came_from[next_tile] = current
+                g_score[next_tile] = tentative_g
+                heapq.heappush(
+                    open_set,
+                    (tentative_g, tentative_g, next(counter), next_tile))
+                last_pushed += 1
+        max_frontier = max(max_frontier, len(open_set))
+
         if current in goals and current not in plan:
             plan.append(current)
+            target_g.append((current, current_g))
 
-        for next_tile in neighbors(current, blocked):
-            next_cost = cost + step_cost(current, next_tile)
-            if next_cost < best_cost.get(next_tile, INF):
-                best_cost[next_tile] = next_cost
-                heapq.heappush(
-                    open_set, (next_cost, next(counter), next_tile))
-
+    max_target_g = max((cost for _, cost in target_g), default=0)
     stats = _full_traversal_stats(
         "UCS", plan, goals, explored,
-        {"Max cost": max((best_cost.get(tile, 0) for tile in plan), default=0)})
+        {
+            "Max cost": max_target_g,
+            "Target g(n)": dict(target_g),
+            "Frontier max": max_frontier,
+            "Priority": "g(n)",
+            "PQ rule": "one PQ for full plan; pop -> expand 4-neighbor -> record goal",
+            "Last expanded": f"{explored[-1]}" if explored else "None",
+            "Neighbors considered": f"{last_neighbors}",
+            "Pushed to PQ": f"{last_pushed}",
+        })
     return plan, set(explored), stats
 
 
@@ -1084,90 +1146,6 @@ def _plan_result_stats(algorithm, plan, start, dryness, heuristic, scores,
     if extra:
         stats.update(extra)
     return target, target_score, scores, stats
-
-
-def _plan_hill_climb(initial_plan, start, dryness, heuristic, scores,
-                     max_steps=40):
-    current = (
-        list(initial_plan)
-        if initial_plan is not None
-        else [])
-    current_value = _plan_objective(
-        current, start, dryness, heuristic, scores)
-    steps = 0
-
-    while steps < max_steps:
-        successors = _plan_successors(current)
-        if not successors:
-            break
-        best_neighbor = min(
-            successors,
-            key=lambda plan: (_plan_objective(
-                                  plan, start, dryness, heuristic, scores),
-                              tuple(plan)))
-        best_value = _plan_objective(
-            best_neighbor, start, dryness, heuristic, scores)
-        if best_value >= current_value:
-            break
-        current = best_neighbor
-        current_value = best_value
-        steps += 1
-
-    return current, current_value, steps
-
-
-def plan_hill_climbing_choose(remaining, start, dryness, heuristic,
-                              initial_plan=None, max_steps=40):
-    scores = _plan_scores(remaining, start, dryness, heuristic)
-    if not remaining:
-        return None, 0, scores, {
-            "Local algorithm": "Hill Climbing",
-            "Target": "None",
-        }
-
-    start_plan = (
-        list(initial_plan)
-        if initial_plan is not None
-        else _nearest_neighbor_plan(remaining, start, heuristic))
-    current, _, steps = _plan_hill_climb(
-        start_plan, start, dryness, heuristic, scores, max_steps)
-
-    return _plan_result_stats(
-        "Hill Climbing", current, start, dryness, heuristic, scores,
-        {"Hill steps": steps})
-
-
-def plan_restart_hill_choose(remaining, start, dryness, heuristic,
-                             restarts=8):
-    scores = _plan_scores(remaining, start, dryness, heuristic)
-    if not remaining:
-        return None, 0, scores, {
-            "Local algorithm": "Restart Hill",
-            "Target": "None",
-        }
-
-    starts = [_nearest_neighbor_plan(remaining, start, heuristic)]
-    ordered_by_urgency = sorted(
-        remaining,
-        key=lambda tile: (-dryness.get(tile, 50), heuristic(start, tile), tile))
-    starts.append(ordered_by_urgency)
-    while len(starts) < max(1, restarts):
-        plan = list(remaining)
-        random.shuffle(plan)
-        starts.append(plan)
-
-    best_plan = None
-    best_value = float("inf")
-    for plan in starts[:max(1, restarts)]:
-        candidate_plan, candidate_value, _ = _plan_hill_climb(
-            plan, start, dryness, heuristic, scores)
-        if candidate_value < best_value:
-            best_value = candidate_value
-            best_plan = candidate_plan
-
-    return _plan_result_stats(
-        "Restart Hill", best_plan, start, dryness, heuristic, scores,
-        {"Restarts": max(1, restarts)})
 
 
 def local_beam_choose(remaining, start, dryness, heuristic,
@@ -1662,7 +1640,7 @@ def _csp_adjacent(a, b):
 
 def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
     """Assign crops using the selected CSP solving strategy."""
-    variables = list(farm_tiles)
+    variables = sorted(farm_tiles, key=lambda tile: (tile[1], tile[0]))
 
     steps = []
     backtracks = 0
@@ -1672,7 +1650,7 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         var: [other for other in variables if _csp_adjacent(var, other)]
         for var in variables
     }
-    domain = ("corn", "tomato", "wheat", "carrot")
+    domain = CSP_CROPS
 
     def log(event, var, value):
         if len(steps) < 2000:
@@ -1698,7 +1676,13 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
             if neighbor in assignment
         )
 
-    def select_unassigned(assignment, domains):
+    def select_unassigned_row_major(assignment):
+        for var in variables:
+            if var not in assignment:
+                return var
+        return None
+
+    def select_unassigned_mrv_degree(assignment, domains):
         remaining = [var for var in variables if var not in assignment]
         return min(
             remaining,
@@ -1713,19 +1697,26 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         log_domain(var, domains)
         return bool(domains[var])
 
-    def backtrack(assignment, domains, forward_check=False, arc_consistency=False):
+    def backtrack(
+            assignment, domains, forward_check=False,
+            arc_consistency=False, use_heuristic=False):
         nonlocal backtracks
         if len(assignment) == len(variables):
             return dict(assignment)
 
-        var = select_unassigned(assignment, domains)
+        if use_heuristic:
+            var = select_unassigned_mrv_degree(assignment, domains)
+        else:
+            var = select_unassigned_row_major(assignment)
+        if var is None:
+            return dict(assignment)
+
         candidate_values = list(domains[var])
         for value in candidate_values:
             # The UI shows the solver considering several crops before it
             # commits to the candidate. FC/AC-3 only consider the current
             # pruned domain, so removed crops are never "thought about" again.
             previews = list(domains[var])
-            random.shuffle(previews)
             for preview in previews[:3]:
                 log("think", var, preview)
             log("try", var, value)
@@ -1764,6 +1755,7 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
                     next_domains,
                     forward_check=forward_check,
                     arc_consistency=arc_consistency,
+                    use_heuristic=use_heuristic,
                 )
                 if result is not None:
                     return result
@@ -1904,11 +1896,9 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         return None
 
 
-    # Min-Conflicts keeps the balanced preference used by its full random
-    # assignment. The three systematic algorithms deliberately receive a
-    # fresh random value order per tile so their search visibly tries,
-    # rejects and backtracks instead of replaying a checkerboard answer.
-    crop_list = ["corn", "tomato", "wheat", "carrot"]
+    # Randomize each tile's value order so valid plans do not collapse into
+    # the same two-crop checkerboard every replay.
+    crop_list = list(CSP_CROPS)
 
     def _checker_crop(x, y):
         # (0,0)->corn, (1,0)->tomato, (0,1)->wheat, (1,1)->carrot
@@ -1919,22 +1909,25 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         def _preferred_domain(var):
             preferred = _checker_crop(var[0], var[1])
             rest = [c for c in domain if c != preferred]
+            random.shuffle(rest)
             return [preferred] + rest
 
         domains = {var: _preferred_domain(var) for var in variables}
     else:
         domains = {}
         for var in variables:
-            values = list(domain)
+            values = list(CSP_CROPS)
             random.shuffle(values)
             domains[var] = values
 
 
     if algorithm == "Fwd Check":
-        result = backtrack({}, domains, forward_check=True)
+        result = backtrack({}, domains, forward_check=True, use_heuristic=True)
     elif algorithm == "AC-3":
         result = (
-            backtrack({}, domains, forward_check=True, arc_consistency=True)
+            backtrack(
+                {}, domains, forward_check=True,
+                arc_consistency=True, use_heuristic=True)
             if enforce_arc_consistency(domains)
             else None
         )
@@ -1944,10 +1937,11 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
             # Chỉ fallback khi Min-Conflicts thực sự THẤT BẠI (hết max_steps/restarts
             # mà vẫn còn xung đột), không phải vì nghiệm "ít màu" — một nghiệm chỉ
             # dùng 2/4 loại crop vẫn hợp lệ với ràng buộc "khác màu kề nhau".
-            result = backtrack({}, domains, forward_check=True)
+            result = backtrack(
+                {}, domains, forward_check=True, use_heuristic=True)
 
     else:
-        result = backtrack({}, domains)
+        result = backtrack({}, domains, use_heuristic=False)
 
 
     # Không post-process thay đổi assignment sau khi đã tìm nghiệm.
@@ -1958,7 +1952,10 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
         "Algorithm": algorithm,
         "Variables": len(variables),
         "Domain": "{corn, tomato, wheat, carrot}",
-        "Constraints": "no same crop adjacent",
+        "Value order": "random per tile",
+        "Constraints": (
+            "no same crop; corn-tomato forbidden; "
+            "wheat-carrot forbidden"),
         "Backtracks": backtracks,
     }
     if algorithm == "AC-3":
