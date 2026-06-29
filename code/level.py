@@ -176,10 +176,14 @@ class Level:
 				('sign', 20, 29),
 			],
 		},
-		# Day 6 - Minimax: south-east protected rows.
+		# Day 6 - adversarial defense arena.
 		6: {
-			'area_name': 'Khu 6 - Hang cay can bao ve',
-			'spawn_tile': (29, 31),
+			'area_name': 'Khu 6 - Dau truong bao ve vuon',
+			'spawn_tile': (29, 30),
+			'enemy_spawn': (35, 30),
+			'extra_walkable_tiles': [
+				(29,30),(35,30),
+			],
 			'obstacles': [],
 			'tiles': [
 				(30,28),(31,28),(32,28),(33,28),(34,28),
@@ -188,11 +192,10 @@ class Level:
 				(30,31),(31,31),(32,31),(33,31),(34,31),
 				(30,32),(31,32),(32,32),(33,32),(34,32),
 			],
-			# Doi xung voi AGRI-1: ca hai cach mep vuon dung 1 tile.
-			'enemy_spawn': (35, 31),
 			'decorations': [
-				('crow', 37, 28), ('crow_damage', 36, 32),
-				('sign', 29, 28), ('stump', 38, 32),
+				('sign', 29, 27),
+				('crow', 37, 28), ('crow_damage', 37, 32),
+				('stump', 38, 32),
 			],
 		},
 	}
@@ -912,8 +915,6 @@ class Level:
 		# transition overlay
 		if self.player.sleep:
 			self.transition.play()
-
-
 
 class CameraGroup(pygame.sprite.Group):
 	def __init__(self):

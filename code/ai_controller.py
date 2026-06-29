@@ -42,9 +42,9 @@ class FarmAIController:
         5: ("NGAY 5 - KHU 5: O QUY HOACH TRUNG TAM", "CSP Backtracking",
             "Gan 4 loai cay ma khong vi pham rang buoc ke nhau",
             "Khong cung crop; corn-tomato va wheat-carrot cung bi cam"),
-        6: ("NGAY 6 - KHU 6: HANG CAY CAN BAO VE", "Minimax / Alpha-Beta",
-            "Cay co gia tri va rui ro theo tinh trang; AGRI-1 di sua cay",
-            "MAX sua cay; MIN pha huy; CHANCE dung rui ro rieng tung cay"),
+        6: ("NGAY 6 - KHU 6: DAU TRUONG BAO VE VUON", "Adversarial Search",
+            "AGRI-1 va qua vao vuon tu hai phia doi xung",
+            "MAX bao ve; MIN pha huy; CHANCE mo phong rui ro"),
     }
     OBJECTIVE_INFO = {
         1: ("Khoi phuc toan bo khu dat", "o dat"),
@@ -55,10 +55,13 @@ class FarmAIController:
         6: ("Sua cay bi qua pha truoc khi bi pha huy", "cay"),
     }
 
-    MODE6_ACTION_TIME = 1.5
+    MODE6_ACTION_TIME = 1.0
+    MODE6_RESOLVE_TIME = 0.0
+    MODE6_EXPECTIMAX_CHANCE_INTERVAL = 1.0
     ENEMY_DESTROY_TIME = MODE6_ACTION_TIME
     ENEMY_RETARGET_DELAY = 0.08
-    MODE6_ENEMY_SPEED_SCALE = 0.72
+    MODE6_ENEMY_SPEED_SCALE = 0.85
+    MODE6_ROBOT_SPEED_SCALE = 0.85
     IDS_ITERATION_DELAY = 0.65
     IDSA_ITERATION_DELAY = 0.65
 
@@ -74,6 +77,7 @@ class FarmAIController:
                  entry_tile=None,
                  selected_algorithm=None):
         self.player = player
+        self.mode6_player_base_speed = self.player.speed
         self.soil_layer = soil_layer
         self.collision_sprites = collision_sprites
         self.player.auto_control = True
@@ -178,7 +182,7 @@ class FarmAIController:
         self.tile_conditions = self._build_tile_conditions()
         self.mode6_crop_profiles = {
             tile: dict(algorithms.MODE6_TREE_STATUS.get(
-                condition, algorithms.MODE6_TREE_STATUS["healthy"]))
+                condition, algorithms.MODE6_TREE_STATUS["dry"]))
             for tile, condition in self.tile_conditions.items()
         } if self.mode == 6 else {}
         self.danger_level = self._build_danger_levels()
@@ -286,16 +290,44 @@ class FarmAIController:
         self.mode6_fix_until = 0
         self.mode6_fix_target = None
         self.minimax_value = 0
-        self.alpha_beta_info = {"alpha": "-âˆ", "beta": "+âˆ", "pruned": 0}
+        self.alpha_beta_info = {
+            "alpha": "-\u221e", "beta": "+\u221e", "pruned": 0}
         self.mode6_tree_details = {}
         self.mode6_chance_event = ""
         self.mode6_chance_probability = 0.0
+        self.mode6_random_chance_elapsed = 0.0
         self.mode6_turn = 0
         self.mode6_move_total = 0
         self.mode6_move_done = 0
         self.mode6_enemy_move_total = 0
         self.mode6_enemy_move_done = 0
-        self.mode6_phase = "Cho bat dau"
+        self.mode6_phase = "PLAN_STEP"
+        self.mode6_robot_action = "STAY"
+        self.mode6_enemy_action = "STAY"
+        self.mode6_robot_step_target = None
+        self.mode6_enemy_step_target = None
+        self.mode6_robot_target = None
+        self.mode6_enemy_target = None
+        self.mode6_robot_path = []
+        self.mode6_enemy_path = []
+        self.mode6_robot_prev_tile = None
+        self.mode6_enemy_prev_tile = None
+        self.mode6_robot_step_start = None
+        self.mode6_enemy_step_start = None
+        self.mode6_enemy_threat_tile = None
+        self.mode6_enemy_threat_turns = 0
+        self.mode6_enemy_forbidden_tile = None
+        self.mode6_robot_repair_tile = None
+        self.mode6_robot_repair_turns = 0
+        self.mode6_resolve_elapsed = 0.0
+        self.mode6_robot_hold_elapsed = 0.0
+        self.mode6_enemy_hold_elapsed = 0.0
+        self.mode6_robot_hold_required = False
+        self.mode6_enemy_hold_required = False
+        self.mode6_robot_committed_tile = None
+        self.mode6_pending_actor = None
+        self.mode6_pending_target = None
+        self.mode6_pending_event = None
         if self.mode == 6:
             if enemy_spawn is not None:
                 # DĂ¹ng spawn cá»‘ Ä‘á»‹nh tá»« Level (gĂ³c pháº£i hĂ ng dÆ°á»›i)
@@ -305,6 +337,7 @@ class FarmAIController:
                 xs = [t[0] for t in self.farm_tiles]
                 ys = [t[1] for t in self.farm_tiles]
                 self.enemy_tile = (max(xs) + 3, max(ys) + 2)
+            self._reset_mode6_runtime(reset_positions=False)
 
 
     def _default_algorithm(self, mode):
@@ -425,36 +458,74 @@ class FarmAIController:
             self._init_mode4_belief()
             self._expand_vision(self.spawn_tile)
         elif self.mode == 6:
-            self.done_tiles.clear()
-            self.enemy_done_tiles.clear()
+            self._reset_mode6_runtime(reset_positions=True)
+
+        return True
+
+
+    def _reset_mode6_runtime(self, reset_positions=True):
+        self.player.speed = self.mode6_player_base_speed
+        self.done_tiles.clear()
+        self.enemy_done_tiles.clear()
+        self.current_target = None
+        self.enemy_target = None
+        self.enemy_retreat_target = None
+        self.path = []
+        self.enemy_path = []
+        self.chosen_target_path = None
+        self.enemy_destroy_until = 0
+        self.enemy_retarget_timer = 0.0
+        self.mode6_fix_until = 0
+        self.mode6_fix_target = None
+        self.minimax_value = 0
+        self.alpha_beta_info = {
+            "alpha": "-\u221e", "beta": "+\u221e", "pruned": 0}
+        self.mode6_tree_details = {}
+        self.mode6_chance_event = ""
+        self.mode6_chance_probability = 0.0
+        self.mode6_random_chance_elapsed = 0.0
+        self.mode6_turn = 0
+        self.mode6_move_total = 0
+        self.mode6_move_done = 0
+        self.mode6_enemy_move_total = 0
+        self.mode6_enemy_move_done = 0
+        self.mode6_phase = "PLAN_STEP"
+        self.mode6_robot_action = "STAY"
+        self.mode6_enemy_action = "STAY"
+        self.mode6_robot_step_target = None
+        self.mode6_enemy_step_target = None
+        self.mode6_robot_target = None
+        self.mode6_enemy_target = None
+        self.mode6_robot_path = []
+        self.mode6_enemy_path = []
+        self.mode6_robot_prev_tile = None
+        self.mode6_enemy_prev_tile = None
+        self.mode6_robot_step_start = None
+        self.mode6_enemy_step_start = None
+        self.mode6_enemy_threat_tile = None
+        self.mode6_enemy_threat_turns = 0
+        self.mode6_enemy_forbidden_tile = None
+        self.mode6_robot_repair_tile = None
+        self.mode6_robot_repair_turns = 0
+        self.mode6_resolve_elapsed = 0.0
+        self.mode6_robot_hold_elapsed = 0.0
+        self.mode6_enemy_hold_elapsed = 0.0
+        self.mode6_robot_hold_required = False
+        self.mode6_enemy_hold_required = False
+        self.mode6_robot_committed_tile = None
+        self.mode6_pending_actor = None
+        self.mode6_pending_target = None
+        self.mode6_pending_event = None
+        self.state = "PLAN_STEP"
+        self.stats = {}
+        if reset_positions:
             spawn_pos = self._tile_center(self.spawn_tile)
             self.player.pos.update(spawn_pos)
             self.player.rect.center = (round(spawn_pos.x), round(spawn_pos.y))
             self.player.hitbox.center = self.player.rect.center
             self.player.direction.update(0, 0)
-            if self.enemy_spawn_tile is not None:
-                self.enemy_tile = self.enemy_spawn_tile
-            self.enemy_target = None
-            self.enemy_retreat_target = None
-            self.enemy_destroy_until = 0
-            self.enemy_retarget_timer = 0.0
-            self.enemy_path = []
-            self.mode6_fix_until = 0
-            self.mode6_fix_target = None
-            self.minimax_value = 0
-            self.alpha_beta_info = {
-                "alpha": "-inf", "beta": "+inf", "pruned": 0}
-            self.mode6_tree_details = {}
-            self.mode6_chance_event = ""
-            self.mode6_chance_probability = 0.0
-            self.mode6_turn = 0
-            self.mode6_move_total = 0
-            self.mode6_move_done = 0
-            self.mode6_enemy_move_total = 0
-            self.mode6_enemy_move_done = 0
-            self.mode6_phase = "Cho bat dau"
-
-        return True
+        if self.enemy_spawn_tile is not None:
+            self.enemy_tile = self.enemy_spawn_tile
 
 
     def cycle_algorithm(self, step=1):
@@ -476,12 +547,17 @@ class FarmAIController:
             self.is_running = True
             self._begin_csp_analyze()
             return
+        if self.mode == 6:
+            self.state = "PLAN_STEP"
+            self.mode6_phase = "PLAN_STEP"
         self.is_running = True
         self.message = f"Dang chay {self.algorithm_name}"
 
 
     def pause(self):
         self.is_running = False
+        if self.mode == 6:
+            self.player.speed = self.mode6_player_base_speed
         self.player.direction.update(0, 0)
         self.message = "Tam dung"
 
@@ -569,7 +645,7 @@ class FarmAIController:
 
 
     def _build_walkable_tiles(self):
-        if self.mode not in (1, 4) or not self.farm_tiles:
+        if self.mode not in (1, 4, 6) or not self.farm_tiles:
             return None
 
         walkable = set(self.farm_tiles)
@@ -577,7 +653,7 @@ class FarmAIController:
         walkable.update(self.extra_walkable_tiles)
         walkable.update(self.terrain_costs.keys())
 
-        if self.mode == 4:
+        if self.mode in (4, 6):
             return walkable
 
         for target_x, target_y in self.farm_tiles:
@@ -637,6 +713,7 @@ class FarmAIController:
             "dry_plant": "dry_plant.png",
             "urgent_plant": "urgent_plant.png",
             "storm_damaged_plant": "storm_damaged_plant.png",
+            "golden_plant": "golden_plant.png",
             "healthy_plant": "healthy_plant.png",
             "dead_plant": "dead_plant.png",
             "storm_debris": "storm_debris.png",
@@ -645,6 +722,7 @@ class FarmAIController:
             "bug": "bug.png",
             "crow": "crow.png",
             "crow_damage": "crow_damage.png",
+            "crow_wilted_plant": "crow_wilted_plant.png",
         }
         assets = {}
         for key, filename in asset_names.items():
@@ -767,11 +845,11 @@ class FarmAIController:
             min_x = min(tile[0] for tile in self.farm_tiles)
             min_y = min(tile[1] for tile in self.farm_tiles)
             status_grid = (
-                ("healthy", "healthy", "critical", "healthy", "healthy"),
-                ("healthy", "dry", "disease", "critical", "healthy"),
-                ("dry", "disease", "rare", "disease", "dry"),
-                ("healthy", "critical", "disease", "dry", "healthy"),
-                ("healthy", "healthy", "critical", "healthy", "healthy"),
+                ("dry", "critical", "pest", "dead", "pest"),
+                ("pest", "dead", "dry", "golden", "critical"),
+                ("critical", "pest", "golden", "dry", "pest"),
+                ("dead", "golden", "pest", "critical", "dry"),
+                ("pest", "dry", "critical", "pest", "dead"),
             )
             return {
                 tile: status_grid[tile[1] - min_y][tile[0] - min_x]
@@ -831,12 +909,6 @@ class FarmAIController:
 
 
     def _condition_asset(self, condition):
-        if condition == "healthy":
-            return "healthy_plant"
-        if condition == "disease":
-            return "urgent_plant"
-        if condition == "rare":
-            return "healthy_plant"
         if condition == "dead":
             return "dead_plant"
         if condition == "critical":
@@ -845,6 +917,20 @@ class FarmAIController:
             return "dry_plant"
         if condition == "pest":
             return "healthy_plant"
+        return "dry_plant"
+
+
+    def _mode6_condition_asset(self, condition):
+        if condition == "dry":
+            return "dry_plant"
+        if condition == "critical":
+            return "storm_damaged_plant"
+        if condition == "pest":
+            return "urgent_plant"
+        if condition == "dead":
+            return "dead_plant"
+        if condition == "golden":
+            return "golden_plant"
         return "dry_plant"
 
 
@@ -966,9 +1052,6 @@ class FarmAIController:
 
     def _condition_label(self, condition):
         labels = {
-            "healthy": "Cay khoe -> sua hu hong nhe",
-            "disease": "Cay sau benh -> sua va xu ly benh",
-            "rare": "Cay quy -> uu tien sua",
             "dry": "Cay kho -> tuoi phuc hoi",
             "critical": "Cay nguy cap -> cap cuu bang nuoc",
             "pest": "Sau benh sau bao -> phun sinh hoc",
@@ -985,9 +1068,6 @@ class FarmAIController:
 
     def _target_summary(self, tile):
         labels = {
-            "healthy": "Cay khoe",
-            "disease": "Cay sau benh",
-            "rare": "Cay quy",
             "dry": "Cay kho",
             "critical": "Cay nguy cap",
             "pest": "Cay sau benh",
@@ -4232,6 +4312,8 @@ class FarmAIController:
     # ------------------------------------------------------------------
 
     def _enemy_retreat_tile(self, damaged_tile):
+        if self.enemy_spawn_tile is not None:
+            return self.enemy_spawn_tile
         if not self.farm_tiles:
             return (damaged_tile[0], damaged_tile[1] + 1)
         min_y = min(t[1] for t in self.farm_tiles)
@@ -4254,7 +4336,7 @@ class FarmAIController:
                 now + int(self.MODE6_ACTION_TIME * 1000))
             self.player.selected_tool = "water"
             self.player.status = "down_water"
-            self.mode6_phase = f"FIX {tile}"
+            self.mode6_phase = "MODE6_RESOLVE"
             self.message = (
                 f"AGRI-1 dang sua cay bi qua pha {tile}: "
                 f"{self.MODE6_ACTION_TIME:.1f}s")
@@ -4272,97 +4354,10 @@ class FarmAIController:
         self.mode6_fix_target = None
         self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
         self.stop_after_current_target = False
-        self.mode6_phase = f"Da sua {tile}"
-        self.message = f"AGRI-1 da sua cay {tile}"
-
-
-    def _adversarial_choose(self, remaining, player_start):
-        """Choose MAX's move, then resolve only the nearest live child.
-
-        Minimax/Alpha-Beta:
-            MAX chooses ``best_tile`` and MIN deterministically chooses the
-            response returned by the searched principal variation.
-
-        Expectimax:
-            MAX still chooses ``best_tile`` deterministically.  Only the
-            immediate CHANCE child is sampled, using the same normalized risk
-            weights as the expectimax tree.
-
-        Expectiminimax:
-            MAX and MIN are deterministic.  The CHANCE result is sampled only
-            after the crow reaches MIN's selected response tile.
-        """
-        self.mode6_turn += 1
-        self.mode6_phase = f"Decision {self.mode6_turn}"
-        best_tile, predicted_enemy_target, self.minimax_value, \
-            self.alpha_beta_info, self.stats, self.mode6_tree_details = \
-            algorithms.adversarial_choose(
-                self.algorithm_name, self.farm_tiles, self.done_tiles,
-                self.enemy_done_tiles,
-                crop_profiles=self.mode6_crop_profiles)
-
-        if self.algorithm_name == "Expectimax":
-            chance_targets = [
-                tile for tile in remaining if tile != best_tile
-            ]
-            predicted_enemy_target = self._mode6_weighted_target(
-                chance_targets)
-            condition = self._condition_for_tile(predicted_enemy_target)
-            event_by_condition = {
-                "healthy": "Light weather",
-                "dry": "Drought",
-                "disease": "Disease spread",
-                "critical": "Severe weather",
-                "rare": "Rare crop failure",
-            }
-            self.mode6_chance_event = event_by_condition.get(
-                condition, "Random event")
-            self.mode6_chance_probability = (
-                self.mode6_crop_profiles[predicted_enemy_target]["risk"]
-                if predicted_enemy_target is not None else 0.0)
-            self.stats["Chance Event"] = self.mode6_chance_event
-            self.stats["Probability"] = (
-                f"{self.mode6_chance_probability * 100:.0f}%")
-        elif self.algorithm_name == "Expectiminimax":
-            self.mode6_chance_event = "Sabotage / Weather / No damage"
-            self.mode6_chance_probability = (
-                self.mode6_crop_profiles[predicted_enemy_target]["risk"]
-                if predicted_enemy_target is not None else 0.0)
-        else:
-            self.mode6_chance_event = ""
-            self.mode6_chance_probability = 0.0
-
-        if (not self.enemy_target and not self.enemy_retreat_target
-                and not self._enemy_is_destroying()):
-            self.enemy_target = predicted_enemy_target
-            self.enemy_path = []
+        self.mode6_phase = "MODE6_RESOLVE"
+        self.message = f"AGRI-1 bao ve cay {tile}"
         self._update_mode6_step_hud(
-            phase=self.mode6_phase,
-            current=player_start,
-            next_tile=best_tile,
-        )
-        return best_tile
-
-
-    def _mode6_weighted_target(self, targets):
-        """Sample one CHANCE target with the tree's normalized risk weights."""
-        candidates = sorted(set(targets))
-        if not candidates:
-            return None
-        weights = [
-            max(
-                0.0,
-                self.mode6_crop_profiles.get(
-                    tile,
-                    algorithms.MODE6_TREE_STATUS["healthy"],
-                )["risk"],
-            )
-            for tile in candidates
-        ]
-        if sum(weights) <= 0:
-            weights = [1.0] * len(candidates)
-        return random.choices(candidates, weights=weights, k=1)[0]
-
+            phase=self.mode6_phase, current=tile, next_tile=None)
 
     def _update_mode6_step_hud(self, phase=None, current=None, next_tile=None):
         """Refresh algorithm-specific Mode-6 information every live step."""
@@ -4372,9 +4367,27 @@ class FarmAIController:
             self.mode6_phase = phase
 
         details = self.mode6_tree_details
-        best_move = details.get("best_move")
-        response = details.get("response")
+        for tile, profile in details.get("crop_profiles", {}).items():
+            profile["state"] = (
+                "protected" if tile in self.done_tiles
+                else "destroyed" if tile in self.enemy_done_tiles
+                else "remaining")
+        robot_action = details.get("robot_action", self.mode6_robot_action)
+        enemy_action = details.get("enemy_action", self.mode6_enemy_action)
+        robot_target = details.get("robot_target", self.mode6_robot_target)
+        enemy_target = details.get(
+            "enemy_priority_target",
+            details.get("enemy_target", self.mode6_enemy_target))
+        robot_path_length = details.get(
+            "robot_path_length", len(self.mode6_robot_path))
+        enemy_path_length = details.get(
+            "enemy_path_length", len(self.mode6_enemy_path))
+        robot_frontier = details.get("robot_frontier", [])
+        enemy_frontier = details.get("enemy_frontier", [])
         depth = details.get("depth", algorithms.MODE6_SEARCH_DEPTH)
+        protected_score, destroyed_score = algorithms.mode6_state_scores(
+            self.done_tiles, self.enemy_done_tiles,
+            self.mode6_crop_profiles)
         step_text = (
             f"{self.mode6_move_done}/{self.mode6_move_total}"
             if self.mode6_move_total else "-"
@@ -4383,27 +4396,83 @@ class FarmAIController:
             f"{self.mode6_enemy_move_done}/{self.mode6_enemy_move_total}"
             if self.mode6_enemy_move_total else "-"
         )
+        robot_current = self._world_to_tile(self.player.rect.center)
+        robot_next = self.mode6_robot_step_target
+        enemy_current = (
+            (int(round(self.enemy_tile[0])), int(round(self.enemy_tile[1])))
+            if self.enemy_tile is not None else None)
+        enemy_next = self.mode6_enemy_step_target
+        remaining_trees = len([
+            tile for tile in self.farm_tiles
+            if tile not in self.done_tiles
+            and tile not in self.enemy_done_tiles
+            and tile not in self.discovered_blocked])
         live = {
+            "Algorithm": self.algorithm_name,
+            "Robot Algorithm": self.algorithm_name,
+            "Enemy Policy": (
+                "Random Chance" if self.algorithm_name == "Expectimax"
+                else "Greedy Saboteur"),
             "Phase": self.mode6_phase,
             "Turn": self.mode6_turn,
+            "Search depth": depth,
+            "Lookahead Rounds": depth // 2,
+            "Game tree": "Step-by-step adversarial search",
+            "Robot movement": "one action: UP/DOWN/LEFT/RIGHT/STAY",
+            "Crow movement": (
+                "disabled; random chance damages trees"
+                if self.algorithm_name == "Expectimax"
+                else "one action: UP/DOWN/LEFT/RIGHT/STAY"),
+            "MAX action": f"{robot_action}",
+            "MIN action": f"{enemy_action}",
+            "Robot Action": f"{robot_action}",
+            "Enemy Action": f"{enemy_action}",
+            "Robot target": f"{robot_target}",
+            "Enemy target": f"{enemy_target}",
+            "Robot path length": robot_path_length,
+            "Enemy path length": enemy_path_length,
+            "MAX frontier": ", ".join(robot_frontier),
+            "MIN frontier": ", ".join(enemy_frontier),
+            "Evaluation score": f"{self.minimax_value:.1f}",
+            "Protected score": protected_score,
+            "Destroyed score": destroyed_score,
+            "Remaining trees": remaining_trees,
             "AGRI step": step_text,
             "Crow step": enemy_step_text,
-            "Current tile": f"{current}" if current is not None else "-",
-            "Next tile": f"{next_tile}" if next_tile is not None else "-",
+            "Resolve timer": (
+                f"{self.mode6_resolve_elapsed:.1f}/"
+                f"{self.MODE6_RESOLVE_TIME:.1f}s"
+                if (self.mode6_phase == "RESOLVE_STEP"
+                    and self.MODE6_RESOLVE_TIME > 0) else "-"),
+            "Robot current tile": f"{robot_current}",
+            "Robot next tile": f"{robot_next}",
+            "Enemy current tile": f"{enemy_current}",
+            "Enemy next tile": f"{enemy_next}",
+            "Threatened tile": (
+                f"{self.mode6_enemy_threat_tile} "
+                f"({self.mode6_enemy_threat_turns}/2)"
+                if self.mode6_enemy_threat_tile is not None else "-"),
+            "Threat turns": self.mode6_enemy_threat_turns,
+            "Repairing tile": (
+                f"{self.mode6_robot_repair_tile} "
+                f"({self.mode6_robot_repair_turns}/2)"
+                if self.mode6_robot_repair_tile is not None else "-"),
+            "Robot commitment": (
+                f"locked {self.mode6_robot_committed_tile}"
+                if self.mode6_robot_committed_tile is not None else "-"),
+            "Golden status": self._mode6_golden_status(),
             "Depth": depth,
-            "Best Move": f"{best_move}",
         }
+        if self.algorithm_name in ("Expectimax", "Expectiminimax"):
+            live["Expected value"] = f"{self.minimax_value:.1f}"
 
         if self.algorithm_name == "Minimax":
             live.update({
-                "Node flow": "MAX -> MIN",
-                "MIN response": f"{response}",
-                "Utility": f"{self.minimax_value:.1f}",
+                "Node flow": "MAX -> GREEDY",
             })
         elif self.algorithm_name == "Alpha-Beta":
             live.update({
-                "Node flow": "MAX -> MIN",
-                "Utility": f"{self.minimax_value:.1f}",
+                "Node flow": "MAX -> GREEDY",
                 "Alpha": self.alpha_beta_info["alpha"],
                 "Beta": self.alpha_beta_info["beta"],
                 "Pruned Nodes": self.alpha_beta_info["pruned"],
@@ -4411,22 +4480,24 @@ class FarmAIController:
         elif self.algorithm_name == "Expectimax":
             live.update({
                 "Node flow": "MAX -> CHANCE",
-                "Expected Utility": f"{self.minimax_value:.1f}",
-                "Chance Event": self.mode6_chance_event or "-",
-                "Probability": (
+                "Chance interval": (
+                    f"{self.mode6_random_chance_elapsed:.1f}/"
+                    f"{self.MODE6_EXPECTIMAX_CHANCE_INTERVAL:.1f}s"),
+                "Chance event": self.mode6_chance_event or "-",
+                "Chance probability": (
                     f"{self.mode6_chance_probability * 100:.0f}%"),
             })
         else:
             live.update({
-                "Node flow": "MAX -> MIN -> CHANCE",
-                "MIN response": f"{response}",
-                "Expected Score": f"{self.minimax_value:.1f}",
-                "Target risk": (
+                "Node flow": "MAX -> GREEDY -> CHANCE",
+                "Chance event": self.mode6_chance_event or "-",
+                "Chance probability": (
                     f"{self.mode6_chance_probability * 100:.0f}%"),
             })
 
-        # Keep the live fields first so the panel always shows current steps.
-        self.stats = live
+        tree_stats = dict(self.stats)
+        tree_stats.update(live)
+        self.stats = tree_stats
 
 
     def _enemy_destroy_remaining(self):
@@ -4438,25 +4509,6 @@ class FarmAIController:
 
     def _enemy_is_destroying(self):
         return self._enemy_destroy_remaining() > 0
-
-
-    def _enemy_remaining_targets(self):
-        return [t for t in self.farm_tiles
-                if t not in self.done_tiles
-                and t not in self.discovered_blocked
-                and t not in self.enemy_done_tiles
-                and t != self.current_target]
-
-
-    def _choose_enemy_target(self):
-        if not self.enemy_tile and self.algorithm_name != "Expectimax":
-            return
-        remaining = self._enemy_remaining_targets()
-        if not remaining:
-            self.enemy_target = None
-            return
-        self.enemy_target = min(
-            remaining, key=lambda tile: self._heuristic(self.enemy_tile, tile))
 
 
     def _release_conflicting_locks(self):
@@ -4486,67 +4538,40 @@ class FarmAIController:
 
 
     def _resolve_mode6_outcome(self, target):
-        """Apply the sampled MIN/CHANCE outcome to the live farm."""
+        """Resolve MIN directly or sample the CHANCE node at the target."""
         damaged_tile = target
-        outcome_label = "Enemy destroyed crop"
+        outcome_key = "sabotage_success"
+        outcome_label = "Crow destroyed tree"
         sampled_probability = 1.0
 
-        if self.algorithm_name == "Expectimax":
-            outcome_label = self.mode6_chance_event or "Random event"
-            chance_targets = [
-                tile for tile in self.farm_tiles
-                if tile not in self.done_tiles
-                and tile not in self.enemy_done_tiles
-                and tile != self.current_target
-            ]
-            risk_total = sum(
-                self.mode6_crop_profiles.get(
-                    tile,
-                    algorithms.MODE6_TREE_STATUS["healthy"],
-                )["risk"]
-                for tile in chance_targets
-            )
-            sampled_probability = (
-                self.mode6_crop_profiles.get(
-                    target,
-                    algorithms.MODE6_TREE_STATUS["healthy"],
-                )["risk"] / risk_total
-                if target in chance_targets and risk_total > 0
-                else 0.0
-            )
-        elif self.algorithm_name == "Expectiminimax":
-            target_risk = self.mode6_crop_profiles.get(
-                target, algorithms.MODE6_TREE_STATUS["healthy"])["risk"]
-            sabotage_probability = 0.60
-            weather_probability = 0.40 * target_risk
+        if self.algorithm_name in ("Expectimax", "Expectiminimax"):
+            outcomes = algorithms.mode6_chance_outcomes(
+                target, self.mode6_crop_profiles)
             roll = random.random()
-            if roll < sabotage_probability:
-                outcome_label = "Sabotage succeeds"
-                sampled_probability = sabotage_probability
-            elif roll < sabotage_probability + weather_probability:
-                alternatives = [
-                    tile for tile in self._enemy_remaining_targets()
-                    if tile != target
-                ]
-                damaged_tile = (
-                    self._mode6_weighted_target(alternatives)
-                    if alternatives else target)
-                outcome_label = "Weather damage"
-                sampled_probability = weather_probability
-            else:
+            cumulative = 0.0
+            for event_key, probability in outcomes:
+                cumulative += probability
+                if roll <= cumulative:
+                    outcome_key = event_key
+                    sampled_probability = probability
+                    break
+            outcome_label = algorithms.MODE6_CHANCE_LABELS[outcome_key]
+            if outcome_key == "no_damage":
                 damaged_tile = None
-                outcome_label = "No damage"
-                sampled_probability = (
-                    1.0 - sabotage_probability - weather_probability)
+            self.mode6_chance_event = outcome_label
+            self.mode6_chance_probability = sampled_probability
 
         if damaged_tile is not None:
             self.enemy_done_tiles.add(damaged_tile)
             self.message = f"{outcome_label}: {damaged_tile}"
         else:
             self.message = f"Chance node: {outcome_label}"
-        self.mode6_phase = outcome_label
+        self.mode6_phase = (
+            "MODE6_CHANCE"
+            if self.algorithm_name in ("Expectimax", "Expectiminimax")
+            else "MODE6_RESOLVE")
         self._update_mode6_step_hud(
-            phase=outcome_label,
+            phase=self.mode6_phase,
             current=self._world_to_tile(self.player.rect.center),
             next_tile=self.current_target,
         )
@@ -4577,6 +4602,1034 @@ class FarmAIController:
         return path
 
 
+    def _mode6_processed_tiles(self):
+        """All Mode 6 trees already claimed by either actor."""
+        return set(self.done_tiles) | set(self.enemy_done_tiles)
+
+
+    def _mode6_clear_resolved_targets(self):
+        processed = self._mode6_processed_tiles()
+        if not processed:
+            return
+
+        for attr in (
+                "current_target",
+                "enemy_target",
+                "mode6_robot_target",
+                "mode6_enemy_target",
+                "mode6_robot_step_target",
+                "mode6_enemy_step_target",
+                "mode6_pending_target"):
+            if getattr(self, attr, None) in processed:
+                setattr(self, attr, None)
+
+        if self.mode6_robot_repair_tile in processed:
+            self.mode6_robot_repair_tile = None
+            self.mode6_robot_repair_turns = 0
+        if self.mode6_enemy_threat_tile in processed:
+            self.mode6_enemy_threat_tile = None
+            self.mode6_enemy_threat_turns = 0
+        if self.mode6_enemy_forbidden_tile in processed:
+            self.mode6_enemy_forbidden_tile = None
+        if self.mode6_robot_committed_tile in processed:
+            self.mode6_robot_committed_tile = None
+
+        if self.mode6_robot_target is None:
+            self.mode6_robot_path = []
+        if self.mode6_enemy_target is None:
+            self.mode6_enemy_path = []
+
+        for key in (
+                "robot_target",
+                "enemy_target",
+                "enemy_priority_target",
+                "enemy_threat_tile",
+                "robot_repair_tile"):
+            if self.mode6_tree_details.get(key) in processed:
+                self.mode6_tree_details[key] = None
+
+
+    def _mode6_remaining_tiles(self):
+        processed = self._mode6_processed_tiles()
+        return [
+            tile for tile in self.farm_tiles
+            if tile not in processed
+        ]
+
+
+    def _mode6_should_interrupt_repair(self, robot_tile, remaining_set):
+        current = self.mode6_robot_repair_tile
+        if current != robot_tile:
+            return False
+        if self.mode6_robot_repair_turns <= 0:
+            return False
+
+        current_value = self.mode6_crop_profiles.get(
+            current, {}).get("value", 0)
+        enemy_tile = (
+            self._mode6_actor_tile(self.enemy_tile)
+            if self.enemy_tile is not None else None
+        )
+
+        for tile in remaining_set:
+            if tile == current:
+                continue
+
+            value = self.mode6_crop_profiles.get(tile, {}).get("value", 0)
+            if value < current_value + 30:
+                continue
+
+            robot_dist = self._heuristic(robot_tile, tile)
+            enemy_dist = (
+                self._heuristic(enemy_tile, tile)
+                if enemy_tile is not None else 999
+            )
+
+            threatened = tile == self.mode6_enemy_threat_tile
+            if threatened:
+                return True
+            if enemy_dist <= robot_dist + 1:
+                return True
+
+        return False
+
+
+    def _mode6_apply_enemy_contested_retarget(self, enemy_tile, remaining_set):
+        contested = self.mode6_enemy_forbidden_tile
+        if contested is None:
+            return
+        if contested not in remaining_set:
+            self.mode6_enemy_forbidden_tile = None
+            return
+        if enemy_tile != contested:
+            self.mode6_enemy_forbidden_tile = None
+            return
+
+        alternatives = set(remaining_set)
+        alternatives.discard(contested)
+        fallback = self._mode6_progress_action(
+            enemy_tile, alternatives, forbidden_tile=contested)
+        if fallback == "STAY":
+            return
+
+        self.mode6_enemy_action = fallback
+        self.mode6_tree_details["enemy_action"] = fallback
+        self.mode6_tree_details["enemy_target"] = None
+        self.mode6_tree_details["enemy_priority_target"] = None
+        self.mode6_tree_details["enemy_retarget"] = (
+            f"robot contested {contested}; crow picks another tree")
+        if isinstance(self.stats, dict):
+            self.stats["Enemy retarget"] = (
+                f"robot contested {contested}; choose another tree")
+
+
+    def _mode6_apply_stay_claims(self, robot_tile, enemy_tile, remaining_set):
+        robot_claim = self.mode6_robot_repair_tile
+        enemy_claim = self.mode6_enemy_threat_tile
+
+        if robot_claim in remaining_set:
+            enemy_next = self._mode6_apply_action(
+                enemy_tile, self.mode6_enemy_action)
+            if enemy_next == robot_claim and enemy_tile != robot_claim:
+                alternatives = set(remaining_set)
+                alternatives.discard(robot_claim)
+                fallback = self._mode6_progress_action(
+                    enemy_tile, alternatives, forbidden_tile=robot_claim)
+                if fallback != "STAY":
+                    self.mode6_enemy_action = fallback
+                    self.mode6_tree_details["enemy_action"] = fallback
+                    self.mode6_tree_details["enemy_claim_rule"] = (
+                        f"robot already repairing {robot_claim}")
+                    if isinstance(self.stats, dict):
+                        self.stats["Enemy claim rule"] = (
+                            f"avoid robot repairing {robot_claim}")
+
+        if enemy_claim in remaining_set:
+            robot_next = self._mode6_apply_action(
+                robot_tile, self.mode6_robot_action)
+            if robot_next == enemy_claim and robot_tile != enemy_claim:
+                robot_claim_value = self.mode6_crop_profiles.get(
+                    robot_claim, {}).get("value", 0)
+                enemy_claim_value = self.mode6_crop_profiles.get(
+                    enemy_claim, {}).get("value", 0)
+                if (robot_claim in remaining_set
+                        and enemy_claim_value >= robot_claim_value + 30):
+                    return
+                alternatives = set(remaining_set)
+                alternatives.discard(enemy_claim)
+                fallback = self._mode6_progress_action(
+                    robot_tile, alternatives, forbidden_tile=enemy_claim)
+                if fallback != "STAY":
+                    self.mode6_robot_action = fallback
+                    self.mode6_tree_details["robot_action"] = fallback
+                    self.mode6_tree_details["robot_claim_rule"] = (
+                        f"crow already threatening {enemy_claim}")
+                    if isinstance(self.stats, dict):
+                        self.stats["Robot claim rule"] = (
+                            f"avoid crow threatening {enemy_claim}")
+
+
+    def _mode6_golden_tile(self):
+        for tile in self.farm_tiles:
+            if self._condition_for_tile(tile) == "golden":
+                return tile
+        return None
+
+
+    def _mode6_golden_status(self):
+        tile = self._mode6_golden_tile()
+        if tile is None:
+            return "none"
+        if tile in self.done_tiles:
+            return "protected"
+        if tile in self.enemy_done_tiles:
+            return "destroyed"
+        return "remaining"
+
+
+    def _mode6_finish_game(self):
+        self.player.speed = self.mode6_player_base_speed
+        protected_score, destroyed_score = algorithms.mode6_state_scores(
+            self.done_tiles, self.enemy_done_tiles, self.mode6_crop_profiles)
+        final_score = algorithms.evaluate_farm_state(
+            self.farm_tiles, self.done_tiles, self.enemy_done_tiles,
+            self.mode6_crop_profiles)
+        if protected_score > destroyed_score:
+            result = "AGRI-1 thang"
+        elif protected_score < destroyed_score:
+            result = "Qua thang"
+        else:
+            result = "Hoa"
+        self.state = "DONE"
+        self.mode6_phase = "DONE"
+        self.player.direction.update(0, 0)
+        self.message = (
+            f"{result}! Score {final_score:.1f} | "
+            f"Bao ve {protected_score} - Bi pha {destroyed_score}")
+        self._update_mode6_step_hud(phase="DONE")
+
+
+    def _mode6_enter_next_turn(self):
+        self.current_target = None
+        self.enemy_target = None
+        self.path = []
+        self.enemy_path = []
+        self.mode6_pending_actor = None
+        self.mode6_pending_target = None
+        self.mode6_pending_event = None
+        self.mode6_move_total = 0
+        self.mode6_move_done = 0
+        self.mode6_enemy_move_total = 0
+        self.mode6_enemy_move_done = 0
+        self.player.direction.update(0, 0)
+        if self._mode6_remaining_tiles():
+            self.state = "PLAN_STEP"
+            self.mode6_phase = "PLAN_STEP"
+        else:
+            self._mode6_finish_game()
+
+
+    def _mode6_resolve_robot(self, tile):
+        if tile in self.done_tiles or tile in self.enemy_done_tiles:
+            self.message = f"AGRI-1 den {tile}, nhung cay da duoc xu ly"
+        else:
+            self.done_tiles.add(tile)
+            value = self.mode6_crop_profiles.get(tile, {}).get("value", 0)
+            self.message = f"AGRI-1 da sua cay {tile} (+{value})"
+        self.state = "PLAN_STEP"
+        self.mode6_phase = "RESOLVE"
+        self._update_mode6_step_hud(phase="RESOLVE")
+
+
+    def _mode6_resolve_enemy(self, tile):
+        if tile in self.done_tiles or tile in self.enemy_done_tiles:
+            self.message = f"Qua den {tile}, nhung cay da duoc xu ly"
+            self.state = "PLAN_STEP"
+            self.mode6_phase = "RESOLVE"
+            self._update_mode6_step_hud(phase="RESOLVE")
+            return
+        if self.algorithm_name in ("Expectimax", "Expectiminimax"):
+            self.state = "CHANCE"
+            self.mode6_phase = "CHANCE"
+            self.mode6_pending_actor = "enemy"
+            self.mode6_pending_target = tile
+            self.message = f"Qua toi {tile}; kich hoat CHANCE"
+            self._update_mode6_step_hud(phase="CHANCE")
+            return
+        self.enemy_done_tiles.add(tile)
+        value = self.mode6_crop_profiles.get(tile, {}).get("value", 0)
+        self.message = f"Qua da pha cay {tile} (-{value})"
+        self.state = "PLAN_STEP"
+        self.mode6_phase = "RESOLVE"
+        self._update_mode6_step_hud(phase="RESOLVE")
+
+
+    def _mode6_run_chance(self):
+        self.mode6_enemy_threat_tile = None
+        self.mode6_enemy_threat_turns = 0
+        tile = self.mode6_pending_target
+        self.mode6_pending_actor = None
+        self.mode6_pending_target = None
+        if tile is None or tile in self.done_tiles or tile in self.enemy_done_tiles:
+            self.mode6_chance_event = "No damage"
+            self.mode6_chance_probability = 0.0
+            self._update_mode6_step_hud(phase="CHANCE")
+            self._mode6_next_state_or_done()
+            return
+
+        outcomes = algorithms.mode6_chance_outcomes(
+            tile, self.mode6_crop_profiles)
+        roll = random.random()
+        cumulative = 0.0
+        event_key = "no_damage"
+        probability = 0.0
+        for candidate, candidate_probability in outcomes:
+            cumulative += candidate_probability
+            if roll <= cumulative:
+                event_key = candidate
+                probability = candidate_probability
+                break
+        label = algorithms.MODE6_CHANCE_LABELS[event_key]
+        self.mode6_chance_event = label
+        self.mode6_chance_probability = probability
+        if event_key == "no_damage":
+            self.message = f"CHANCE: {label}, cay {tile} van con remaining"
+        else:
+            self.enemy_done_tiles.add(tile)
+            if self.mode6_robot_repair_tile == tile:
+                self.mode6_robot_repair_tile = None
+                self.mode6_robot_repair_turns = 0
+            value = self.mode6_crop_profiles.get(tile, {}).get("value", 0)
+            self.message = f"CHANCE: {label}, cay {tile} bi pha (-{value})"
+        self._mode6_clear_resolved_targets()
+        self._update_mode6_step_hud(phase="CHANCE")
+        self._mode6_next_state_or_done()
+
+
+    def _mode6_move_enemy_step(self, dt):
+        if self.enemy_tile is None or not self.enemy_path:
+            return False
+        next_tile = self.enemy_path[0]
+        ex, ey = self.enemy_tile
+        dx = next_tile[0] - ex
+        dy = next_tile[1] - ey
+        distance = abs(dx) + abs(dy)
+        step = self.player.speed * self.MODE6_ENEMY_SPEED_SCALE / TILE_SIZE * dt
+        if distance <= step:
+            self.enemy_tile = next_tile
+            self.enemy_path.pop(0)
+            self.mode6_enemy_move_done += 1
+            return True
+        if abs(dx) > 0:
+            self.enemy_tile = (ex + (step if dx > 0 else -step), ey)
+        elif abs(dy) > 0:
+            self.enemy_tile = (ex, ey + (step if dy > 0 else -step))
+        return False
+
+
+    def _mode6_actor_tile(self, pos):
+        return int(round(pos[0])), int(round(pos[1]))
+
+
+    def _mode6_walkable_tiles(self):
+        walkable = set(self.walkable_tiles or [])
+        walkable.update(self.farm_tiles)
+        walkable.add(self.spawn_tile)
+        if self.enemy_spawn_tile is not None:
+            walkable.add(self.enemy_spawn_tile)
+        if self.enemy_tile is not None:
+            walkable.add(self._mode6_actor_tile(self.enemy_tile))
+        return walkable
+
+
+    def _mode6_apply_action(self, pos, action):
+        dx, dy = algorithms.MODE6_ACTION_DELTAS.get(action, (0, 0))
+        next_tile = (pos[0] + dx, pos[1] + dy)
+        blocked = self._blocked_tiles(include_hidden=True)
+        walkable = self._mode6_walkable_tiles()
+        if next_tile in walkable and next_tile not in blocked:
+            return next_tile
+        return pos
+
+
+    def _mode6_path_to_target(self, start, target):
+        if target is None:
+            return []
+        if start == target:
+            return []
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        blocked.discard(target)
+
+        # Mode 6 should not route through trees already claimed by either side.
+        # Keep the actor's current tile open so it can leave a resolved tree.
+        resolved = self._mode6_processed_tiles()
+        resolved.discard(start)
+        resolved.discard(target)
+        preferred_blocked = blocked | resolved
+        path, _, _, _ = algorithms.astar(
+            start, target, preferred_blocked, self._neighbors, self._heuristic,
+            self.counter, self._step_cost)
+        if path:
+            return path
+
+        # A resolved row can split the board. Allow crossing it only when no
+        # unresolved-only route exists, while the target itself stays remaining.
+        path, _, _, _ = algorithms.astar(
+            start, target, blocked, self._neighbors, self._heuristic,
+            self.counter, self._step_cost)
+        return path
+
+
+    def _mode6_nearest_reachable_step(self, start, remaining):
+        best = None
+        for tile in remaining:
+            path = self._mode6_path_to_target(start, tile)
+            if path or start == tile:
+                key = (len(path), tile)
+                if best is None or key < best[0]:
+                    best = (key, path, tile)
+        if best is None:
+            return start, None, []
+        _, path, tile = best
+        return (path[0] if path else start), tile, path
+
+
+    def _mode6_retarget_from_ranked(self, start, ranked_targets,
+                                    locked_target, locked_route):
+        remaining = set(self._mode6_remaining_tiles())
+        locked_route = set(locked_route or [])
+        for tile in ranked_targets:
+            if tile == locked_target or tile in locked_route:
+                continue
+            if tile not in remaining:
+                continue
+            path = self._mode6_path_to_target(start, tile)
+            if path or start == tile:
+                return tile, path
+        for tile in ranked_targets:
+            if tile == locked_target or tile not in remaining:
+                continue
+            path = self._mode6_path_to_target(start, tile)
+            if path or start == tile:
+                return tile, path
+        return None, []
+
+
+    def _mode6_apply_target_lock(self, robot_tile, enemy_tile):
+        if self.mode6_robot_target is None or self.mode6_enemy_target is None:
+            return
+        remaining = set(self._mode6_remaining_tiles())
+        if (self.mode6_robot_target not in remaining
+                or self.mode6_enemy_target not in remaining):
+            return
+
+        robot_route = [robot_tile] + list(self.mode6_robot_path)
+        enemy_route = [enemy_tile] + list(self.mode6_enemy_path)
+        robot_route_set = set(robot_route)
+        enemy_route_set = set(enemy_route)
+        same_target = self.mode6_robot_target == self.mode6_enemy_target
+        enemy_target_on_robot_route = self.mode6_enemy_target in robot_route_set
+        robot_target_on_enemy_route = self.mode6_robot_target in enemy_route_set
+        if not (same_target or enemy_target_on_robot_route
+                or robot_target_on_enemy_route):
+            return
+
+        robot_distance = (
+            0 if robot_tile == self.mode6_robot_target
+            else len(self.mode6_robot_path) if self.mode6_robot_path
+            else 10 ** 6)
+        enemy_distance = (
+            0 if enemy_tile == self.mode6_enemy_target
+            else len(self.mode6_enemy_path) if self.mode6_enemy_path
+            else 10 ** 6)
+        if robot_distance >= 10 ** 6 and enemy_distance >= 10 ** 6:
+            return
+
+        robot_keeps = False
+        if same_target:
+            robot_keeps = robot_distance <= enemy_distance
+        elif enemy_target_on_robot_route and not robot_target_on_enemy_route:
+            robot_keeps = True
+        elif robot_target_on_enemy_route and not enemy_target_on_robot_route:
+            robot_keeps = False
+        else:
+            robot_keeps = robot_distance <= enemy_distance
+
+        if robot_keeps:
+            new_target, new_path = self._mode6_retarget_from_ranked(
+                enemy_tile,
+                self.mode6_tree_details.get("enemy_ranked_targets", []),
+                self.mode6_robot_target,
+                robot_route)
+            if new_target is not None:
+                self.mode6_enemy_target = new_target
+                self.mode6_enemy_path = new_path
+                self.mode6_tree_details["target_lock"] = (
+                    f"robot keeps {self.mode6_robot_target}")
+            return
+
+        new_target, new_path = self._mode6_retarget_from_ranked(
+            robot_tile,
+            self.mode6_tree_details.get("robot_ranked_targets", []),
+            self.mode6_enemy_target,
+            enemy_route)
+        if new_target is not None:
+            self.mode6_robot_target = new_target
+            self.mode6_robot_path = new_path
+            self.mode6_tree_details["target_lock"] = (
+                f"enemy keeps {self.mode6_enemy_target}")
+
+
+    def _mode6_action_from_step(self, start, step):
+        dx = step[0] - start[0]
+        dy = step[1] - start[1]
+        for action, delta in algorithms.MODE6_ACTION_DELTAS.items():
+            if delta == (dx, dy):
+                return action
+        return "STAY"
+
+
+    def _mode6_progress_action(self, pos, remaining, forbidden_tile=None):
+        walkable = self._mode6_walkable_tiles()
+        candidates = []
+        for action in ("UP", "DOWN", "LEFT", "RIGHT"):
+            next_tile = self._mode6_apply_action(pos, action)
+            if next_tile == pos or next_tile not in walkable:
+                continue
+            if forbidden_tile is not None and next_tile == forbidden_tile:
+                continue
+            if remaining:
+                nearest = min(
+                    abs(next_tile[0] - tile[0]) + abs(next_tile[1] - tile[1])
+                    for tile in remaining)
+            else:
+                nearest = 0
+            candidates.append((nearest, algorithms.MODE6_ACTIONS.index(action),
+                               action))
+        if not candidates:
+            return "STAY"
+        candidates.sort()
+        return candidates[0][2]
+
+
+    def _mode6_guard_no_progress_actions(self, robot_tile, enemy_tile):
+        remaining = set(self._mode6_remaining_tiles())
+        if not remaining:
+            return
+        if not (
+                self.mode6_robot_action == "STAY"
+                and self.mode6_enemy_action == "STAY"):
+            return
+        if robot_tile in remaining or enemy_tile in remaining:
+            return
+        if enemy_tile == self.mode6_enemy_threat_tile:
+            return
+
+        fallback = self._mode6_progress_action(
+            robot_tile, remaining, forbidden_tile=enemy_tile)
+        if fallback != "STAY":
+            self.mode6_robot_action = fallback
+            self.mode6_tree_details["robot_action"] = fallback
+            self.mode6_tree_details["no_progress_guard"] = "robot fallback"
+            return
+
+        fallback = self._mode6_progress_action(
+            enemy_tile, remaining, forbidden_tile=robot_tile)
+        if fallback != "STAY":
+            self.mode6_enemy_action = fallback
+            self.mode6_tree_details["enemy_action"] = fallback
+            self.mode6_tree_details["no_progress_guard"] = "enemy fallback"
+
+
+    def _mode6_snap_player_to_tile(self, tile):
+        target_world = self._tile_center(tile)
+        self.player.pos.update(target_world)
+        self.player.rect.center = (round(target_world.x), round(target_world.y))
+        self.player.hitbox.center = self.player.rect.center
+        self.player.direction.update(0, 0)
+
+
+    def _mode6_set_player_step_direction(self, delta):
+        if abs(delta.x) > abs(delta.y):
+            direction_x = 1 if delta.x > 0 else -1
+            self.player.direction.update(direction_x, 0)
+            self.player.status = "right" if direction_x > 0 else "left"
+        else:
+            direction_y = 1 if delta.y > 0 else -1
+            self.player.direction.update(0, direction_y)
+            self.player.status = "down" if direction_y > 0 else "up"
+
+
+    def _mode6_step_is_done(self, actor_tile, target):
+        return target is None or target == actor_tile
+
+
+    def _mode6_player_at_target(self, target):
+        if target is None:
+            return True
+        target_world = self._tile_center(target)
+        return (target_world - self.player.pos).length() < 0.75
+
+
+    def _mode6_enemy_at_target(self, target):
+        if self.enemy_tile is None or target is None:
+            return True
+        return (
+            abs(target[0] - self.enemy_tile[0])
+            + abs(target[1] - self.enemy_tile[1])
+        ) < 0.01
+
+
+    def _mode6_move_enemy_to(self, dt, target):
+        if self.enemy_tile is None or target is None:
+            return True
+        ex, ey = self.enemy_tile
+        dx = target[0] - ex
+        dy = target[1] - ey
+        distance = abs(dx) + abs(dy)
+        if distance < 0.01:
+            self.enemy_tile = target
+            return True
+        step = (
+            self.mode6_player_base_speed * self.MODE6_ENEMY_SPEED_SCALE
+            / TILE_SIZE * dt)
+        if distance <= step:
+            self.enemy_tile = target
+            return True
+        if abs(dx) > 0:
+            self.enemy_tile = (ex + (step if dx > 0 else -step), ey)
+        elif abs(dy) > 0:
+            self.enemy_tile = (ex, ey + (step if dy > 0 else -step))
+        return False
+
+
+    def _mode6_move_player_to(self, dt, target):
+        if target is None:
+            self.player.direction.update(0, 0)
+            return True
+        target_world = self._tile_center(target)
+        delta = target_world - self.player.pos
+        distance = delta.length()
+        if distance < 0.75:
+            self._mode6_snap_player_to_tile(target)
+            return True
+
+        self._mode6_set_player_step_direction(delta)
+        step = self.mode6_player_base_speed * self.MODE6_ROBOT_SPEED_SCALE * dt
+        if distance <= step:
+            self._mode6_snap_player_to_tile(target)
+            return True
+
+        if abs(delta.x) > abs(delta.y):
+            self.player.pos.x += step if delta.x > 0 else -step
+        else:
+            self.player.pos.y += step if delta.y > 0 else -step
+        self.player.rect.center = (
+            round(self.player.pos.x), round(self.player.pos.y))
+        self.player.hitbox.center = self.player.rect.center
+        self.player.speed = 0
+        return False
+
+
+    def _mode6_next_state_or_done(self):
+        self._mode6_clear_resolved_targets()
+        if len(self.done_tiles) + len(self.enemy_done_tiles) >= len(self.farm_tiles):
+            self._mode6_finish_game()
+        else:
+            self.mode6_resolve_elapsed = 0.0
+            self.mode6_robot_path = []
+            self.mode6_enemy_path = []
+            self.state = "PLAN_STEP"
+            self.mode6_phase = "PLAN_STEP"
+
+
+    def _update_mode6(self, dt):
+        if not self.is_running:
+            self.player.speed = self.mode6_player_base_speed
+            self.player.direction.update(0, 0)
+            return
+        if self.state == "DONE":
+            self.player.speed = self.mode6_player_base_speed
+            self.player.direction.update(0, 0)
+            self._update_mode6_step_hud(phase="DONE")
+            return
+
+        if self.state in ("PLAN_STEP", "CHOOSE_TARGET"):
+            self._mode6_clear_resolved_targets()
+        remaining = self._mode6_remaining_tiles()
+        if not remaining and self.state not in ("CHANCE", "RESOLVE_STEP"):
+            self._mode6_finish_game()
+            return
+        if (self.algorithm_name == "Expectimax"
+                and self.state not in ("CHANCE", "DONE")):
+            self.mode6_random_chance_elapsed = min(
+                self.MODE6_EXPECTIMAX_CHANCE_INTERVAL,
+                self.mode6_random_chance_elapsed + dt)
+            if (self.mode6_random_chance_elapsed
+                    >= self.MODE6_EXPECTIMAX_CHANCE_INTERVAL
+                    and remaining
+                    and self.state in ("PLAN_STEP", "CHOOSE_TARGET")):
+                self.mode6_random_chance_elapsed = 0.0
+                self.mode6_pending_actor = "chance"
+                self.mode6_pending_target = random.choice(list(remaining))
+                self.state = "CHANCE"
+                self.mode6_phase = "CHANCE"
+                self.message = (
+                    f"CHANCE 5s chon {self.mode6_pending_target}")
+                self._update_mode6_step_hud(phase="CHANCE")
+                return
+
+        if self.state in ("PLAN_STEP", "CHOOSE_TARGET"):
+            self.state = "CHOOSE_TARGET"
+            self.mode6_phase = "CHOOSE_TARGET"
+            self.player.direction.update(0, 0)
+            try:
+                self.mode6_turn += 1
+                self.mode6_chance_event = ""
+                self.mode6_chance_probability = 0.0
+                robot_tile = self._world_to_tile(self.player.rect.center)
+                enemy_tile = self._mode6_actor_tile(self.enemy_tile)
+                self.mode6_robot_step_start = robot_tile
+                self.mode6_enemy_step_start = enemy_tile
+                mode6_walkable = set(self._mode6_walkable_tiles())
+                mode6_walkable -= self._blocked_tiles(include_hidden=True)
+                result = algorithms.adversarial_choose(
+                    self.algorithm_name,
+                    robot_tile,
+                    enemy_tile,
+                    tuple(self.farm_tiles),
+                    frozenset(self.done_tiles),
+                    frozenset(self.enemy_done_tiles),
+                    crop_profiles={
+                        tile: {
+                            **dict(profile),
+                            "condition": self._condition_for_tile(tile),
+                        }
+                        for tile, profile in self.mode6_crop_profiles.items()
+                    },
+                    walkable_tiles=mode6_walkable,
+                    robot_prev=self.mode6_robot_prev_tile,
+                    enemy_prev=self.mode6_enemy_prev_tile,
+                    enemy_threat_tile=self.mode6_enemy_threat_tile,
+                    enemy_threat_turns=self.mode6_enemy_threat_turns,
+                    robot_repair_tile=self.mode6_robot_repair_tile,
+                    robot_repair_turns=self.mode6_robot_repair_turns,
+                )
+            except Exception as error:
+                self.is_running = False
+                self.message = f"Mode 6 search loi: {error}"
+                return
+            (self.mode6_robot_action, self.mode6_enemy_action,
+             self.minimax_value, self.alpha_beta_info, self.stats,
+             self.mode6_tree_details) = result
+            robot_tile = self.mode6_robot_step_start
+            enemy_tile = self.mode6_enemy_step_start
+            remaining_set = set(remaining)
+            if self.algorithm_name == "Expectimax":
+                self.mode6_enemy_action = "STAY"
+                self.mode6_tree_details["enemy_action"] = "CHANCE"
+                self.mode6_tree_details["enemy_target"] = None
+                self.mode6_tree_details["enemy_priority_target"] = None
+                self.mode6_tree_details["enemy_policy"] = "Random Chance"
+                if isinstance(self.stats, dict):
+                    self.stats["Enemy Policy"] = "Random Chance"
+                    self.stats["Enemy Action"] = "CHANCE"
+                    self.stats["MIN action"] = "CHANCE"
+            partial_repair = (
+                robot_tile in remaining_set
+                and self.mode6_robot_repair_tile == robot_tile
+                and self.mode6_robot_repair_turns > 0
+            )
+            if partial_repair:
+                if self._mode6_should_interrupt_repair(
+                        robot_tile, remaining_set):
+                    self.mode6_tree_details["robot_commitment"] = (
+                        "interrupt repair: target value +30")
+                    if isinstance(self.stats, dict):
+                        self.stats["Robot commitment"] = (
+                            "interrupt repair: target value +30")
+                else:
+                    self.mode6_robot_action = "STAY"
+                    self.mode6_tree_details["robot_action"] = "STAY"
+                    self.mode6_tree_details["robot_commitment"] = (
+                        "finish repair: no target +30")
+                    if isinstance(self.stats, dict):
+                        self.stats["Robot commitment"] = (
+                            "finish repair: no target +30")
+            elif self.mode6_robot_committed_tile is not None:
+                self.mode6_robot_committed_tile = None
+            if self.algorithm_name != "Expectimax":
+                self._mode6_apply_enemy_contested_retarget(
+                    enemy_tile, remaining_set)
+                self._mode6_apply_stay_claims(
+                    robot_tile, enemy_tile, remaining_set)
+            self.mode6_robot_step_target = self._mode6_apply_action(
+                robot_tile, self.mode6_robot_action)
+            self.mode6_enemy_step_target = self._mode6_apply_action(
+                enemy_tile, self.mode6_enemy_action)
+            self.mode6_robot_target = self.mode6_robot_step_target
+            self.mode6_enemy_target = self.mode6_enemy_step_target
+            self.mode6_robot_path = (
+                [] if self.mode6_robot_step_target == robot_tile
+                else [self.mode6_robot_step_target])
+            self.mode6_enemy_path = (
+                [] if self.mode6_enemy_step_target == enemy_tile
+                else [self.mode6_enemy_step_target])
+            self.current_target = self.mode6_robot_step_target
+            self.enemy_target = (
+                None if self.algorithm_name == "Expectimax"
+                else self.mode6_enemy_step_target)
+            display_enemy_action = (
+                "CHANCE" if self.algorithm_name == "Expectimax"
+                else self.mode6_enemy_action)
+            self.mode6_tree_details["robot_action"] = self.mode6_robot_action
+            self.mode6_tree_details["enemy_action"] = display_enemy_action
+            self.mode6_tree_details["robot_target"] = self.mode6_robot_target
+            self.mode6_tree_details["enemy_target"] = (
+                None if self.algorithm_name == "Expectimax"
+                else self.mode6_enemy_target)
+            self.mode6_tree_details["robot_path_length"] = len(
+                self.mode6_robot_path)
+            self.mode6_tree_details["enemy_path_length"] = len(
+                self.mode6_enemy_path)
+            if isinstance(self.stats, dict):
+                self.stats["Robot next tile"] = self.mode6_robot_target
+                self.stats["Enemy next tile"] = (
+                    None if self.algorithm_name == "Expectimax"
+                    else self.mode6_enemy_target)
+                if self.algorithm_name == "Expectimax":
+                    self.stats["Enemy Action"] = "CHANCE"
+                    self.stats["MIN action"] = "CHANCE"
+            self.mode6_tree_details["crop_profiles"] = {
+                tile: {
+                    "condition": self._condition_for_tile(tile),
+                    "value": profile["value"],
+                    "risk": profile["risk"],
+                    "state": (
+                        "protected" if tile in self.done_tiles
+                        else "destroyed" if tile in self.enemy_done_tiles
+                        else "remaining"),
+                }
+                for tile, profile in self.mode6_crop_profiles.items()
+            }
+            robot_done = self._mode6_step_is_done(
+                robot_tile, self.mode6_robot_step_target)
+            enemy_done = self._mode6_step_is_done(
+                enemy_tile, self.mode6_enemy_step_target)
+            self.mode6_robot_hold_required = (
+                robot_done
+                and self.mode6_robot_action == "STAY"
+                and robot_tile in remaining_set)
+            self.mode6_enemy_hold_required = (
+                self.algorithm_name != "Expectimax"
+                and enemy_done
+                and self.mode6_enemy_action == "STAY"
+                and enemy_tile in remaining_set
+                and enemy_tile != robot_tile)
+            self.mode6_robot_hold_elapsed = 0.0
+            self.mode6_enemy_hold_elapsed = 0.0
+            self.mode6_move_total = (
+                1 if self.mode6_robot_hold_required
+                else 0 if robot_done else 1)
+            self.mode6_move_done = 0
+            self.mode6_enemy_move_total = (
+                1 if self.mode6_enemy_hold_required
+                else 0 if enemy_done else 1)
+            self.mode6_enemy_move_done = 0
+            self.mode6_resolve_elapsed = 0.0
+            if robot_done:
+                self._mode6_snap_player_to_tile(robot_tile)
+            if enemy_done:
+                self.enemy_tile = enemy_tile
+            if (robot_done and enemy_done
+                    and not self.mode6_robot_hold_required
+                    and not self.mode6_enemy_hold_required):
+                self.state = "RESOLVE_STEP"
+                self.mode6_phase = "RESOLVE_STEP"
+            else:
+                self.state = "MOVE_STEP"
+                self.mode6_phase = "MOVE_STEP"
+            if self.algorithm_name == "Expectimax":
+                self.message = (
+                    f"Target AGRI {self.mode6_robot_target}; "
+                    "CHANCE random")
+            else:
+                self.message = (
+                    f"Target AGRI {self.mode6_robot_target}; "
+                    f"Qua {self.mode6_enemy_target}")
+            self._update_mode6_step_hud(phase=self.mode6_phase)
+            return
+
+        if self.state == "MOVE_STEP":
+            self.mode6_phase = "MOVE_STEP"
+            self.player.speed = (
+                self.mode6_player_base_speed * self.MODE6_ROBOT_SPEED_SCALE)
+            robot_tile = self._world_to_tile(self.player.rect.center)
+            enemy_tile = self._mode6_actor_tile(self.enemy_tile)
+            robot_arrived = self._mode6_player_at_target(
+                self.mode6_robot_step_target)
+            enemy_arrived = self._mode6_enemy_at_target(
+                self.mode6_enemy_step_target)
+            if self.mode6_robot_hold_required:
+                self.mode6_robot_hold_elapsed = min(
+                    self.MODE6_ACTION_TIME,
+                    self.mode6_robot_hold_elapsed + dt)
+                if (self.mode6_robot_hold_elapsed
+                        >= self.MODE6_ACTION_TIME * 0.5):
+                    self.mode6_robot_committed_tile = robot_tile
+                robot_arrived = (
+                    self.mode6_robot_hold_elapsed >= self.MODE6_ACTION_TIME)
+            if self.mode6_enemy_hold_required:
+                self.mode6_enemy_hold_elapsed = min(
+                    self.MODE6_ACTION_TIME,
+                    self.mode6_enemy_hold_elapsed + dt)
+                enemy_arrived = (
+                    self.mode6_enemy_hold_elapsed >= self.MODE6_ACTION_TIME)
+            if robot_arrived and self.mode6_robot_step_target is not None:
+                self._mode6_snap_player_to_tile(
+                    self.mode6_robot_step_target)
+            if enemy_arrived and self.mode6_enemy_step_target is not None:
+                self.enemy_tile = self.mode6_enemy_step_target
+            if self.mode6_robot_step_target is not None:
+                if not robot_arrived and not self.mode6_robot_hold_required:
+                    robot_arrived = self._mode6_move_player_to(
+                        dt, self.mode6_robot_step_target)
+            if self.mode6_enemy_step_target is not None:
+                if not enemy_arrived and not self.mode6_enemy_hold_required:
+                    enemy_arrived = self._mode6_move_enemy_to(
+                        dt, self.mode6_enemy_step_target)
+            if robot_arrived:
+                self.mode6_move_done = self.mode6_move_total
+            if enemy_arrived:
+                self.mode6_enemy_move_done = self.mode6_enemy_move_total
+            if robot_arrived and enemy_arrived:
+                self.player.speed = self.mode6_player_base_speed
+                self.player.direction.update(0, 0)
+                self.mode6_robot_prev_tile = self.mode6_robot_step_start
+                self.mode6_enemy_prev_tile = self.mode6_enemy_step_start
+                self.mode6_pending_actor = None
+                self.mode6_pending_target = None
+                self.mode6_resolve_elapsed = 0.0
+                self.state = "RESOLVE_STEP"
+                self.mode6_phase = "RESOLVE_STEP"
+            self._update_mode6_step_hud(phase=self.mode6_phase)
+            return
+
+        if self.state == "RESOLVE_STEP":
+            self.mode6_phase = "RESOLVE_STEP"
+            robot_tile = self._world_to_tile(self.player.rect.center)
+            enemy_tile = self._mode6_actor_tile(self.enemy_tile)
+            remaining = set(self._mode6_remaining_tiles())
+            resolve_pending = (
+                robot_tile in remaining
+                or (self.algorithm_name != "Expectimax"
+                    and enemy_tile in remaining))
+
+            if resolve_pending and self.mode6_resolve_elapsed < self.MODE6_RESOLVE_TIME:
+                self.mode6_resolve_elapsed = min(
+                    self.MODE6_RESOLVE_TIME,
+                    self.mode6_resolve_elapsed + dt)
+                self.message = (
+                    f"Dang xu ly {self.mode6_resolve_elapsed:.1f}/"
+                    f"{self.MODE6_RESOLVE_TIME:.1f}s")
+                self._update_mode6_step_hud(phase="RESOLVE_STEP")
+                return
+
+            robot_completed = False
+            if robot_tile in remaining:
+                if self.mode6_robot_repair_tile == robot_tile:
+                    self.mode6_robot_repair_turns += 1
+                else:
+                    self.mode6_robot_repair_tile = robot_tile
+                    self.mode6_robot_repair_turns = 1
+                if self.mode6_enemy_threat_tile == robot_tile:
+                    self.mode6_enemy_threat_tile = None
+                    self.mode6_enemy_threat_turns = 0
+                if self.mode6_robot_repair_turns >= 2:
+                    self.done_tiles.add(robot_tile)
+                    remaining.remove(robot_tile)
+                    self.mode6_robot_repair_tile = None
+                    self.mode6_robot_repair_turns = 0
+                    self.mode6_robot_committed_tile = None
+                    robot_completed = True
+                    value = self.mode6_crop_profiles.get(robot_tile, {}).get(
+                        "value", 0)
+                    if self._condition_for_tile(robot_tile) == "golden":
+                        self.message = (
+                            f"AGRI-1 bao ve GOLDEN {robot_tile} (+{value})")
+                    else:
+                        self.message = f"AGRI-1 sua {robot_tile} (+{value})"
+                else:
+                    self.mode6_robot_committed_tile = robot_tile
+                    self.message = f"AGRI-1 dang sua {robot_tile} (1/2)"
+            else:
+                self.mode6_robot_repair_tile = None
+                self.mode6_robot_repair_turns = 0
+                if self.mode6_robot_committed_tile == robot_tile:
+                    self.mode6_robot_committed_tile = None
+
+            if self.algorithm_name == "Expectimax":
+                self.mode6_enemy_threat_tile = None
+                self.mode6_enemy_threat_turns = 0
+            elif enemy_tile in remaining:
+                if enemy_tile == robot_tile:
+                    self.mode6_enemy_forbidden_tile = enemy_tile
+                    self.enemy_target = None
+                    self.mode6_enemy_target = None
+                    self.mode6_enemy_step_target = None
+                    self.mode6_enemy_path = []
+                    self.mode6_enemy_threat_tile = None
+                    self.mode6_enemy_threat_turns = 0
+                    if not robot_completed:
+                        self.message = (
+                            f"AGRI-1 tranh chap {enemy_tile}; "
+                            "qua doi muc tieu khac")
+                else:
+                    if self.mode6_enemy_threat_tile == enemy_tile:
+                        self.mode6_enemy_threat_turns += 1
+                    else:
+                        self.mode6_enemy_threat_tile = enemy_tile
+                        self.mode6_enemy_threat_turns = 1
+                    if self.mode6_enemy_threat_turns >= 2:
+                        if self.algorithm_name in (
+                                "Expectimax", "Expectiminimax"):
+                            self.mode6_pending_actor = "enemy"
+                            self.mode6_pending_target = enemy_tile
+                            self.state = "CHANCE"
+                            self.mode6_phase = "CHANCE"
+                            self.message = f"Qua pha {enemy_tile} (2/2); CHANCE"
+                            self._update_mode6_step_hud(phase="CHANCE")
+                            return
+                        self.enemy_done_tiles.add(enemy_tile)
+                        if self.mode6_robot_repair_tile == enemy_tile:
+                            self.mode6_robot_repair_tile = None
+                            self.mode6_robot_repair_turns = 0
+                        value = self.mode6_crop_profiles.get(enemy_tile, {}).get(
+                            "value", 0)
+                        if self._condition_for_tile(enemy_tile) == "golden":
+                            self.message = (
+                                f"Qua pha GOLDEN {enemy_tile} (-{value})")
+                        else:
+                            self.message = f"Qua pha {enemy_tile} (-{value})"
+                        self.mode6_enemy_threat_tile = None
+                        self.mode6_enemy_threat_turns = 0
+                    elif not robot_completed:
+                        self.message = f"Qua dang pha {enemy_tile} (1/2)"
+            else:
+                self.mode6_enemy_threat_tile = None
+                self.mode6_enemy_threat_turns = 0
+
+            self._mode6_clear_resolved_targets()
+            self._update_mode6_step_hud(phase="RESOLVE_STEP")
+            self._mode6_next_state_or_done()
+            return
+
+        if self.state == "CHANCE":
+            self._mode6_run_chance()
+            return
+
+
     def _move_enemy_towards(self, dt):
         """Di chuyá»ƒn enemy dáº§n dáº§n tá»›i target."""
         if not self.enemy_tile:
@@ -4592,6 +5645,9 @@ class FarmAIController:
         target = self.enemy_target or self.enemy_retreat_target
         if not target:
             return
+        enemy_phase = (
+            "MODE6_CHANCE" if self.algorithm_name in (
+                "Expectimax", "Expectiminimax") else "MODE6_MOVE")
 
         if self.enemy_destroy_until:
             if not self._enemy_is_destroying() and self.enemy_target:
@@ -4618,7 +5674,11 @@ class FarmAIController:
             self.enemy_destroy_until = (
                 pygame.time.get_ticks() + int(self.ENEMY_DESTROY_TIME * 1000))
             self._update_mode6_step_hud(
-                phase=f"Crow attack {target}",
+                phase=(
+                    "MODE6_CHANCE"
+                    if self.algorithm_name in (
+                        "Expectimax", "Expectiminimax")
+                    else "MODE6_RESOLVE"),
                 current=self._world_to_tile(self.player.rect.center),
                 next_tile=self.current_target,
             )
@@ -4627,6 +5687,13 @@ class FarmAIController:
         if not self.enemy_path or self.enemy_path[-1] != target:
             self.enemy_path = self._plan_enemy_path(target)
             if not self.enemy_path:
+                self.enemy_target = None
+                self.mode6_phase = "PLAN_STEP"
+                self.message = f"Qua khong co duong toi {target}"
+                self._update_mode6_step_hud(
+                    phase=self.mode6_phase,
+                    current=self._world_to_tile(self.player.rect.center),
+                    next_tile=self.current_target)
                 return
 
         next_tile = self.enemy_path[0]
@@ -4647,7 +5714,7 @@ class FarmAIController:
             current = self._world_to_tile(self.player.rect.center)
             player_next = self.path[0] if self.path else self.current_target
             self._update_mode6_step_hud(
-                phase=f"Crow move {self.mode6_enemy_move_done}",
+                phase="MODE6_MOVE",
                 current=current,
                 next_tile=player_next,
             )
@@ -4916,8 +5983,6 @@ class FarmAIController:
     def _choose_target(self, remaining, start):
         if self.mode == 3:
             return self._local_search_choose(remaining, start)
-        if self.mode == 6:
-            return self._adversarial_choose(remaining, start)
         if self.mode == 4:
             return self._choose_mode4_target(remaining, start)
         if self.mode == 1:
@@ -4972,6 +6037,10 @@ class FarmAIController:
     def update(self, dt):
         if self.mode == 4:
             self.fog_time += dt
+
+        if self.mode == 6:
+            self._update_mode6(dt)
+            return
 
         if not self.is_running:
             self.player.direction.update(0, 0)
@@ -5091,14 +6160,26 @@ class FarmAIController:
                 done_count = len(self.done_tiles)
                 enemy_count = len(self.enemy_done_tiles)
                 if self.mode == 6:
+                    protected_score, destroyed_score = (
+                        algorithms.mode6_state_scores(
+                            self.done_tiles, self.enemy_done_tiles,
+                            self.mode6_crop_profiles))
+                    if protected_score > destroyed_score:
+                        result = "AGRI-1 thang"
+                    elif protected_score < destroyed_score:
+                        result = "Qua thang"
+                    else:
+                        result = "Hoa"
+                    self.mode6_phase = "DONE"
                     if self.enemy_tile:
                         enemy_tile = (
                             int(round(self.enemy_tile[0])),
                             int(round(self.enemy_tile[1])))
                         self.enemy_retreat_target = self._enemy_retreat_tile(enemy_tile)
                     self.message = (
-                        f"Ket thuc! Player: {done_count}, "
-                        f"Enemy: {enemy_count} o")
+                        f"{result}! Bao ve {protected_score} - "
+                        f"Bi pha {destroyed_score}")
+                    self._update_mode6_step_hud(phase="DONE")
                 else:
                     self.message = (
                         f"Hoan thanh khu {self.mode}: "
@@ -5164,6 +6245,27 @@ class FarmAIController:
                 self.chosen_target_path = None
             else:
                 self.path = self._path_for_mode(start, target)
+            if self.mode == 6:
+                self.mode6_phase = "PLAN_STEP"
+                if (self.path
+                        and not self._path_is_contiguous(start, self.path)):
+                    self.path = []
+                if self.enemy_target is not None:
+                    enemy_start = (
+                        int(round(self.enemy_tile[0])),
+                        int(round(self.enemy_tile[1])))
+                    self.enemy_path = self._plan_enemy_path(
+                        self.enemy_target)
+                    enemy_at_target = enemy_start == self.enemy_target
+                    enemy_path_valid = (
+                        not self.enemy_path
+                        or self._path_is_contiguous(
+                            enemy_start, self.enemy_path))
+                    if (not enemy_path_valid
+                            or (not self.enemy_path
+                                and not enemy_at_target)):
+                        self.enemy_target = None
+                        self.enemy_path = []
             if self.mode == 1 and self.algorithm_name == "UCS":
                 self.mode1_ucs_current_leg_length = len(self.path)
                 self.mode1_ucs_current_leg_extra_cost = (
@@ -5208,6 +6310,19 @@ class FarmAIController:
                         f"re-plan (lan {self.replan_count})")
                     self.wait_time = 0.1
                     return
+                if self.mode == 6:
+                    self.discovered_blocked.add(target)
+                    self.current_target = None
+                    self.path = []
+                    self.state = "CHOOSE_TARGET"
+                    self.mode6_phase = "PLAN_STEP"
+                    self.message = (
+                        f"AGRI-1 khong co duong toi {target}; "
+                        "khong bao ve ao")
+                    self._update_mode6_step_hud(
+                        phase=self.mode6_phase, current=start,
+                        next_tile=None)
+                    return
                 self.done_tiles.add(target)
                 if self.mode == 2 and target == self.mode2_current_leg_target:
                     self.mode2_current_leg_g = 0
@@ -5224,7 +6339,7 @@ class FarmAIController:
                 self.mode6_move_total = len(self.path)
                 self.mode6_move_done = 0
                 self._update_mode6_step_hud(
-                    phase=f"Move 0/{self.mode6_move_total}",
+                    phase="MODE6_MOVE",
                     current=start,
                     next_tile=self.path[0] if self.path else target,
                 )
@@ -5355,8 +6470,7 @@ class FarmAIController:
                     self.mode6_move_done += 1
                     self._update_mode6_step_hud(
                         phase=(
-                            f"Move {self.mode6_move_done}/"
-                            f"{self.mode6_move_total}"),
+                            "MODE6_MOVE"),
                         current=next_tile,
                         next_tile=(
                             self.path[0] if self.path
@@ -5404,7 +6518,7 @@ class FarmAIController:
 
         if self.state == "FIX_CROW":
             self._update_mode6_step_hud(
-                phase=f"FIX {action_tile}",
+                phase="MODE6_RESOLVE",
                 current=action_tile,
                 next_tile=action_tile,
             )
@@ -5513,16 +6627,26 @@ class FarmAIController:
         sy = int(world.y - offset.y)
         marker = pygame.Surface((TILE_SIZE - 10, TILE_SIZE - 10),
                                 pygame.SRCALPHA)
-        pygame.draw.rect(marker, Colors.TASK_MARKER_FILL, marker.get_rect(),
+        is_mode6_protected = self.mode == 6 and tile in self.done_tiles
+        fill_color = (
+            (55, 190, 90, 105)
+            if is_mode6_protected else Colors.TASK_MARKER_FILL)
+        border_color = (
+            (75, 235, 115)
+            if is_mode6_protected else Colors.TASK_MARKER_BORDER)
+        corner_color = (
+            (120, 255, 145)
+            if is_mode6_protected else Colors.TASK_MARKER_CORNER)
+        pygame.draw.rect(marker, fill_color, marker.get_rect(),
                          border_radius=6)
         surface.blit(marker, (sx - TILE_SIZE // 2 + 5,
                               sy - TILE_SIZE // 2 + 5))
         rect = pygame.Rect(0, 0, TILE_SIZE - 10, TILE_SIZE - 10)
         rect.center = (sx, sy)
-        pygame.draw.rect(surface, Colors.TASK_MARKER_BORDER, rect, 1,
+        pygame.draw.rect(surface, border_color, rect, 2 if is_mode6_protected else 1,
                          border_radius=5)
         corner = 10
-        color = Colors.TASK_MARKER_CORNER
+        color = corner_color
         pygame.draw.line(surface, color, rect.topleft, (rect.left + corner, rect.top), 2)
         pygame.draw.line(surface, color, rect.topleft, (rect.left, rect.top + corner), 2)
         pygame.draw.line(surface, color, rect.topright, (rect.right - corner, rect.top), 2)
@@ -5535,7 +6659,6 @@ class FarmAIController:
 
     def _draw_map_overlays(self, surface, offset):
         """Váº½ thĂ´ng tin thuáº­t toĂ¡n lĂªn map (explored nodes, scores, fog, enemy...)."""
-
         for tile in self.farm_tiles:
             if self.mode == 4 and tile not in self.explored_tiles:
                 continue
@@ -5544,6 +6667,10 @@ class FarmAIController:
         if self.mode in (1, 2, 3, 4, 6):
             for tile in self.farm_tiles:
                 if tile in self.enemy_done_tiles:
+                    if self.mode == 6:
+                        self._blit_tile_asset(
+                            surface, offset, tile,
+                            "crow_wilted_plant", y_offset=-6)
                     continue
                 if self.mode == 4 and tile in self.hidden_blocked:
                     continue
@@ -5553,39 +6680,34 @@ class FarmAIController:
                     self._draw_resolved_asset(surface, offset, tile)
                     continue
                 condition = self._condition_for_tile(tile)
-                asset_key = self._condition_asset(condition)
+                asset_key = (
+                    self._mode6_condition_asset(condition)
+                    if self.mode == 6 else self._condition_asset(condition))
                 if asset_key is not None:
                     self._blit_tile_asset(
                         surface, offset, tile, asset_key, y_offset=-6)
-                if condition == "disease":
-                    self._blit_tile_asset(surface, offset, tile, "worm", y_offset=2)
                 if condition == "pest":
-                    self._blit_tile_asset(surface, offset, tile, "worm", y_offset=2)
-                if self.mode == 6 and condition == "critical":
+                    worm_offset = -10 if self.mode == 6 else 2
+                    self._blit_tile_asset(
+                        surface, offset, tile, "worm", y_offset=worm_offset)
+                if False and self.mode == 6:
+                    profile = self.mode6_crop_profiles.get(
+                        tile, algorithms.MODE6_TREE_STATUS["dry"])
+                    status_code = {
+                        "dry": "D",
+                        "dead": "X",
+                        "pest": "P",
+                        "critical": "C",
+                    }.get(condition, "?")
+                    label = pygame.font.Font(None, 1).render(
+                        f"{status_code} V{profile['value']} "
+                        f"R{profile['risk'] * 100:.0f}",
+                        True, Colors.TEXT_PRIMARY)
                     world = self._tile_center(tile)
-                    cx = int(world.x - offset.x)
-                    cy = int(world.y - offset.y - 6)
-                    pulse = (math.sin(pygame.time.get_ticks() * 0.008) + 1) / 2
-                    radius = int(19 + pulse * 7)
-                    alpha = int(85 + pulse * 95)
-                    warning = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-                    center = (TILE_SIZE // 2, TILE_SIZE // 2 - 6)
-                    pygame.draw.circle(
-                        warning, (255, 55, 45, alpha), center, radius, 3)
-                    pygame.draw.circle(
-                        warning, (255, 180, 40, max(45, alpha // 2)),
-                        center, max(8, radius - 8), 2)
-                    surface.blit(
-                        warning,
-                        (cx - TILE_SIZE // 2, cy - TILE_SIZE // 2 + 6),
-                    )
-                    self._blit_tile_asset(surface, offset, tile, "storm_debris", y_offset=8)
-                if self.mode == 6 and condition == "rare":
-                    world = self._tile_center(tile)
-                    cx = int(world.x - offset.x)
-                    cy = int(world.y - offset.y - 6)
-                    pygame.draw.circle(
-                        surface, (255, 215, 70), (cx, cy), 24, 3)
+                    label_rect = label.get_rect(
+                        center=(int(world.x - offset.x),
+                                int(world.y - offset.y + 22)))
+                    surface.blit(label, label_rect)
 
         # --- Mode 1: BFS explored nodes (xanh dÆ°Æ¡ng nháº¡t) ---
         if self.mode == 1 and self.bfs_explored:
@@ -5898,9 +7020,6 @@ class FarmAIController:
                                 int(w.y - offset.y))
                 pygame.draw.rect(surface, Colors.ENEMY_FALLBACK, rect, 3,
                                  border_radius=4)
-                original_condition = self._condition_for_tile(tile)
-                asset_key = self._condition_asset(original_condition)
-                self._blit_tile_asset(surface, offset, tile, asset_key, y_offset=-6)
 
         if self.mode == 6 and self.algorithm_name == "Expectimax":
             if self.enemy_target:
@@ -5915,8 +7034,6 @@ class FarmAIController:
                 rect.center = (int(w.x - offset.x), int(w.y - offset.y))
                 pygame.draw.rect(surface, Colors.ENEMY_FALLBACK, rect, 3,
                                  border_radius=4)
-                self._blit_tile_asset(
-                    surface, offset, tile, "storm_damaged_plant", y_offset=-6)
 
         # --- ÄÆ°á»ng Ä‘i chung (vĂ ng) ---
         if self.path:
@@ -6173,17 +7290,20 @@ class FarmAIController:
             y += 18
 
         if self.mode == 6:
+            protected_score, destroyed_score = algorithms.mode6_state_scores(
+                self.done_tiles, self.enemy_done_tiles,
+                self.mode6_crop_profiles)
             y = draw_text(
                 f"Da sua: {objective['completed']} | "
                 f"Bi pha huy: {objective['lost']} | "
                 f"Con lai: {objective['remaining']}",
                 x, y, Colors.TEXT_WARNING, font_small)
             node_flow = {
-                "Minimax": "MAX -> MIN",
-                "Alpha-Beta": "MAX -> MIN + pruning",
+                "Minimax": "MAX -> GREEDY",
+                "Alpha-Beta": "MAX -> GREEDY + pruning",
                 "Expectimax": "MAX -> CHANCE",
-                "Expectiminimax": "MAX -> MIN -> CHANCE",
-            }.get(self.algorithm_name, "MAX -> MIN")
+                "Expectiminimax": "MAX -> GREEDY -> CHANCE",
+            }.get(self.algorithm_name, "MAX -> GREEDY")
             y = draw_text(f"Luot {self.mode6_turn}: {self.mode6_phase}",
                           x, y, Colors.TEXT_STAT, font_small)
             y = draw_text(
@@ -6191,47 +7311,83 @@ class FarmAIController:
                 f" | Qua: {self.mode6_enemy_move_done}/"
                 f"{self.mode6_enemy_move_total}",
                 x, y, Colors.TEXT_STAT, font_small)
+            if (self.mode6_robot_repair_tile is not None
+                    or self.mode6_enemy_threat_tile is not None):
+                repair_text = (
+                    f"Repair: {self.mode6_robot_repair_tile} "
+                    f"({self.mode6_robot_repair_turns}/2)"
+                    if self.mode6_robot_repair_tile is not None
+                    else "Repair: -")
+                threat_text = (
+                    f"Threat: {self.mode6_enemy_threat_tile} "
+                    f"({self.mode6_enemy_threat_turns}/2)"
+                    if self.mode6_enemy_threat_tile is not None
+                    else "Threat: -")
+                y = draw_text(
+                    f"{repair_text} | {threat_text}",
+                    x, y, Colors.TEXT_WARNING, font_small)
             y = draw_text(f"Mo hinh: {node_flow}",
                           x, y, Colors.TEXT_STAT, font_small)
-            y = draw_text("Eval = value_song - 1.5*value_pha + 0.5*value_sua",
+            y = draw_text(
+                f"Diem bao ve: {protected_score} | "
+                f"Diem bi pha: {destroyed_score}",
+                x, y, Colors.TEXT_SUCCESS, font_small)
+            y = draw_text("Evaluation = protected_score - destroyed_score",
                           x, y, Colors.TEXT_MUTED, font_small)
             y = draw_text(
-                "Hinh cay: xanh=khoe | vang=kho | do+sau=benh",
+                "Trang thai: dry / critical / pest / dead",
                 x, y, Colors.TEXT_MUTED, font_small)
             y = draw_text(
-                "vo+debris=nguy cap | vong vang=hiem | sau=sau hai",
+                "Moi luot chi di 1 action: UP/DOWN/LEFT/RIGHT/STAY",
                 x, y, Colors.TEXT_MUTED, font_small)
-            y = draw_text(
-                "Diem/rui ro: khoe 5/10 | kho 10/20 | benh 20/40",
-                x, y, Colors.TEXT_MUTED, font_small)
-            y = draw_text(
-                "nguy cap 30/70 | hiem 50/50",
-                x, y, Colors.TEXT_MUTED, font_small)
-            best_move = self.mode6_tree_details.get("best_move")
-            response = self.mode6_tree_details.get("response")
+            robot_action = self.mode6_tree_details.get(
+                "robot_action", self.mode6_robot_action)
+            enemy_action = self.mode6_tree_details.get(
+                "enemy_action", self.mode6_enemy_action)
+            robot_target = self.mode6_tree_details.get(
+                "robot_target", self.mode6_robot_target)
+            enemy_target = self.mode6_tree_details.get(
+                "enemy_priority_target",
+                self.mode6_tree_details.get(
+                    "enemy_target", self.mode6_enemy_target))
+            robot_path_length = self.mode6_tree_details.get(
+                "robot_path_length", len(self.mode6_robot_path))
+            enemy_path_length = self.mode6_tree_details.get(
+                "enemy_path_length", len(self.mode6_enemy_path))
             depth = self.mode6_tree_details.get(
                 "depth", algorithms.MODE6_SEARCH_DEPTH)
-            best_profile = self.mode6_crop_profiles.get(best_move, {})
-            best_condition = (
-                self._condition_for_tile(best_move)
-                if best_move is not None else "-")
-            if best_profile:
-                y = draw_text(
-                    f"Best status: {best_condition} | "
-                    f"Value {best_profile['value']} | "
-                    f"Risk {best_profile['risk'] * 100:.0f}%",
-                    x, y, Colors.TEXT_SUCCESS, font_small)
+            enemy_label = (
+                "Random Chance" if self.algorithm_name == "Expectimax"
+                else "Greedy Saboteur")
+            y = draw_text(
+                f"Robot: {self.algorithm_name} | Enemy: {enemy_label}",
+                x, y, Colors.TEXT_STAT, font_small)
+            target_text = (
+                f"Next AGRI: {robot_target} | Random tree damage"
+                if self.algorithm_name == "Expectimax"
+                else f"Next AGRI: {robot_target} | Enemy target: {enemy_target}")
+            y = draw_text(target_text, x, y, Colors.TEXT_PRIMARY, font_small)
+            action_text = (
+                f"Next AGRI: {robot_action} ({robot_path_length}) | "
+                "Chance: random"
+                if self.algorithm_name == "Expectimax"
+                else f"Next AGRI: {robot_action} ({robot_path_length}) | "
+                     f"Qua: {enemy_action} ({enemy_path_length})")
+            y = draw_text(action_text, x, y, Colors.TEXT_STAT, font_small)
+            y = draw_text(
+                f"Golden: {self._mode6_golden_status()}",
+                x, y, (255, 218, 70), font_small)
             if self.algorithm_name == "Minimax":
                 y = draw_text(
-                    f"Depth: {depth} | Best: {best_move}",
+                    f"Depth: {depth} | MAX action: {robot_action}",
                     x, y, Colors.TEXT_PRIMARY, font_small)
                 y = draw_text(
-                    f"MIN move: {response} | Utility: {self.minimax_value:.1f}",
+                    f"Enemy action: {enemy_action} | Eval: {self.minimax_value:.1f}",
                     x, y, Colors.TEXT_SUCCESS, font_small)
             elif self.algorithm_name == "Alpha-Beta":
                 y = draw_text(
-                    f"Depth: {depth} | Best: {best_move}"
-                    f" | Utility: {self.minimax_value:.1f}",
+                    f"Depth: {depth} | MAX action: {robot_action}"
+                    f" | Eval: {self.minimax_value:.1f}",
                     x, y, Colors.TEXT_PRIMARY, font_small)
                 y = draw_text(
                     f"Alpha: {self.alpha_beta_info['alpha']} | "
@@ -6240,8 +7396,12 @@ class FarmAIController:
                     x, y, (255, 120, 120), font_small)
             elif self.algorithm_name == "Expectimax":
                 y = draw_text(
-                    f"Depth: {depth} | Best: {best_move}",
+                    f"Depth: {depth} | MAX action: {robot_action}",
                     x, y, Colors.TEXT_PRIMARY, font_small)
+                y = draw_text(
+                    f"Chance timer: {self.mode6_random_chance_elapsed:.1f}/"
+                    f"{self.MODE6_EXPECTIMAX_CHANCE_INTERVAL:.1f}s",
+                    x, y, Colors.TEXT_STAT, font_small)
                 y = draw_text(
                     f"EV: {self.minimax_value:.1f} | "
                     f"{self.mode6_chance_event}: "
@@ -6249,11 +7409,25 @@ class FarmAIController:
                     x, y, Colors.TEXT_WARNING, font_small)
             else:
                 y = draw_text(
-                    f"MAX: {best_move} | MIN: {response}",
+                    f"MAX action: {robot_action} | Enemy action: {enemy_action}",
                     x, y, Colors.TEXT_PRIMARY, font_small)
                 y = draw_text(
                     f"Expected: {self.minimax_value:.1f} | "
-                    "Chance 70/20/10",
+                    f"{self.mode6_chance_event}: "
+                    f"{self.mode6_chance_probability * 100:.0f}%",
+                    x, y, Colors.TEXT_WARNING, font_small)
+            y = draw_text(
+                f"Nodes evaluated: {self.stats.get('Nodes evaluated', 0)}",
+                x, y, Colors.TEXT_STAT, font_small)
+            y = draw_text(
+                f"MAX: {self.stats.get('MAX nodes', 0)} | "
+                f"MIN: {self.stats.get('MIN nodes', 0)} | "
+                f"CHANCE: {self.stats.get('CHANCE nodes', 0)}",
+                x, y, Colors.TEXT_STAT, font_small)
+            if self.mode6_enemy_threat_tile is not None:
+                y = draw_text(
+                    f"Threatened: {self.mode6_enemy_threat_tile} "
+                    f"({self.mode6_enemy_threat_turns}/2)",
                     x, y, Colors.TEXT_WARNING, font_small)
             destroy_remaining = self._enemy_destroy_remaining()
             if destroy_remaining > 0:

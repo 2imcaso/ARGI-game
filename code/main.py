@@ -46,7 +46,7 @@ class Game:
             3: "Khu 3 - Vuon cay phia dong",
             4: "Khu 4 - Bai dat suong mu",
             5: "Khu 5 - O quy hoach trung tam",
-            6: "Khu 6 - Hang cay can bao ve",
+            6: "Khu 6 - Dau truong bao ve vuon",
         }
         area_name = area_names.get(mode, "Khu " + str(mode))
         pygame.display.set_caption(

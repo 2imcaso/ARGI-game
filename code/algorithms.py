@@ -1974,439 +1974,918 @@ def solve_csp_crop_plan(farm_tiles, algorithm="Backtrack"):
     return result or {}, steps, stats
 
 
-MODE6_SEARCH_DEPTH = 4
-MODE6_MAX_BRANCHING = 7
+MODE6_SEARCH_DEPTH = 6
 MODE6_TREE_STATUS = {
-    "healthy": {"value": 5, "risk": 0.10},
-    "dry": {"value": 10, "risk": 0.20},
-    "disease": {"value": 20, "risk": 0.40},
-    "critical": {"value": 30, "risk": 0.70},
-    "rare": {"value": 50, "risk": 0.50},
+    "dry": {"value": 20, "risk": 0.20},
+    "dead": {"value": 10, "risk": 0.30},
+    "pest": {"value": 30, "risk": 0.40},
+    "critical": {"value": 50, "risk": 0.70},
+    "golden": {"value": 100, "risk": 0.90},
 }
-EXPECTIMAX_EVENTS = (
-    ("Pest", 0.40),
-    ("Hail", 0.35),
-    ("Drought", 0.25),
-)
-EXPECTIMINIMAX_OUTCOMES = (
-    ("Sabotage succeeds", 0.70),
-    ("Weather damage", 0.20),
-    ("No damage", 0.10),
-)
+MODE6_ACTIONS = ("UP", "DOWN", "LEFT", "RIGHT", "STAY")
+MODE6_ACTION_DELTAS = {
+    "UP": (0, -1),
+    "DOWN": (0, 1),
+    "LEFT": (-1, 0),
+    "RIGHT": (1, 0),
+    "STAY": (0, 0),
+}
+MODE6_CHANCE_LABELS = {
+    "sabotage_success": "Sabotage success",
+    "weather_damage": "Weather damage",
+    "no_damage": "No damage",
+}
 
 
 def _crop_value(tile, crop_profiles):
-    return crop_profiles.get(tile, MODE6_TREE_STATUS["healthy"])["value"]
+    return crop_profiles.get(tile, MODE6_TREE_STATUS["dry"])["value"]
 
 
 def _crop_risk(tile, crop_profiles):
-    return crop_profiles.get(tile, MODE6_TREE_STATUS["healthy"])["risk"]
+    return crop_profiles.get(tile, MODE6_TREE_STATUS["dry"])["risk"]
+
+
+def mode6_chance_outcomes(tile, crop_profiles=None):
+    crop_profiles = crop_profiles or {}
+    risk = min(1.0, max(0.0, _crop_risk(tile, crop_profiles)))
+    weather = (1.0 - risk) * 0.20
+    no_damage = 1.0 - risk - weather
+    return (
+        ("sabotage_success", risk),
+        ("weather_damage", weather),
+        ("no_damage", no_damage),
+    )
+
+
+def mode6_state_scores(protected, destroyed, crop_profiles=None):
+    crop_profiles = crop_profiles or {}
+    protected_score = sum(_crop_value(tile, crop_profiles) for tile in protected)
+    destroyed_score = sum(_crop_value(tile, crop_profiles) for tile in destroyed)
+    return protected_score, destroyed_score
 
 
 def evaluate_farm_state(all_crops, protected, destroyed, crop_profiles=None):
-    """Shared evaluation for every Mode-6 game-tree algorithm."""
-    crop_profiles = crop_profiles or {}
-    living = set(all_crops) - set(destroyed)
-    living_value = sum(_crop_value(tile, crop_profiles) for tile in living)
-    destroyed_value = sum(
-        _crop_value(tile, crop_profiles) for tile in destroyed)
-    fixed_bonus = sum(
-        0.5 * _crop_value(tile, crop_profiles) for tile in protected)
-    return living_value - 1.5 * destroyed_value + fixed_bonus
+    protected_score, destroyed_score = mode6_state_scores(
+        protected, destroyed, crop_profiles)
+    return protected_score - destroyed_score
 
 
-def _mode6_actions(all_crops, protected, destroyed, crop_profiles=None):
-    actions = sorted(set(all_crops) - set(protected) - set(destroyed))
-    if len(actions) <= MODE6_MAX_BRANCHING:
-        return actions
-    crop_profiles = crop_profiles or {}
+def _mode6_manhattan(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _mode6_pressure(pos, remaining, crop_profiles):
+    if not remaining:
+        return 0.0
+    return max(
+        _crop_value(tile, crop_profiles) / (_mode6_manhattan(pos, tile) + 1)
+        for tile in remaining)
+
+
+def _mode6_nearest_distance(pos, remaining):
+    if not remaining:
+        return 0
+    return min(_mode6_manhattan(pos, tile) for tile in remaining)
+
+
+def _mode6_positional_evaluation(robot_pos, enemy_pos, all_crops, protected,
+                                 destroyed, crop_profiles,
+                                 enemy_threat_tile=None,
+                                 enemy_threat_turns=0,
+                                 robot_repair_tile=None,
+                                 robot_repair_turns=0,
+                                 enemy_active=True):
+    score = evaluate_farm_state(all_crops, protected, destroyed, crop_profiles)
+    remaining = _mode6_remaining(all_crops, protected, destroyed)
+    if not remaining:
+        return score
+
+    robot_potential = _mode6_pressure(robot_pos, remaining, crop_profiles)
+    enemy_threat = (
+        _mode6_pressure(enemy_pos, remaining, crop_profiles)
+        if enemy_active else 0.0)
+    score += 0.2 * robot_potential - 0.2 * enemy_threat
+
+    if enemy_active and enemy_threat_tile in remaining:
+        threat_value = _crop_value(enemy_threat_tile, crop_profiles)
+        robot_distance = _mode6_manhattan(robot_pos, enemy_threat_tile)
+        enemy_distance = _mode6_manhattan(enemy_pos, enemy_threat_tile)
+        urgency = 1.0 + 0.8 * max(0, enemy_threat_turns)
+
+        if robot_pos == enemy_threat_tile:
+            score += 4.0 * threat_value * urgency
+        else:
+            score += (
+                max(0, 5 - robot_distance)
+                * 0.9 * threat_value * urgency)
+
+        if enemy_pos == enemy_threat_tile:
+            score -= 3.0 * threat_value * urgency
+        else:
+            score -= (
+                max(0, 3 - enemy_distance)
+                * 0.7 * threat_value * urgency)
+
+    if robot_repair_tile in remaining:
+        repair_value = _crop_value(robot_repair_tile, crop_profiles)
+        if robot_pos == robot_repair_tile:
+            score += repair_value * (1.0 + robot_repair_turns)
+
+    return score
+
+
+def _mode6_move(pos, action):
+    dx, dy = MODE6_ACTION_DELTAS[action]
+    return pos[0] + dx, pos[1] + dy
+
+
+def _mode6_legal_actions(pos, walkable_tiles):
+    actions = ["STAY"]
+    for action in ("UP", "DOWN", "LEFT", "RIGHT"):
+        next_pos = _mode6_move(pos, action)
+        if next_pos in walkable_tiles:
+            actions.append(action)
+    return actions
+
+
+def _mode6_action_score(pos, action, remaining, crop_profiles, avoid_pos=None,
+                        resolved=None, priority_tile=None):
+    next_pos = _mode6_move(pos, action)
+    if priority_tile in remaining:
+        priority_value = _crop_value(priority_tile, crop_profiles)
+        priority_score = (
+            max(0, 6 - _mode6_manhattan(next_pos, priority_tile))
+            * priority_value)
+        if next_pos == priority_tile:
+            priority_score += 5.0 * priority_value
+    else:
+        priority_score = 0.0
+    if next_pos in remaining:
+        return 2.0 * _crop_value(next_pos, crop_profiles) + priority_score
+    if action == "STAY":
+        return -5.0 + priority_score
+    if not remaining:
+        return 0.0
+    score = (
+        2.0 * _mode6_pressure(next_pos, remaining, crop_profiles)
+        - _mode6_nearest_distance(next_pos, remaining)
+        + priority_score
+    )
+    if avoid_pos is not None and next_pos == avoid_pos:
+        score -= 5.0
+    if resolved and next_pos in resolved:
+        score -= 5.0
+    return score
+
+
+def _mode6_rank_actions(pos, walkable_tiles, remaining, crop_profiles,
+                        avoid_pos=None, resolved=None, priority_tile=None):
+    actions = _mode6_legal_actions(pos, walkable_tiles)
+    can_interact_here = pos in remaining or pos == priority_tile
+    moving_actions = [action for action in actions if action != "STAY"]
+    if moving_actions and not can_interact_here:
+        actions = moving_actions
+
     return sorted(
         actions,
-        key=lambda tile: (
-            -_crop_value(tile, crop_profiles),
-            -_crop_risk(tile, crop_profiles),
-            tile,
+        key=lambda action: (
+            -_mode6_action_score(
+                pos, action, remaining, crop_profiles, avoid_pos, resolved,
+                priority_tile),
+            MODE6_ACTIONS.index(action),
         ),
-    )[:MODE6_MAX_BRANCHING]
+    )
+
+def _mode6_enemy_greedy_choice(enemy_pos, farm_tiles, protected, destroyed,
+                               crop_profiles=None, walkable_tiles=None,
+                               enemy_threat_tile=None,
+                               enemy_threat_turns=0):
+    crop_profiles = crop_profiles or {}
+    remaining = _mode6_remaining(farm_tiles, protected, destroyed)
+    walkable_tiles = set(walkable_tiles or farm_tiles)
+    walkable_tiles.add(enemy_pos)
+    if not remaining:
+        return "STAY", None, 0.0
+
+    if enemy_pos in remaining:
+        profile = crop_profiles.get(enemy_pos, {})
+        value = profile.get("value", MODE6_TREE_STATUS["dry"]["value"])
+        risk = profile.get("risk", 0.0)
+        return "STAY", enemy_pos, value * 3 + risk * 100
+
+    priority_queue = []
+    for tile in remaining:
+        profile = crop_profiles.get(tile, {})
+        value = profile.get("value", MODE6_TREE_STATUS["dry"]["value"])
+        risk = profile.get("risk", 0.0)
+        distance = _mode6_manhattan(enemy_pos, tile)
+        score = value * 3 + risk * 100 - distance * 5
+        heapq.heappush(priority_queue, (-score, distance, tile))
+
+    while priority_queue:
+        negative_score, _, target = heapq.heappop(priority_queue)
+        queue = deque([(enemy_pos, None)])
+        visited = {enemy_pos}
+        while queue:
+            current, first_action = queue.popleft()
+            for action in ("UP", "DOWN", "LEFT", "RIGHT"):
+                next_tile = _mode6_move(current, action)
+                if next_tile in visited or next_tile not in walkable_tiles:
+                    continue
+                next_first = first_action or action
+                if next_tile == target:
+                    return next_first, target, -negative_score
+                visited.add(next_tile)
+                queue.append((next_tile, next_first))
+
+    return "STAY", None, 0.0
 
 
-def _tree_result(algorithm, move, response, value, counters, root_values,
-                 depth, expected=False, probability=None, event=None,
-                 alpha=None, beta=None):
-    info = {
-        "alpha": "-inf" if alpha is None else f"{alpha:.1f}",
-        "beta": "+inf" if beta is None else f"{beta:.1f}",
-        "pruned": counters["pruned"],
+def mode6_enemy_greedy_action(enemy_pos, farm_tiles, protected, destroyed,
+                              crop_profiles=None, walkable_tiles=None,
+                              enemy_threat_tile=None,
+                              enemy_threat_turns=0):
+    action, _, _ = _mode6_enemy_greedy_choice(
+        enemy_pos, farm_tiles, protected, destroyed, crop_profiles,
+        walkable_tiles, enemy_threat_tile, enemy_threat_turns)
+    return action
+
+
+def _mode6_remaining(all_crops, protected, destroyed):
+    return set(all_crops) - set(protected) - set(destroyed)
+
+
+def _mode6_no_progress(robot_pos, enemy_pos, next_robot, next_enemy,
+                       protected, destroyed, next_protected,
+                       next_destroyed, enemy_threat_tile, next_threat_tile,
+                       robot_repair_tile, robot_repair_turns,
+                       next_repair_tile, next_repair_turns):
+    return (
+        len(next_protected) == len(protected)
+        and len(next_destroyed) == len(destroyed)
+        and next_threat_tile == enemy_threat_tile
+        and next_repair_tile == robot_repair_tile
+        and next_repair_turns == robot_repair_turns
+        and next_robot == robot_pos
+        and next_enemy == enemy_pos
+    )
+
+
+def _mode6_resolve_positions(robot_pos, enemy_pos, protected, destroyed,
+                             all_crops, chance_mode, crop_profiles,
+                             enemy_threat_tile=None,
+                             enemy_threat_turns=0,
+                             robot_repair_tile=None,
+                             robot_repair_turns=0,
+                             enemy_active=True):
+    protected = set(protected)
+    destroyed = set(destroyed)
+    remaining = _mode6_remaining(all_crops, protected, destroyed)
+    chance_tile = None
+
+    if robot_pos in remaining:
+        if robot_pos == robot_repair_tile:
+            robot_repair_turns += 1
+        else:
+            robot_repair_tile = robot_pos
+            robot_repair_turns = 1
+        if robot_repair_turns >= 2:
+            protected.add(robot_pos)
+            remaining.remove(robot_pos)
+            robot_repair_tile = None
+            robot_repair_turns = 0
+            if enemy_threat_tile == robot_pos:
+                enemy_threat_tile = None
+                enemy_threat_turns = 0
+    else:
+        robot_repair_tile = None
+        robot_repair_turns = 0
+
+    if enemy_active and enemy_pos in remaining:
+        if enemy_pos == enemy_threat_tile:
+            enemy_threat_turns += 1
+        else:
+            enemy_threat_tile = enemy_pos
+            enemy_threat_turns = 1
+        if enemy_threat_turns >= 2:
+            if chance_mode:
+                chance_tile = enemy_pos
+            else:
+                destroyed.add(enemy_pos)
+            if robot_repair_tile == enemy_pos:
+                robot_repair_tile = None
+                robot_repair_turns = 0
+            enemy_threat_tile = None
+            enemy_threat_turns = 0
+    elif enemy_active:
+        enemy_threat_tile = None
+        enemy_threat_turns = 0
+    else:
+        enemy_threat_tile = None
+        enemy_threat_turns = 0
+
+    return (
+        frozenset(protected), frozenset(destroyed), chance_tile,
+        enemy_threat_tile, enemy_threat_turns,
+        robot_repair_tile, robot_repair_turns)
+
+
+def _mode6_apply_chance(tile, protected, destroyed, all_crops,
+                        crop_profiles, expected):
+    if tile is None:
+        return evaluate_farm_state(all_crops, protected, destroyed,
+                                   crop_profiles)
+
+    outcomes = mode6_chance_outcomes(tile, crop_profiles)
+    damage_destroyed = set(destroyed)
+    if tile not in protected:
+        damage_destroyed.add(tile)
+    damage_destroyed = frozenset(damage_destroyed)
+
+    if expected:
+        safe_value = evaluate_farm_state(
+            all_crops, protected, destroyed, crop_profiles)
+        damage_value = evaluate_farm_state(
+            all_crops, protected, damage_destroyed, crop_profiles)
+        return sum(
+            (safe_value if event == "no_damage" else damage_value) * prob
+            for event, prob in outcomes)
+
+    return evaluate_farm_state(
+        all_crops, protected, damage_destroyed, crop_profiles)
+
+
+def _mode6_search(algorithm, robot_pos, enemy_pos, protected, destroyed,
+                   all_crops, walkable_tiles, crop_profiles, depth, counters,
+                   alpha=-INF, beta=INF, memo=None,
+                   robot_prev=None, enemy_prev=None,
+                   enemy_threat_tile=None, enemy_threat_turns=0,
+                   robot_repair_tile=None, robot_repair_turns=0):
+    memo = memo if memo is not None else {}
+    memo_key = (
+        algorithm, robot_pos, enemy_pos, protected, destroyed, depth,
+        robot_prev, enemy_prev, enemy_threat_tile, enemy_threat_turns,
+        robot_repair_tile, robot_repair_turns,
+        round(alpha, 3) if algorithm == "Alpha-Beta" else None,
+        round(beta, 3) if algorithm == "Alpha-Beta" else None,
+    )
+    if memo_key in memo:
+        return memo[memo_key]
+
+    counters["evaluated"] += 1
+    remaining = _mode6_remaining(all_crops, protected, destroyed)
+    if depth <= 0 or not remaining:
+        result = (
+            _mode6_positional_evaluation(
+                robot_pos, enemy_pos, all_crops, protected, destroyed,
+                crop_profiles, enemy_threat_tile, enemy_threat_turns,
+                robot_repair_tile, robot_repair_turns,
+                enemy_active=algorithm != "Expectimax"), [])
+        memo[memo_key] = result
+        return result
+
+    chance_mode = algorithm in ("Expectimax", "Expectiminimax")
+    use_min = algorithm in ("Minimax", "Alpha-Beta", "Expectiminimax")
+    resolved = set(all_crops) - remaining
+    robot_actions = _mode6_rank_actions(
+        robot_pos, walkable_tiles, remaining, crop_profiles, robot_prev,
+        resolved, enemy_threat_tile)
+
+    best_value = -INF
+    best_line = []
+    counters["max"] += 1
+
+    for robot_index, robot_action in enumerate(robot_actions):
+        next_robot = _mode6_move(robot_pos, robot_action)
+
+        if use_min:
+            counters["min"] += 1
+            enemy_value = INF
+            enemy_line = []
+            local_beta = beta
+            enemy_actions = [mode6_enemy_greedy_action(
+                enemy_pos, all_crops, protected, destroyed, crop_profiles,
+                walkable_tiles, enemy_threat_tile, enemy_threat_turns)]
+            for enemy_index, enemy_action in enumerate(enemy_actions):
+                next_enemy = _mode6_move(enemy_pos, enemy_action)
+                (next_protected, next_destroyed, chance_tile,
+                 next_threat_tile, next_threat_turns,
+                 next_repair_tile, next_repair_turns) = (
+                    _mode6_resolve_positions(
+                        next_robot, next_enemy, protected, destroyed,
+                        all_crops, chance_mode, crop_profiles,
+                        enemy_threat_tile, enemy_threat_turns,
+                        robot_repair_tile, robot_repair_turns))
+                if chance_tile is not None:
+                    counters["chance"] += 1
+                    chance_value = _mode6_apply_chance(
+                        chance_tile, next_protected, next_destroyed,
+                        all_crops, crop_profiles, expected=False)
+                    if algorithm == "Expectiminimax":
+                        outcomes = mode6_chance_outcomes(
+                            chance_tile, crop_profiles)
+                        safe_value, safe_line = _mode6_search(
+                            algorithm, next_robot, next_enemy,
+                            next_protected, next_destroyed,
+                            all_crops, walkable_tiles, crop_profiles,
+                            depth - 2, counters, alpha, local_beta, memo,
+                            robot_pos, enemy_pos,
+                            next_threat_tile, next_threat_turns,
+                            next_repair_tile, next_repair_turns)
+                        damage_destroyed = frozenset(
+                            set(next_destroyed) | {chance_tile})
+                        damage_value, damage_line = _mode6_search(
+                            algorithm, next_robot, next_enemy,
+                            next_protected, damage_destroyed,
+                            all_crops, walkable_tiles, crop_profiles,
+                            depth - 2, counters, alpha, local_beta, memo,
+                            robot_pos, enemy_pos,
+                            next_threat_tile, next_threat_turns,
+                            next_repair_tile, next_repair_turns)
+                        chance_value = sum(
+                            (safe_value if event == "no_damage"
+                             else damage_value) * prob
+                            for event, prob in outcomes)
+                        child_line = safe_line if safe_value >= damage_value else damage_line
+                    else:
+                        child_line = []
+                    child = chance_value
+                else:
+                    child, child_line = _mode6_search(
+                        algorithm, next_robot, next_enemy,
+                        next_protected, next_destroyed,
+                        all_crops, walkable_tiles, crop_profiles,
+                        depth - 2, counters, alpha, local_beta, memo,
+                        robot_pos, enemy_pos,
+                        next_threat_tile, next_threat_turns,
+                        next_repair_tile, next_repair_turns)
+                if _mode6_no_progress(
+                        robot_pos, enemy_pos, next_robot, next_enemy,
+                        protected, destroyed, next_protected,
+                        next_destroyed, enemy_threat_tile,
+                        next_threat_tile, robot_repair_tile,
+                        robot_repair_turns, next_repair_tile,
+                        next_repair_turns):
+                    child -= 100
+                if child < enemy_value:
+                    enemy_value = child
+                    enemy_line = [(robot_action, enemy_action)] + child_line
+                if algorithm == "Alpha-Beta":
+                    local_beta = min(local_beta, enemy_value)
+                    if local_beta <= alpha:
+                        counters["pruned"] += max(
+                            0, len(enemy_actions) - enemy_index - 1)
+                        break
+            value = enemy_value
+            line = enemy_line
+        else:
+            next_enemy = enemy_pos
+            enemy_action = "CHANCE"
+            (next_protected, next_destroyed, chance_tile,
+             next_threat_tile, next_threat_turns,
+             next_repair_tile, next_repair_turns) = (
+                _mode6_resolve_positions(
+                    next_robot, next_enemy, protected, destroyed,
+                    all_crops, True, crop_profiles,
+                    enemy_threat_tile, enemy_threat_turns,
+                    robot_repair_tile, robot_repair_turns,
+                    enemy_active=False))
+            child, child_line = _mode6_search(
+                algorithm, next_robot, next_enemy,
+                next_protected, next_destroyed,
+                all_crops, walkable_tiles, crop_profiles,
+                depth - 1, counters, alpha, beta, memo,
+                robot_pos, enemy_pos,
+                next_threat_tile, next_threat_turns,
+                next_repair_tile, next_repair_turns)
+            random_remaining = _mode6_remaining(
+                all_crops, next_protected, next_destroyed)
+            if random_remaining and depth >= MODE6_SEARCH_DEPTH:
+                counters["chance"] += 1
+                safe_now = evaluate_farm_state(
+                    all_crops, next_protected, next_destroyed,
+                    crop_profiles)
+                expected_now = sum(
+                    _mode6_apply_chance(
+                        tile, next_protected, next_destroyed,
+                        all_crops, crop_profiles, expected=True)
+                    for tile in random_remaining) / len(random_remaining)
+                child += expected_now - safe_now
+            if _mode6_no_progress(
+                    robot_pos, enemy_pos, next_robot, next_enemy,
+                    protected, destroyed, next_protected,
+                    next_destroyed, enemy_threat_tile,
+                    next_threat_tile, robot_repair_tile,
+                    robot_repair_turns, next_repair_tile,
+                    next_repair_turns):
+                child -= 100
+            value = child
+            line = [(robot_action, enemy_action)] + child_line
+
+        if value > best_value:
+            best_value = value
+            best_line = line
+        if algorithm == "Alpha-Beta":
+            alpha = max(alpha, best_value)
+            if alpha >= beta:
+                counters["pruned"] += max(
+                    0, len(robot_actions) - robot_index - 1)
+                break
+
+    result = (best_value, best_line)
+    memo[memo_key] = result
+    return result
+
+
+def adversarial_choose(algorithm, robot_pos, enemy_pos, all_crops,
+                       protected, destroyed, depth=MODE6_SEARCH_DEPTH,
+                       crop_profiles=None, walkable_tiles=None,
+                       robot_prev=None, enemy_prev=None,
+                       enemy_threat_tile=None, enemy_threat_turns=0,
+                       robot_repair_tile=None, robot_repair_turns=0):
+    crop_profiles = crop_profiles or {}
+    all_crops = tuple(all_crops)
+    protected = frozenset(protected)
+    destroyed = frozenset(destroyed)
+    walkable_tiles = set(walkable_tiles or all_crops)
+    walkable_tiles.update(all_crops)
+    walkable_tiles.add(robot_pos)
+    walkable_tiles.add(enemy_pos)
+    counters = {
+        "max": 0,
+        "min": 0,
+        "chance": 0,
+        "evaluated": 0,
+        "pruned": 0,
     }
+
+    value, line = _mode6_search(
+        algorithm, robot_pos, enemy_pos, protected, destroyed,
+        all_crops, walkable_tiles, crop_profiles, depth, counters, memo={},
+        robot_prev=robot_prev, enemy_prev=enemy_prev,
+        enemy_threat_tile=enemy_threat_tile,
+        enemy_threat_turns=enemy_threat_turns,
+        robot_repair_tile=robot_repair_tile,
+        robot_repair_turns=robot_repair_turns)
+    robot_action, enemy_action = line[0] if line else ("STAY", "STAY")
+    protected_score, destroyed_score = mode6_state_scores(
+        protected, destroyed, crop_profiles)
+    remaining = _mode6_remaining(all_crops, protected, destroyed)
+    robot_frontier = _mode6_rank_actions(
+        robot_pos, walkable_tiles, remaining, crop_profiles, robot_prev,
+        set(all_crops) - remaining, enemy_threat_tile)
+    if algorithm == "Expectimax":
+        greedy_enemy_action = "CHANCE"
+        enemy_priority_target = None
+        enemy_priority_score = 0.0
+        enemy_frontier = ["random tree"]
+        enemy_policy = "Random Chance"
+        enemy_response = "random tree damage"
+    else:
+        (greedy_enemy_action, enemy_priority_target,
+         enemy_priority_score) = _mode6_enemy_greedy_choice(
+            enemy_pos, all_crops, protected, destroyed, crop_profiles,
+            walkable_tiles, enemy_threat_tile, enemy_threat_turns)
+        enemy_frontier = [greedy_enemy_action]
+        enemy_policy = "Greedy Saboteur"
+        enemy_response = "one fixed greedy action per MAX action"
+
     stats = {
         "Algorithm": algorithm,
-        "Depth": depth,
-        "Candidate cap": MODE6_MAX_BRANCHING,
-        "Best Move": f"{move}",
-        "Expected Utility" if expected else "Utility": f"{value:.1f}",
+        "Robot Algorithm": algorithm,
+        "Enemy Policy": enemy_policy,
+        "Enemy Target": enemy_priority_target,
+        "Enemy Target Score": f"{enemy_priority_score:.1f}",
+        "Phase": "PLAN_STEP",
+        "Search depth": depth,
+        "Ply model": "1 ply = 1 actor action",
+        "Lookahead rounds": depth // 2,
+        "Enemy response": enemy_response,
+        "MAX action": robot_action,
+        "MIN action": enemy_action,
+        "Robot Action": robot_action,
+        "Enemy Action": enemy_action,
+        "Evaluation score": f"{value:.1f}",
+        "Protected score": protected_score,
+        "Destroyed score": destroyed_score,
+        "Remaining trees": len(_mode6_remaining(
+            all_crops, protected, destroyed)),
         "MAX nodes": counters["max"],
         "MIN nodes": counters["min"],
         "CHANCE nodes": counters["chance"],
         "Nodes evaluated": counters["evaluated"],
-        "Pruned Nodes": counters["pruned"],
+        "MAX frontier": ", ".join(robot_frontier),
+        "MIN frontier": ", ".join(enemy_frontier),
+        "Threatened tile": enemy_threat_tile or "None",
+        "Repairing tile": (
+            f"{robot_repair_tile} ({robot_repair_turns}/2)"
+            if robot_repair_tile is not None else "None"),
     }
-    if response is not None:
-        stats["Enemy Move" if not expected else "Chance Target"] = f"{response}"
-    if probability is not None:
-        stats["Probability"] = f"{probability * 100:.0f}%"
-    if event:
-        stats["Chance Event"] = event
-    if algorithm == "Alpha-Beta":
-        stats["Alpha"] = info["alpha"]
-        stats["Beta"] = info["beta"]
-    details = {
-        "root_values": root_values,
+    info = {
+        "alpha": "-\u221e",
+        "beta": "+\u221e",
         "pruned": counters["pruned"],
-        "best_move": move,
-        "response": response,
-        "event": event,
-        "probability": probability,
-        "depth": depth,
     }
-    return move, response, value, info, stats, details
+    if algorithm == "Alpha-Beta":
+        stats["Pruned Nodes"] = counters["pruned"]
+
+    tree_details = {
+        "robot_action": robot_action,
+        "enemy_action": enemy_action,
+        "enemy_policy": enemy_policy,
+        "enemy_priority_target": enemy_priority_target,
+        "enemy_priority_score": enemy_priority_score,
+        "depth": depth,
+        "lookahead_rounds": depth // 2,
+        "enemy_response": enemy_response,
+        "evaluation": value,
+        "line": line,
+        "protected_score": protected_score,
+        "destroyed_score": destroyed_score,
+        "pruned": counters["pruned"],
+        "robot_prev": robot_prev,
+        "enemy_prev": enemy_prev,
+        "robot_frontier": robot_frontier,
+        "enemy_frontier": enemy_frontier,
+        "enemy_threat_tile": enemy_threat_tile,
+        "enemy_threat_turns": enemy_threat_turns,
+        "robot_repair_tile": robot_repair_tile,
+        "robot_repair_turns": robot_repair_turns,
+    }
+    return robot_action, enemy_action, value, info, stats, tree_details
 
 
-def _minimax_search(all_crops, protected, destroyed, depth, maximizing,
-                    counters, memo, crop_profiles):
-    key = (frozenset(protected), frozenset(destroyed), depth, maximizing)
-    if key in memo:
-        return memo[key]
-    counters["evaluated"] += 1
-    actions = _mode6_actions(all_crops, protected, destroyed, crop_profiles)
-    if depth == 0 or not actions:
-        result = evaluate_farm_state(
-            all_crops, protected, destroyed, crop_profiles), []
-        memo[key] = result
-        return result
+def _mode6_target_distance(start, target, walkable_tiles, neighbors=None):
+    if start == target:
+        return 0
+    if target not in walkable_tiles:
+        return INF
+    if neighbors is None:
+        return _mode6_manhattan(start, target)
 
-    if maximizing:
-        counters["max"] += 1
-        best_value = -INF
-        best_line = []
-        for tile in actions:
-            value, line = _minimax_search(
-                all_crops, protected | {tile}, destroyed,
-                depth - 1, False, counters, memo, crop_profiles)
-            if value > best_value:
-                best_value = value
-                best_line = [tile] + line
-        memo[key] = (best_value, best_line)
-        return memo[key]
-
-    counters["min"] += 1
-    best_value = INF
-    best_line = []
-    for tile in actions:
-        value, line = _minimax_search(
-            all_crops, protected, destroyed | {tile},
-            depth - 1, True, counters, memo, crop_profiles)
-        if value < best_value:
-            best_value = value
-            best_line = [tile] + line
-    memo[key] = (best_value, best_line)
-    return memo[key]
+    queue = deque([(start, 0)])
+    visited = {start}
+    while queue:
+        current, distance = queue.popleft()
+        for next_tile in neighbors(current, set()):
+            if next_tile in visited or next_tile not in walkable_tiles:
+                continue
+            if next_tile == target:
+                return distance + 1
+            visited.add(next_tile)
+            queue.append((next_tile, distance + 1))
+    return INF
 
 
-def minimax_choose(all_crops, protected, destroyed, depth=MODE6_SEARCH_DEPTH,
-                   crop_profiles=None):
+def _mode6_shortest_target_path(start, target, walkable_tiles, neighbors=None):
+    if target is None:
+        return []
+    if start == target:
+        return []
+    if target not in walkable_tiles:
+        return []
+    if neighbors is None:
+        return [target]
+
+    queue = deque([(start, [])])
+    visited = {start}
+    while queue:
+        current, path = queue.popleft()
+        for next_tile in neighbors(current, set()):
+            if next_tile in visited or next_tile not in walkable_tiles:
+                continue
+            next_path = path + [next_tile]
+            if next_tile == target:
+                return next_path
+            visited.add(next_tile)
+            queue.append((next_tile, next_path))
+    return []
+
+
+def _mode6_path_score(path, remaining, crop_profiles):
+    return sum(
+        _crop_value(tile, crop_profiles)
+        for tile in path
+        if tile in remaining)
+
+
+def _mode6_length_factor(distance):
+    return 1.0 / (1.0 + 0.25 * max(0, distance))
+
+
+def _mode6_target_score(tile, actor_pos, opponent_pos, crop_profiles,
+                        walkable_tiles, neighbors, actor, remaining=None):
+    path = _mode6_shortest_target_path(
+        actor_pos, tile, walkable_tiles, neighbors)
+    distance = len(path) if actor_pos != tile else 0
+    if actor_pos != tile and not path:
+        distance = INF
+    if distance == INF:
+        return -INF
+    value = _crop_value(tile, crop_profiles)
+    condition = crop_profiles.get(tile, {}).get("condition")
+    golden_bonus = 80 if condition == "golden" else 0
+    remaining = set(remaining or ())
+    route_value = _mode6_path_score(path or [tile], remaining, crop_profiles)
+    length_factor = _mode6_length_factor(distance)
+    weighted_target = (value + golden_bonus) * length_factor
+    side_route_bonus = max(0, route_value - value)
+    opponent_distance = _mode6_target_distance(
+        opponent_pos, tile, walkable_tiles, neighbors)
+    if opponent_distance == INF:
+        opponent_distance = _mode6_manhattan(opponent_pos, tile)
+
+    if actor == "robot":
+        route_bonus = 0.55 * side_route_bonus
+        race_bonus = 28 if opponent_distance <= distance else 10
+        return (
+            weighted_target + route_bonus + race_bonus - 2 * distance)
+
+    route_bonus = 0.35 * side_route_bonus
+    far_robot_bonus = max(0, opponent_distance - distance) * 4
+    return weighted_target + route_bonus + far_robot_bonus - 3 * distance
+
+
+def adversarial_choose_target(algorithm, robot_pos, enemy_pos, all_crops,
+                              protected, destroyed, crop_profiles=None,
+                              walkable_tiles=None, neighbors=None,
+                              depth=MODE6_SEARCH_DEPTH,
+                              enemy_threat_tile=None,
+                              enemy_threat_turns=0,
+                              robot_repair_tile=None,
+                              robot_repair_turns=0,
+                              **_):
     crop_profiles = crop_profiles or {}
-    counters = {"max": 0, "min": 0, "chance": 0,
-                "evaluated": 0, "pruned": 0}
-    root_values = []
-    memo = {}
-    best_move = None
-    best_response = None
-    best_value = -INF
-    for move in _mode6_actions(all_crops, protected, destroyed, crop_profiles):
-        value, line = _minimax_search(
-            all_crops, set(protected) | {move}, set(destroyed),
-            depth - 1, False, counters, memo, crop_profiles)
-        root_values.append((move, value, False))
-        if value > best_value:
-            best_value = value
-            best_move = move
-            best_response = line[0] if line else None
-    return _tree_result(
-        "Minimax", best_move, best_response, best_value, counters,
-        root_values, depth)
+    all_crops = tuple(all_crops)
+    protected = frozenset(protected)
+    destroyed = frozenset(destroyed)
+    processed = protected | destroyed
+    remaining = set(all_crops) - processed
+    walkable_tiles = set(walkable_tiles or all_crops)
+    walkable_tiles.update(all_crops)
+    walkable_tiles.add(robot_pos)
+    walkable_tiles.add(enemy_pos)
 
+    counters = {
+        "max": 0,
+        "min": 0,
+        "chance": 0,
+        "evaluated": 0,
+        "pruned": 0,
+    }
+    if not remaining:
+        protected_score, destroyed_score = mode6_state_scores(
+            protected, destroyed, crop_profiles)
+        stats = {
+            "Algorithm": algorithm,
+            "Phase": "CHOOSE_TARGET",
+            "Search depth": depth,
+            "Nodes evaluated": 0,
+            "Remaining trees": 0,
+            "Protected score": protected_score,
+            "Destroyed score": destroyed_score,
+            "Evaluation score": f"{protected_score - destroyed_score:.1f}",
+        }
+        return None, None, protected_score - destroyed_score, stats, {
+            "robot_target": None,
+            "enemy_target": None,
+            "target_mode": "none",
+        }
 
-def _alpha_beta_search(all_crops, protected, destroyed, depth, maximizing,
-                       alpha, beta, counters, crop_profiles):
-    counters["evaluated"] += 1
-    actions = _mode6_actions(all_crops, protected, destroyed, crop_profiles)
-    if depth == 0 or not actions:
-        return evaluate_farm_state(
-            all_crops, protected, destroyed, crop_profiles), []
+    target_radius = 3
+    robot_distances = {
+        tile: _mode6_target_distance(
+            robot_pos, tile, walkable_tiles, neighbors)
+        for tile in remaining
+    }
+    enemy_distances = {
+        tile: _mode6_target_distance(
+            enemy_pos, tile, walkable_tiles, neighbors)
+        for tile in remaining
+    }
+    robot_candidates = {
+        tile for tile in remaining
+        if robot_distances[tile] <= target_radius
+    }
+    enemy_candidates = {
+        tile for tile in remaining
+        if enemy_distances[tile] <= target_radius
+    }
+    if not robot_candidates:
+        robot_candidates = set(remaining)
+    if not enemy_candidates:
+        enemy_candidates = set(remaining)
 
-    if maximizing:
-        counters["max"] += 1
-        value = -INF
-        best_line = []
-        for index, tile in enumerate(actions):
-            child, line = _alpha_beta_search(
-                all_crops, protected | {tile}, destroyed, depth - 1,
-                False, alpha, beta, counters, crop_profiles)
-            if child > value:
-                value = child
-                best_line = [tile] + line
-            alpha = max(alpha, value)
-            if beta <= alpha:
-                counters["pruned"] += len(actions) - index - 1
-                counters["cutoff_alpha"] = alpha
-                counters["cutoff_beta"] = beta
-                break
-        return value, best_line
-
-    counters["min"] += 1
-    value = INF
-    best_line = []
-    for index, tile in enumerate(actions):
-        child, line = _alpha_beta_search(
-            all_crops, protected, destroyed | {tile}, depth - 1,
-            True, alpha, beta, counters, crop_profiles)
-        if child < value:
-            value = child
-            best_line = [tile] + line
-        beta = min(beta, value)
-        if beta <= alpha:
-            counters["pruned"] += len(actions) - index - 1
-            counters["cutoff_alpha"] = alpha
-            counters["cutoff_beta"] = beta
-            break
-    return value, best_line
-
-
-def alpha_beta_choose(all_crops, protected, destroyed,
-                      depth=MODE6_SEARCH_DEPTH, crop_profiles=None):
-    crop_profiles = crop_profiles or {}
-    counters = {"max": 0, "min": 0, "chance": 0,
-                "evaluated": 0, "pruned": 0}
-    root_values = []
-    best_move = None
-    best_response = None
-    best_value = -INF
-    alpha = -INF
-    beta = INF
-    for move in _mode6_actions(all_crops, protected, destroyed, crop_profiles):
-        value, line = _alpha_beta_search(
-            all_crops, set(protected) | {move}, set(destroyed),
-            depth - 1, False, alpha, beta, counters, crop_profiles)
-        root_values.append((move, value, False))
-        if value > best_value:
-            best_value = value
-            best_move = move
-            best_response = line[0] if line else None
-        alpha = max(alpha, best_value)
-    return _tree_result(
-        "Alpha-Beta", best_move, best_response, best_value, counters,
-        root_values, depth,
-        alpha=counters.get("cutoff_alpha", alpha),
-        beta=counters.get("cutoff_beta", beta))
-
-
-def _expectimax_search(all_crops, protected, destroyed, depth, maximizing,
-                       counters, memo, crop_profiles):
-    key = (frozenset(protected), frozenset(destroyed), depth, maximizing)
-    if key in memo:
-        return memo[key]
-    counters["evaluated"] += 1
-    actions = _mode6_actions(all_crops, protected, destroyed, crop_profiles)
-    if depth == 0 or not actions:
-        result = evaluate_farm_state(
-            all_crops, protected, destroyed, crop_profiles), []
-        memo[key] = result
-        return result
-
-    if maximizing:
-        counters["max"] += 1
-        best_value = -INF
-        best_line = []
-        for tile in actions:
-            value, line = _expectimax_search(
-                all_crops, protected | {tile}, destroyed,
-                depth - 1, False, counters, memo, crop_profiles)
-            if value > best_value:
-                best_value = value
-                best_line = [tile] + line
-        memo[key] = (best_value, best_line)
-        return memo[key]
-
-    counters["chance"] += 1
-    risk_total = sum(_crop_risk(tile, crop_profiles) for tile in actions)
-    expected = 0.0
-    most_likely_line = []
-    most_likely_probability = -1.0
-    for tile in actions:
-        probability = (
-            _crop_risk(tile, crop_profiles) / risk_total
-            if risk_total > 0 else 1.0 / len(actions))
-        value, line = _expectimax_search(
-            all_crops, protected, destroyed | {tile},
-            depth - 1, True, counters, memo, crop_profiles)
-        expected += probability * value
-        if probability > most_likely_probability:
-            most_likely_probability = probability
-            most_likely_line = [tile] + line
-    memo[key] = (expected, most_likely_line)
-    return memo[key]
-
-
-def expectimax_choose(all_crops, protected, destroyed,
-                      depth=MODE6_SEARCH_DEPTH, crop_profiles=None):
-    crop_profiles = crop_profiles or {}
-    counters = {"max": 0, "min": 0, "chance": 0,
-                "evaluated": 0, "pruned": 0}
-    root_values = []
-    memo = {}
-    best_move = None
-    best_value = -INF
-    best_response = None
-    for move in _mode6_actions(all_crops, protected, destroyed, crop_profiles):
-        value, line = _expectimax_search(
-            all_crops, set(protected) | {move}, set(destroyed),
-            depth - 1, False, counters, memo, crop_profiles)
-        root_values.append((move, value, False))
-        if value > best_value:
-            best_value = value
-            best_move = move
-            best_response = line[0] if line else None
-    chance_actions = _mode6_actions(
-        all_crops, set(protected) | ({best_move} if best_move else set()),
-        destroyed, crop_profiles)
-    risk_total = sum(
-        _crop_risk(tile, crop_profiles) for tile in chance_actions)
-    probability = (
-        _crop_risk(best_response, crop_profiles) / risk_total
-        if best_response is not None and risk_total > 0 else 0.0)
-    event = max(EXPECTIMAX_EVENTS, key=lambda item: item[1])[0]
-    return _tree_result(
-        "Expectimax", best_move, best_response, best_value, counters,
-        root_values, depth, expected=True, probability=probability,
-        event=event)
-
-
-def _expectiminimax_search(all_crops, protected, destroyed, depth, node_type,
-                           counters, memo, crop_profiles):
-    key = (frozenset(protected), frozenset(destroyed), depth, node_type)
-    if key in memo:
-        return memo[key]
-    counters["evaluated"] += 1
-    actions = _mode6_actions(all_crops, protected, destroyed, crop_profiles)
-    if depth == 0 or not actions:
-        result = evaluate_farm_state(
-            all_crops, protected, destroyed, crop_profiles), []
-        memo[key] = result
-        return result
-
-    if node_type == "MAX":
-        counters["max"] += 1
-        best_value = -INF
-        best_line = []
-        for tile in actions:
-            value, line = _expectiminimax_search(
-                all_crops, protected | {tile}, destroyed,
-                depth - 1, "MIN", counters, memo, crop_profiles)
-            if value > best_value:
-                best_value = value
-                best_line = [tile] + line
-        memo[key] = (best_value, best_line)
-        return memo[key]
-
-    if node_type == "MIN":
-        counters["min"] += 1
-        best_value = INF
-        best_line = []
-        for tile in actions:
-            value, line = _expectiminimax_search(
-                all_crops, protected, destroyed,
-                depth - 1, ("CHANCE", tile), counters, memo, crop_profiles)
-            if value < best_value:
-                best_value = value
-                best_line = [tile] + line
-        memo[key] = (best_value, best_line)
-        return memo[key]
-
-    counters["chance"] += 1
-    enemy_target = node_type[1]
-    target_risk = _crop_risk(enemy_target, crop_profiles)
-    sabotage_probability = 0.60
-    weather_probability = 0.40 * target_risk
-    safe_probability = 1.0 - sabotage_probability - weather_probability
-    success_value, success_line = _expectiminimax_search(
-        all_crops, protected, destroyed | {enemy_target},
-        depth - 1, "MAX", counters, memo, crop_profiles)
-    no_damage_value, no_damage_line = _expectiminimax_search(
-        all_crops, protected, destroyed,
-        depth - 1, "MAX", counters, memo, crop_profiles)
-    weather_targets = [
-        tile for tile in actions if tile != enemy_target
-    ]
-    if weather_targets:
-        weather_value = 0.0
-        weather_risk_total = sum(
-            _crop_risk(tile, crop_profiles) for tile in weather_targets)
-        for tile in weather_targets:
-            tile_probability = (
-                _crop_risk(tile, crop_profiles) / weather_risk_total
-                if weather_risk_total > 0
-                else 1.0 / len(weather_targets))
-            child, _ = _expectiminimax_search(
-                all_crops, protected, destroyed | {tile},
-                depth - 1, "MAX", counters, memo, crop_profiles)
-            weather_value += tile_probability * child
-    else:
-        weather_value = no_damage_value
-    expected = (
-        sabotage_probability * success_value
-        + weather_probability * weather_value
-        + safe_probability * no_damage_value
+    robot_ranked = sorted(
+        robot_candidates,
+        key=lambda tile: (
+            -_mode6_target_score(
+                tile, robot_pos, enemy_pos, crop_profiles,
+                walkable_tiles, neighbors, "robot", remaining),
+            robot_distances[tile],
+            tile,
+        ),
     )
-    memo[key] = (expected, success_line or no_damage_line)
-    return memo[key]
+    enemy_ranked = sorted(
+        enemy_candidates,
+        key=lambda tile: (
+            -_mode6_target_score(
+                tile, enemy_pos, robot_pos, crop_profiles,
+                walkable_tiles, neighbors, "enemy", remaining),
+            enemy_distances[tile],
+            tile,
+        ),
+    )
+    robot_target = robot_ranked[0] if robot_ranked else None
+    enemy_target = enemy_ranked[0] if enemy_ranked else None
+    if robot_repair_tile in remaining and robot_pos == robot_repair_tile:
+        robot_target = robot_repair_tile
+    if enemy_threat_tile in remaining and enemy_pos == enemy_threat_tile:
+        enemy_target = enemy_threat_tile
 
+    counters["max"] = len(robot_ranked)
+    counters["min"] = len(enemy_ranked)
+    counters["evaluated"] = len(robot_ranked) * max(1, len(enemy_ranked))
 
-def expectiminimax_choose(all_crops, protected, destroyed,
-                          depth=MODE6_SEARCH_DEPTH, crop_profiles=None):
-    crop_profiles = crop_profiles or {}
-    counters = {"max": 0, "min": 0, "chance": 0,
-                "evaluated": 0, "pruned": 0}
-    root_values = []
-    memo = {}
-    best_move = None
-    best_response = None
-    best_value = -INF
-    for move in _mode6_actions(all_crops, protected, destroyed, crop_profiles):
-        value, line = _expectiminimax_search(
-            all_crops, set(protected) | {move}, set(destroyed),
-            depth - 1, "MIN", counters, memo, crop_profiles)
-        root_values.append((move, value, False))
-        if value > best_value:
-            best_value = value
-            best_move = move
-            best_response = line[0] if line else None
-    return _tree_result(
-        "Expectiminimax", best_move, best_response, best_value, counters,
-        root_values, depth, expected=True,
-        probability=(
-            _crop_risk(best_response, crop_profiles)
-            if best_response is not None else 0.0),
-        event="MIN -> CHANCE")
+    protected_score, destroyed_score = mode6_state_scores(
+        protected, destroyed, crop_profiles)
+    robot_path_scores = {
+        tile: _mode6_path_score(
+            _mode6_shortest_target_path(
+                robot_pos, tile, walkable_tiles, neighbors) or [tile],
+            remaining,
+            crop_profiles)
+        for tile in robot_ranked[:5]
+    }
+    enemy_path_scores = {
+        tile: _mode6_path_score(
+            _mode6_shortest_target_path(
+                enemy_pos, tile, walkable_tiles, neighbors) or [tile],
+            remaining,
+            crop_profiles)
+        for tile in enemy_ranked[:5]
+    }
+    projected_protected = protected_score
+    projected_destroyed = destroyed_score
+    if robot_target is not None:
+        projected_protected += _crop_value(robot_target, crop_profiles)
+    if enemy_target is not None and enemy_target != robot_target:
+        enemy_value = _crop_value(enemy_target, crop_profiles)
+        if algorithm in ("Expectimax", "Expectiminimax"):
+            risk = _crop_risk(enemy_target, crop_profiles)
+            projected_destroyed += enemy_value * risk
+            counters["chance"] = 3
+        else:
+            projected_destroyed += enemy_value
 
+    value = projected_protected - projected_destroyed
+    stats = {
+        "Algorithm": algorithm,
+        "Phase": "CHOOSE_TARGET",
+        "Search depth": depth,
+        "Target radius": target_radius,
+        "Target model": "adversarial target selection",
+        "Route scoring": "remaining route trees only; processed trees = 0",
+        "Robot target": robot_target,
+        "Enemy target": enemy_target,
+        "Robot path score": robot_path_scores.get(robot_target, 0),
+        "Enemy path score": enemy_path_scores.get(enemy_target, 0),
+        "Repairing tile": (
+            f"{robot_repair_tile} ({robot_repair_turns}/2)"
+            if robot_repair_tile is not None else "None"),
+        "Threatened tile": (
+            f"{enemy_threat_tile} ({enemy_threat_turns}/2)"
+            if enemy_threat_tile is not None else "None"),
+        "Evaluation score": f"{value:.1f}",
+        "Protected score": protected_score,
+        "Destroyed score": destroyed_score,
+        "Remaining trees": len(remaining),
+        "MAX nodes": counters["max"],
+        "MIN nodes": counters["min"],
+        "CHANCE nodes": counters["chance"],
+        "Nodes evaluated": counters["evaluated"],
+    }
+    if algorithm == "Alpha-Beta":
+        stats["Pruned Nodes"] = max(0, len(robot_ranked) - 1)
 
-def adversarial_choose(algorithm, all_crops, protected, destroyed,
-                       depth=MODE6_SEARCH_DEPTH, crop_profiles=None):
-    chooser = {
-        "Minimax": minimax_choose,
-        "Alpha-Beta": alpha_beta_choose,
-        "Expectimax": expectimax_choose,
-        "Expectiminimax": expectiminimax_choose,
-    }.get(algorithm, minimax_choose)
-    return chooser(
-        all_crops, protected, destroyed, depth,
-        crop_profiles=crop_profiles)
+    details = {
+        "robot_target": robot_target,
+        "enemy_target": enemy_target,
+        "robot_ranked_targets": robot_ranked,
+        "enemy_ranked_targets": enemy_ranked,
+        "depth": depth,
+        "target_radius": target_radius,
+        "evaluation": value,
+        "target_mode": "adversarial target + A*/UCS one-step",
+        "route_scoring": "remaining route trees only; processed trees = 0",
+        "robot_path_scores": robot_path_scores,
+        "enemy_path_scores": enemy_path_scores,
+        "enemy_threat_tile": enemy_threat_tile,
+        "enemy_threat_turns": enemy_threat_turns,
+        "robot_repair_tile": robot_repair_tile,
+        "robot_repair_turns": robot_repair_turns,
+        "protected_score": protected_score,
+        "destroyed_score": destroyed_score,
+        "pruned": stats.get("Pruned Nodes", 0),
+    }
+    return robot_target, enemy_target, value, stats, details
