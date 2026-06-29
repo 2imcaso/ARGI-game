@@ -729,24 +729,35 @@ def find_path_to_any_goal_by_algorithm(algorithm, start, goals, blocked,
 
 
 def dfs_full_traversal_plan(start, goals, blocked, neighbors):
-    """Traverse once with DFS and collect every goal in first-visit order."""
+    """Collect goals in the same explicit LIFO order used by ``dfs``."""
     goals = set(goals)
-    visited = {start}
-    explored_order = [start]
+    stack = [start]
+    frontier = {start}
+    reached = {start}
+    came_from = {}
+    explored = set()
+    explored_order = []
     plan = []
+    max_stack = 1
 
-    def visit(tile):
-        if tile in goals and tile not in plan:
-            plan.append(tile)
+    while stack and len(plan) < len(goals):
+        current = stack.pop()
+        frontier.remove(current)
+        explored.add(current)
+        explored_order.append(current)
 
-        for next_tile in neighbors(tile, blocked):
-            if next_tile in visited:
+        if current in goals:
+            plan.append(current)
+
+        for next_tile in neighbors(current, blocked):
+            if next_tile in reached or next_tile in frontier:
                 continue
-            visited.add(next_tile)
-            explored_order.append(next_tile)
-            visit(next_tile)
+            reached.add(next_tile)
+            came_from[next_tile] = current
+            stack.append(next_tile)
+            frontier.add(next_tile)
+            max_stack = max(max_stack, len(stack))
 
-    visit(start)
     reachable = set(plan)
     stats = {
         "Algorithm": "DFS",
@@ -754,10 +765,10 @@ def dfs_full_traversal_plan(start, goals, blocked, neighbors):
         "Plan targets": len(plan),
         "Unreachable": len(goals - reachable),
         "Nodes explored": len(explored_order),
-        "Unique explored": len(visited),
-        "Stack max": len(explored_order),
+        "Unique explored": len(explored),
+        "Stack max": max_stack,
     }
-    return plan, set(explored_order), stats
+    return plan, explored, stats
 
 
 def _nearest_goal_distance(tile, remaining_goals, heuristic):

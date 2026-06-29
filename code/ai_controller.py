@@ -125,8 +125,8 @@ class FarmAIController:
         self.mode2_current_step_index = 0
         self.stop_after_current_target = False
         self.dfs_walk = None
-        self.dfs_walk_index = 0
         self.dfs_explored_order = []
+        self.dfs_stack_max = 0
         self.ids_depth_limit = 0
         self.ids_search_timer = 0.0
         self.ids_search_start = None
@@ -330,8 +330,8 @@ class FarmAIController:
         self.chosen_target_path = None
         self._clear_full_garden_plan()
         self.dfs_walk = None
-        self.dfs_walk_index = 0
         self.dfs_explored_order = []
+        self.dfs_stack_max = 0
         self._reset_ids_search()
         self._reset_idsa_search()
         self.current_target = None
@@ -1925,74 +1925,114 @@ class FarmAIController:
     # mode 3 local search
     # ------------------------------------------------------------------
 
-    def _dfs_traversal_neighbors(self, tile, blocked):
-        x, y = tile
-        for nx, ny in ((x, y + 1), (x - 1, y), (x + 1, y), (x, y - 1)):
-            if 0 <= nx < self.cols and 0 <= ny < self.rows \
-                    and (nx, ny) not in blocked \
-                    and (self.walkable_tiles is None
-                         or (nx, ny) in self.walkable_tiles):
-                yield (nx, ny)
+    def _dfs_candidates(self, candidate_tiles=None):
+        if candidate_tiles is None:
+            return {
+                tile for tile in self.farm_tiles
+                if tile not in self.done_tiles
+                and tile not in self.discovered_blocked
+                and tile not in self.enemy_done_tiles
+            }
+        return set(candidate_tiles)
 
 
-    def _build_dfs_walk(self, start):
-        blocked = self._blocked_tiles()
-        blocked.discard(start)
-        for goal in self.farm_tiles:
-            blocked.discard(goal)
+    def _dfs_entry_path(self, start, candidates, blocked):
+        """Find a route to the first tree without adding connectors to DFS."""
+        if start in candidates:
+            return [], start
 
-        visited = set()
-        walk = [start]
-        explored_order = []
+        queue = deque([start])
+        parent = {}
+        seen = {start}
 
-        def visit(tile):
-            visited.add(tile)
-            explored_order.append(tile)
-            for next_tile in self._dfs_traversal_neighbors(tile, blocked):
-                if next_tile in visited:
+        while queue:
+            current = queue.popleft()
+            for next_tile in self._neighbors(current, blocked):
+                if next_tile in seen:
                     continue
-                walk.append(next_tile)
-                visit(next_tile)
-                walk.append(tile)
+                seen.add(next_tile)
+                parent[next_tile] = current
+                if next_tile in candidates:
+                    path = [next_tile]
+                    while path[-1] != start:
+                        path.append(parent[path[-1]])
+                    path.reverse()
+                    return path[1:], next_tile
+                queue.append(next_tile)
+        return [], None
 
-        visit(start)
-        self.dfs_walk = walk
-        self.dfs_walk_index = 0
-        self.dfs_explored_order = explored_order
 
+    @staticmethod
+    def _dfs_tree_path(current, target, parent):
+        """Build an adjacent route between two consecutive popped nodes."""
+        ancestors = {current}
+        cursor = current
+        while cursor in parent:
+            cursor = parent[cursor]
+            ancestors.add(cursor)
 
-    def _dfs_traversal_choose(self, remaining, start):
-        if self.dfs_walk is None:
-            self._build_dfs_walk(start)
-
-        if self.dfs_walk[self.dfs_walk_index] != start:
-            try:
-                self.dfs_walk_index = self.dfs_walk.index(
-                    start, self.dfs_walk_index)
-            except ValueError:
-                self._build_dfs_walk(start)
+        down_branch = []
+        cursor = target
+        while cursor not in ancestors:
+            down_branch.append(cursor)
+            cursor = parent[cursor]
+        common_ancestor = cursor
 
         path = []
-        remaining_set = set(remaining)
-        for index in range(self.dfs_walk_index + 1, len(self.dfs_walk)):
-            tile = self.dfs_walk[index]
-            path.append(tile)
-            if tile in remaining_set:
-                self.dfs_walk_index = index
-                self.chosen_target_path = path
-                explored = set(self.dfs_walk[:index + 1])
-                self.bfs_explored = explored
-                self.stats = {
-                    "Nodes explored": len(explored),
-                    "Path length": len(path),
-                    "Stack max": len(self.dfs_explored_order),
-                    "Algorithm": "DFS",
-                    "Target": f"{tile}",
-                }
-                return tile
+        cursor = current
+        while cursor != common_ancestor:
+            cursor = parent[cursor]
+            path.append(cursor)
+        path.extend(reversed(down_branch))
+        return path
 
-        self.chosen_target_path = None
-        return None
+
+    def _build_dfs_walk(self, start, candidate_tiles=None):
+        candidates = self._dfs_candidates(candidate_tiles)
+        blocked = self._blocked_tiles()
+        blocked.discard(start)
+        for tile in candidates:
+            blocked.discard(tile)
+
+        entry_path, dfs_start = self._dfs_entry_path(
+            start, candidates, blocked)
+        if dfs_start is None:
+            self.dfs_walk = [start]
+            self.dfs_explored_order = []
+            self.dfs_stack_max = 0
+            return
+
+        stack = [dfs_start]
+        reached = {dfs_start}
+        parent = {}
+        explored_order = []
+        stack_max = 1
+
+        while stack:
+            current = stack.pop()
+            explored_order.append(current)
+
+            # Match algorithms.dfs(): push left, right, up, down and let
+            # stack.pop() select the newest reachable neighbor.
+            for next_tile in self._neighbors(current, blocked):
+                if next_tile not in candidates:
+                    continue
+                if next_tile in reached:
+                    continue
+                reached.add(next_tile)
+                parent[next_tile] = current
+                stack.append(next_tile)
+                stack_max = max(stack_max, len(stack))
+
+        walk = [start, *entry_path]
+        current = dfs_start
+        for next_popped in explored_order[1:]:
+            walk.extend(self._dfs_tree_path(current, next_popped, parent))
+            current = next_popped
+
+        self.dfs_walk = walk
+        self.dfs_explored_order = explored_order
+        self.dfs_stack_max = stack_max
 
     # -------------------------------------------------------------- MODE 3
 
@@ -4689,27 +4729,66 @@ class FarmAIController:
             self.full_garden_plan = list(plan)
             self.full_garden_stats = stats
         elif self.mode == 1:
-            if self.algorithm_name == "UCS":
+            if self.algorithm_name == "DFS":
+                remaining_set = set(remaining)
+                self._build_dfs_walk(start, remaining_set)
+                planned = set()
+                current_index = 0
+                current_parent = start
+
+                for index, tile in enumerate(self.dfs_walk):
+                    if tile not in remaining_set or tile in planned:
+                        continue
+
+                    planned_path = list(
+                        self.dfs_walk[current_index + 1:index + 1])
+                    if not self._path_is_contiguous(
+                            current_parent, planned_path):
+                        continue
+
+                    self.full_garden_plan.append(tile)
+                    self.full_garden_leg_paths[tile] = (
+                        current_parent, planned_path)
+                    planned.add(tile)
+                    current_index = index
+                    current_parent = tile
+
+                self.full_garden_stats = {
+                    "Algorithm": "DFS",
+                    "Planning mode": "Full physical DFS traversal",
+                    "Path source": "precomputed DFS walk",
+                    "Plan targets": len(self.full_garden_plan),
+                    "Unreachable": len(remaining_set - planned),
+                    "Nodes explored": len(self.dfs_explored_order),
+                    "Path length": sum(
+                        len(planned_leg[1])
+                        for planned_leg
+                        in self.full_garden_leg_paths.values()),
+                    "Stack max": self.dfs_stack_max,
+                }
+                self.bfs_explored = set(self.dfs_explored_order)
+            elif self.algorithm_name == "UCS":
                 self._prepare_mode1_ucs_costs()
-            blocked = self._blocked_tiles()
-            blocked.discard(start)
-            for goal in remaining:
-                blocked.discard(goal)
-            plan, explored, fgh, stats = (
-                algorithms.build_full_garden_plan_by_algorithm(
-                    self.algorithm_name, start, remaining, blocked,
-                    self._neighbors, self._search_heuristic, self.counter,
-                    self._step_cost))
-            self.full_garden_plan = list(plan)
-            self.full_garden_stats = stats
-            self.astar_current_fgh = fgh
-            self.bfs_explored = set(explored)
-            if self.algorithm_name == "UCS":
-                self.full_garden_stats["Priority"] = "g(n)"
-                self.full_garden_stats["UCS rule"] = (
-                    "UCS priority = g(n), expand 4-neighbor like A*, no h(n)")
-                self.full_garden_stats["g(n) formula"] = (
-                    "path_length + terrain_cost + condition_cost")
+            if self.algorithm_name != "DFS":
+                blocked = self._blocked_tiles()
+                blocked.discard(start)
+                for goal in remaining:
+                    blocked.discard(goal)
+                plan, explored, fgh, stats = (
+                    algorithms.build_full_garden_plan_by_algorithm(
+                        self.algorithm_name, start, remaining, blocked,
+                        self._neighbors, self._search_heuristic, self.counter,
+                        self._step_cost))
+                self.full_garden_plan = list(plan)
+                self.full_garden_stats = stats
+                self.astar_current_fgh = fgh
+                self.bfs_explored = set(explored)
+                if self.algorithm_name == "UCS":
+                    self.full_garden_stats["Priority"] = "g(n)"
+                    self.full_garden_stats["UCS rule"] = (
+                        "UCS priority = g(n), expand 4-neighbor like A*, no h(n)")
+                    self.full_garden_stats["g(n) formula"] = (
+                        "path_length + terrain_cost + condition_cost")
         elif self.mode == 2:
             return self._build_mode2_frontier_full_plan(remaining, start)
         elif self.mode == 4:
@@ -4764,7 +4843,15 @@ class FarmAIController:
             target = self.full_garden_plan[self.full_garden_index]
             if target in remaining_set:
                 self.chosen_target_path = None
-                if self.mode == 2:
+                if self.mode == 1 and self.algorithm_name == "DFS":
+                    planned_leg = self.full_garden_leg_paths.get(target)
+                    if planned_leg is None:
+                        return None
+                    planned_parent, planned_path = planned_leg
+                    if planned_parent != start:
+                        return None
+                    self.chosen_target_path = list(planned_path)
+                elif self.mode == 2:
                     planned_leg = self.full_garden_leg_paths.get(target)
                     if planned_leg is None or planned_leg[0] != start:
                         self._build_mode2_frontier_full_plan(remaining, start)
