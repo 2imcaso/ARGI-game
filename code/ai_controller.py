@@ -4303,15 +4303,6 @@ class FarmAIController:
         return bad
 
 
-    def _csp_mark_conflict_fixed(self, tile):
-        """Min-Conflicts da sua xong tile nay trong replay, khong di lai nua."""
-        if tile is None:
-            return
-        self.done_tiles.add(tile)
-        self.csp_seeded_tiles.add(tile)
-        self._advance_full_garden_plan(tile)
-
-
     def _update_csp_flash_timers(self, dt):
         """Keep temporary red backtrack flashes moving even while the robot walks."""
         for tile in list(self.csp_flash_timers):
@@ -4576,7 +4567,6 @@ class FarmAIController:
             # Day la luc o nay THUC SU duoc sua -> chuyen tu do sang xanh.
             self.csp_display[var] = (value, "assign")
             self.csp_assigned[var] = value
-            self._csp_mark_conflict_fixed(var)
             # Tinh lai TOAN BO tap xung dot tu csp_assigned hien tai, thay vi
             # chi xoa/them tung tile rieng le. Ly do: khi var doi gia tri,
             # mot hang xom A da bi to do truoc do (vi tung cung mau VOI GIA
@@ -4621,7 +4611,7 @@ class FarmAIController:
 
 
     def _begin_csp_ready(self):
-        """Phase 3: Ke hoach xong, robot bat dau thuc thi."""
+        """Phase 3: CSP replay xong la hoan tat Mode 5, khong di lai."""
         self.csp_phase = "ready"
         self.csp_display = {}
         self.csp_domains = {}
@@ -4637,20 +4627,27 @@ class FarmAIController:
         # Tranh truong hop Min-Conflicts replay khong log day du tat ca bien
         if self.seed_plan:
             self.csp_assigned = dict(self.seed_plan)
-        assigned = len(self.seed_plan)
+        resolved_tiles = set(self.csp_assigned)
+        self.done_tiles.update(resolved_tiles)
+        self.csp_seeded_tiles.update(resolved_tiles)
+        self.current_target = None
+        self.path = []
+        self._clear_full_garden_plan()
+        self.state = "DONE"
+        self.player.direction.update(0, 0)
+        assigned = len(resolved_tiles)
         bt = self.csp_backtracks_live
         if self.algorithm_name == "Min Conflict":
             self.message = (
-                f"Min-Conflicts hoan tat: {assigned} o, sua {bt} xung dot. "
-                f"AGRI-1 bat dau gieo trong!"
+                f"Min-Conflicts hoan tat: {assigned} o, sua {bt} xung dot."
             )
         else:
             self.message = (
-                f"Ke hoach hoan tat: {assigned} o, {bt} backtrack. "
-                f"AGRI-1 bat dau gieo trong!"
+                f"Mode 5 hoan tat: {assigned} o, {bt} backtrack."
             )
-        self.stats["CSP phase"] = "Thuc thi"
-        self.wait_time = 0.8
+        self.stats["CSP phase"] = "Hoan tat"
+        self.stats["Da giai quyet"] = f"{assigned}/{len(self.farm_tiles)}"
+        self.wait_time = 0.0
 
     # -------------------------------------------------------------- MODE 6
 
