@@ -286,6 +286,3 @@ Bản quyền gốc của các asset thuộc về tác giả Cup Nooble. Dự á
 
 ---
 
-## 11. Ghi chú
-
-Đây là đồ án phục vụ mục đích học tập và minh họa thuật toán Trí tuệ nhân tạo trong môi trường game. Nội dung trong README được viết theo hướng dễ hiểu, tập trung vào cách thuật toán được áp dụng trong sản phẩm thay vì chỉ trình bày lý thuyết.
