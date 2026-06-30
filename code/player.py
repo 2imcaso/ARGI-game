@@ -73,6 +73,7 @@ class Player(pygame.sprite.Sprite):
 
 		# AI control flag: khi True, input ban phim bi tat va AI dat direction
 		self.auto_control = False
+		self.skip_auto_move_once = False
 
 		# sound
 		self.watering = pygame.mixer.Sound("../audio/water.mp3")
@@ -251,5 +252,8 @@ class Player(pygame.sprite.Sprite):
 		self.update_timers()
 		self.get_target_pos()
 
-		self.move(dt)
+		if self.skip_auto_move_once:
+			self.skip_auto_move_once = False
+		else:
+			self.move(dt)
 		self.animate(dt)

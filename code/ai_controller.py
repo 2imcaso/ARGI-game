@@ -5364,7 +5364,7 @@ class FarmAIController:
         self.player.rect.center = (
             round(self.player.pos.x), round(self.player.pos.y))
         self.player.hitbox.center = self.player.rect.center
-        self.player.speed = 0
+        self.player.skip_auto_move_once = True
         return False
 
 
