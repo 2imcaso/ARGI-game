@@ -45,30 +45,30 @@ Smart-Farm-AI-Robot/
 ├── graphics/                # Tài nguyên hình ảnh trong game
 ├── audio/                   # Âm thanh nền và hiệu ứng
 ├── gif/                     # GIF minh họa thuật toán
-│   ├── BFS-ezgif.com-video-to-gif-converter.gif
-│   ├── DFS-ezgif.com-video-to-gif-converter.gif
-│   ├── UCS-ezgif.com-video-to-gif-converter.gif
-│   ├── IDS-ezgif.com-video-to-gif-converter.gif
-│   ├── Greedy-ezgif.com-video-to-gif-converter.gif
 │   ├── A-ezgif.com-video-to-gif-converter.gif
 │   ├── A_v2-ezgif.com-video-to-gif-converter.gif
+│   ├── BFS-ezgif.com-video-to-gif-converter.gif
+│   ├── DFS-ezgif.com-video-to-gif-converter.gif
+│   ├── Greedy-ezgif.com-video-to-gif-converter.gif
+│   ├── IDS-ezgif.com-video-to-gif-converter.gif
 │   ├── IDSA-ezgif.com-video-to-gif-converter.gif
-│   ├── hillclimping-ezgif.com-video-to-gif-converter.gif
-│   ├── localbeam1-ezgif.com-video-to-gif-converter.gif
-│   ├── simulatedannealing-ezgif.com-video-to-gif-converter.gif
-│   ├── randomrestart-ezgif.com-video-to-gif-converter.gif
-│   ├── online astar.gif
-│   ├── online bfs.gif
-│   ├── belief bfs.gif
+│   ├── UCS-ezgif.com-video-to-gif-converter.gif
+│   ├── ac3.gif
+│   ├── alphabeta.gif
 │   ├── and-or.gif
 │   ├── backtrack.gif
+│   ├── belief bfs.gif
+│   ├── exceptimax.gif
+│   ├── exceptiminmax.gif
 │   ├── forward.gif
-│   ├── ac3.gif
+│   ├── hillclimping-ezgif.com-video-to-gif-converter.gif
+│   ├── localbeam1-ezgif.com-video-to-gif-converter.gif
 │   ├── minconflit.gif
 │   ├── minimax.gif
-│   ├── alphabeta.gif
-│   ├── exceptimax.gif
-│   └── exceptiminmax.gif
+│   ├── online astar.gif
+│   ├── online bfs.gif
+│   ├── randomrestart-ezgif.com-video-to-gif-converter.gif
+│   └── simulatedannealing-ezgif.com-video-to-gif-converter.gif
 │
 └── README.md
 ```
