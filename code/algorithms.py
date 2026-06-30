@@ -2099,13 +2099,73 @@ def _mode6_move(pos, action):
     return pos[0] + dx, pos[1] + dy
 
 
-def _mode6_legal_actions(pos, walkable_tiles):
-    actions = ["STAY"]
-    for action in ("UP", "DOWN", "LEFT", "RIGHT"):
-        next_pos = _mode6_move(pos, action)
-        if next_pos in walkable_tiles:
+def mode6_legal_actions(actor_tile, remaining_set=None, blocked=None,
+                        neighbors=None):
+    blocked = set(blocked or ())
+    walkable = None if callable(neighbors) or neighbors is None else neighbors
+    actions = []
+    for action in MODE6_ACTIONS:
+        next_tile = _mode6_move(actor_tile, action)
+        if next_tile in blocked:
+            continue
+        if action == "STAY":
+            actions.append(action)
+            continue
+        if callable(neighbors):
+            if next_tile in neighbors(actor_tile, blocked):
+                actions.append(action)
+        elif neighbors is None:
+            continue
+        elif next_tile in walkable:
             actions.append(action)
     return actions
+
+
+def _mode6_walkable_actions(pos, walkable_tiles, action_cache=None):
+    if action_cache is not None and pos in action_cache:
+        return list(action_cache[pos])
+
+    actions = mode6_legal_actions(pos, blocked=set(), neighbors=walkable_tiles)
+    if action_cache is not None:
+        action_cache[pos] = tuple(actions)
+    return actions
+
+
+def _mode6_legal_actions(pos, walkable_tiles):
+    return _mode6_walkable_actions(pos, walkable_tiles)
+
+
+def _mode6_enemy_legal_actions(enemy_pos, remaining, all_crops, protected,
+                               destroyed, crop_profiles, walkable_tiles,
+                               enemy_threat_tile=None,
+                               enemy_threat_turns=0, action_cache=None):
+    actions = _mode6_walkable_actions(
+        enemy_pos, walkable_tiles, action_cache)
+    if not actions:
+        return [mode6_enemy_greedy_action(
+            enemy_pos, all_crops, protected, destroyed, crop_profiles,
+            walkable_tiles, enemy_threat_tile, enemy_threat_turns)]
+
+    return sorted(
+        actions,
+        key=lambda action: (
+            -_mode6_action_score(
+                enemy_pos, action, remaining, crop_profiles,
+                priority_tile=enemy_threat_tile),
+            MODE6_ACTIONS.index(action),
+        ))
+
+
+def _mode6_enemy_legal_frontier(enemy_pos, remaining, all_crops, protected,
+                                destroyed, crop_profiles, walkable_tiles,
+                                enemy_threat_tile=None,
+                                enemy_threat_turns=0):
+    actions = _mode6_walkable_actions(enemy_pos, walkable_tiles)
+    if actions:
+        return actions
+    return [mode6_enemy_greedy_action(
+        enemy_pos, all_crops, protected, destroyed, crop_profiles,
+        walkable_tiles, enemy_threat_tile, enemy_threat_turns)]
 
 
 def _mode6_action_score(pos, action, remaining, crop_profiles, avoid_pos=None,
@@ -2139,8 +2199,9 @@ def _mode6_action_score(pos, action, remaining, crop_profiles, avoid_pos=None,
 
 
 def _mode6_rank_actions(pos, walkable_tiles, remaining, crop_profiles,
-                        avoid_pos=None, resolved=None, priority_tile=None):
-    actions = _mode6_legal_actions(pos, walkable_tiles)
+                        avoid_pos=None, resolved=None, priority_tile=None,
+                        action_cache=None):
+    actions = _mode6_walkable_actions(pos, walkable_tiles, action_cache)
     can_interact_here = pos in remaining or pos == priority_tile
     moving_actions = [action for action in actions if action != "STAY"]
     if moving_actions and not can_interact_here:
@@ -2212,6 +2273,8 @@ def mode6_enemy_greedy_action(enemy_pos, farm_tiles, protected, destroyed,
 
 
 def _mode6_remaining(all_crops, protected, destroyed):
+    if isinstance(all_crops, frozenset):
+        return set(all_crops.difference(protected, destroyed))
     return set(all_crops) - set(protected) - set(destroyed)
 
 
@@ -2332,6 +2395,7 @@ def _mode6_search(algorithm, robot_pos, enemy_pos, protected, destroyed,
     if memo_key in memo:
         return memo[memo_key]
 
+    action_cache = counters.setdefault("action_cache", {})
     counters["evaluated"] += 1
     remaining = _mode6_remaining(all_crops, protected, destroyed)
     if depth <= 0 or not remaining:
@@ -2349,7 +2413,7 @@ def _mode6_search(algorithm, robot_pos, enemy_pos, protected, destroyed,
     resolved = set(all_crops) - remaining
     robot_actions = _mode6_rank_actions(
         robot_pos, walkable_tiles, remaining, crop_profiles, robot_prev,
-        resolved, enemy_threat_tile)
+        resolved, enemy_threat_tile, action_cache)
 
     best_value = -INF
     best_line = []
@@ -2363,9 +2427,10 @@ def _mode6_search(algorithm, robot_pos, enemy_pos, protected, destroyed,
             enemy_value = INF
             enemy_line = []
             local_beta = beta
-            enemy_actions = [mode6_enemy_greedy_action(
-                enemy_pos, all_crops, protected, destroyed, crop_profiles,
-                walkable_tiles, enemy_threat_tile, enemy_threat_turns)]
+            enemy_actions = _mode6_enemy_legal_actions(
+                enemy_pos, remaining, all_crops, protected, destroyed,
+                crop_profiles, walkable_tiles, enemy_threat_tile,
+                enemy_threat_turns, action_cache)
             for enemy_index, enemy_action in enumerate(enemy_actions):
                 next_enemy = _mode6_move(enemy_pos, enemy_action)
                 (next_protected, next_destroyed, chance_tile,
@@ -2504,7 +2569,7 @@ def adversarial_choose(algorithm, robot_pos, enemy_pos, all_crops,
                        enemy_threat_tile=None, enemy_threat_turns=0,
                        robot_repair_tile=None, robot_repair_turns=0):
     crop_profiles = crop_profiles or {}
-    all_crops = tuple(all_crops)
+    all_crops = frozenset(all_crops)
     protected = frozenset(protected)
     destroyed = frozenset(destroyed)
     walkable_tiles = set(walkable_tiles or all_crops)
@@ -2533,7 +2598,8 @@ def adversarial_choose(algorithm, robot_pos, enemy_pos, all_crops,
     remaining = _mode6_remaining(all_crops, protected, destroyed)
     robot_frontier = _mode6_rank_actions(
         robot_pos, walkable_tiles, remaining, crop_profiles, robot_prev,
-        set(all_crops) - remaining, enemy_threat_tile)
+        set(all_crops) - remaining, enemy_threat_tile,
+        counters.setdefault("action_cache", {}))
     if algorithm == "Expectimax":
         greedy_enemy_action = "CHANCE"
         enemy_priority_target = None
@@ -2546,9 +2612,12 @@ def adversarial_choose(algorithm, robot_pos, enemy_pos, all_crops,
          enemy_priority_score) = _mode6_enemy_greedy_choice(
             enemy_pos, all_crops, protected, destroyed, crop_profiles,
             walkable_tiles, enemy_threat_tile, enemy_threat_turns)
-        enemy_frontier = [greedy_enemy_action]
-        enemy_policy = "Greedy Saboteur"
-        enemy_response = "one fixed greedy action per MAX action"
+        enemy_frontier = _mode6_enemy_legal_frontier(
+            enemy_pos, remaining, all_crops, protected, destroyed,
+            crop_profiles, walkable_tiles, enemy_threat_tile,
+            enemy_threat_turns)
+        enemy_policy = "Full MIN legal actions"
+        enemy_response = "adversarial min over all legal enemy actions"
 
     stats = {
         "Algorithm": algorithm,
@@ -2573,6 +2642,7 @@ def adversarial_choose(algorithm, robot_pos, enemy_pos, all_crops,
         "MAX nodes": counters["max"],
         "MIN nodes": counters["min"],
         "CHANCE nodes": counters["chance"],
+        "Nodes explored": counters["evaluated"],
         "Nodes evaluated": counters["evaluated"],
         "MAX frontier": ", ".join(robot_frontier),
         "MIN frontier": ", ".join(enemy_frontier),
