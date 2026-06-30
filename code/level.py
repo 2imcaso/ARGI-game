@@ -560,7 +560,30 @@ class Level:
 		image = pygame.image.load(path).convert_alpha()
 		return pygame.transform.scale(image, size)
 
-	def _make_decor_surface(self, kind):
+	def _load_rock_surface(self, tile=None):
+		path = os.path.join("..", "graphics", "ai_visuals", "Rocks.png")
+		if not os.path.exists(path):
+			return None
+		sheet = pygame.image.load(path).convert_alpha()
+		frame_size = 16
+		frames = []
+		for y in range(0, sheet.get_height(), frame_size):
+			for x in range(0, sheet.get_width(), frame_size):
+				if x + frame_size <= sheet.get_width() and y + frame_size <= sheet.get_height():
+					frames.append(sheet.subsurface(pygame.Rect(x, y, frame_size, frame_size)).copy())
+		if not frames:
+			return None
+
+		if tile is None:
+			index = 0
+		else:
+			index = (tile[0] * 7 + tile[1] * 11) % len(frames)
+		rock = pygame.transform.scale(frames[index], (TILE_SIZE - 14, TILE_SIZE - 14))
+		surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+		surf.blit(rock, rock.get_rect(midbottom=(TILE_SIZE // 2, TILE_SIZE - 4)))
+		return surf
+
+	def _make_decor_surface(self, kind, tile=None):
 		asset_paths = {
 			'storm_debris': 'graphics/ai_visuals/storm_debris.png',
 			'mud': 'graphics/ai_visuals/mud.png',
@@ -612,6 +635,9 @@ class Level:
 			pygame.draw.circle(surf, Colors.WOOD_SIGN, (49, 30), 6, 2)
 			return surf, LAYERS['main']
 		if kind == 'rock_pile':
+			rock = self._load_rock_surface(tile)
+			if rock:
+				return rock, LAYERS['main']
 			pygame.draw.circle(surf, Colors.DEBRIS_MID, (25, 35), 15)
 			pygame.draw.circle(surf, Colors.DEBRIS, (38, 31), 13)
 			pygame.draw.circle(surf, Colors.DEBRIS_DARK, (18, 27), 10)
@@ -681,7 +707,7 @@ class Level:
 			tx, ty = tile
 			pos = (tx * TILE_SIZE, ty * TILE_SIZE)
 			kind = obstacle_kinds.get(tile, 'storm_debris')
-			surf, layer = self._make_decor_surface(kind)
+			surf, layer = self._make_decor_surface(kind, tile)
 			obstacle = Generic(
 				pos, surf,
 				[self.all_sprites, self.collision_sprites],

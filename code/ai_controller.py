@@ -1,4 +1,4 @@
-from collections import deque
+﻿from collections import deque
 from itertools import count
 import heapq
 import math
@@ -57,7 +57,7 @@ class FarmAIController:
 
     MODE6_ACTION_TIME = 1.0
     MODE6_RESOLVE_TIME = 0.0
-    MODE6_EXPECTIMAX_CHANCE_INTERVAL = 1.0
+    MODE6_EXPECTIMAX_CHANCE_INTERVAL = 2.0
     ENEMY_DESTROY_TIME = MODE6_ACTION_TIME
     ENEMY_RETARGET_DELAY = 0.08
     MODE6_ENEMY_SPEED_SCALE = 0.85
@@ -129,6 +129,9 @@ class FarmAIController:
         self.mode1_ucs_current_leg_extra_cost = 0
         self.mode2_total_g = 0
         self.mode2_current_leg_g = 0
+        self.mode2_total_weighted_g = 0.0
+        self.mode2_current_leg_weighted_g = 0.0
+        self.mode2_prev_dir = None
         self.mode2_current_leg_start = None
         self.mode2_current_leg_target = None
         self.mode2_current_step_stats = []
@@ -165,6 +168,7 @@ class FarmAIController:
 
         # --- Thá»‘ng kĂª hiá»ƒn thá»‹ chung ---
         self.stats = {}
+        self.algorithm_elapsed_seconds = {}
 
         # --- Mode 1 (BFS): lÆ°u explored nodes ---
         self.bfs_explored = set()
@@ -191,6 +195,12 @@ class FarmAIController:
                 condition, algorithms.MODE6_TREE_STATUS["dry"]))
             for tile, condition in self.tile_conditions.items()
         } if self.mode == 6 else {}
+        self.mode6_lightning_rod_tile = (
+            (max(tile[0] for tile in self.farm_tiles) + 1,
+             min(tile[1] for tile in self.farm_tiles))
+            if self.mode == 6 and self.farm_tiles
+            else None
+        )
         self.danger_level = self._build_danger_levels()
 
         # --- Mode 4 (Online Search): fog-of-war ---
@@ -340,6 +350,8 @@ class FarmAIController:
         self.mode6_loop_count = 0
         self.mode6_shared_target = None
         self.mode6_shared_target_count = 0
+        self.mode6_enemy_aim_target = None
+        self.mode6_enemy_aim_count = 0
         self.mode6_lightning_effects = []
         if self.mode == 6:
             if enemy_spawn is not None:
@@ -370,6 +382,7 @@ class FarmAIController:
         if not options or algorithm_name not in options:
             return False
         self.algorithm_name = algorithm_name
+        self._reset_current_algorithm_timer()
         self.message = f"Khu {self.mode}: {self.algorithm_name}"
         self.stats = {}
         self.path = []
@@ -388,6 +401,9 @@ class FarmAIController:
         self.mode1_ucs_current_leg_extra_cost = 0
         self.mode2_total_g = 0
         self.mode2_current_leg_g = 0
+        self.mode2_total_weighted_g = 0.0
+        self.mode2_current_leg_weighted_g = 0.0
+        self.mode2_prev_dir = None
         self.mode2_current_leg_start = None
         self.mode2_current_leg_target = None
         self.mode2_current_step_stats = []
@@ -478,6 +494,7 @@ class FarmAIController:
 
     def _reset_mode6_runtime(self, reset_positions=True):
         self.player.speed = self.mode6_player_base_speed
+        self._reset_current_algorithm_timer()
         self.done_tiles.clear()
         self.enemy_done_tiles.clear()
         self.current_target = None
@@ -535,6 +552,8 @@ class FarmAIController:
         self.mode6_loop_count = 0
         self.mode6_shared_target = None
         self.mode6_shared_target_count = 0
+        self.mode6_enemy_aim_target = None
+        self.mode6_enemy_aim_count = 0
         self.mode6_lightning_effects = []
         self.state = "PLAN_STEP"
         self.stats = {}
@@ -580,6 +599,39 @@ class FarmAIController:
             self.player.speed = self.mode6_player_base_speed
         self.player.direction.update(0, 0)
         self.message = "Tam dung"
+
+
+    def _algorithm_timer_key(self):
+        return (self.mode, self.algorithm_name)
+
+
+    def _reset_current_algorithm_timer(self):
+        self.algorithm_elapsed_seconds[self._algorithm_timer_key()] = 0.0
+
+
+    def _current_algorithm_elapsed(self):
+        return self.algorithm_elapsed_seconds.get(
+            self._algorithm_timer_key(), 0.0)
+
+
+    def _format_elapsed_time(self, seconds):
+        total = max(0, int(seconds))
+        minutes, secs = divmod(total, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+
+    def _tick_algorithm_timer(self, dt):
+        if not self.is_running or self.state == "DONE":
+            return
+        key = self._algorithm_timer_key()
+        self.algorithm_elapsed_seconds[key] = (
+            self.algorithm_elapsed_seconds.get(key, 0.0) + max(0.0, dt))
+        if isinstance(self.stats, dict):
+            self.stats["Run time"] = self._format_elapsed_time(
+                self.algorithm_elapsed_seconds[key])
 
 
     def handle_panel_click(self, pos):
@@ -743,6 +795,7 @@ class FarmAIController:
             "crow": "crow.png",
             "bat": "bat.gif",
             "lightning": "lightining2.gif",
+            "lightning_rod": "lightning_rod.png",
             "crow_damage": "crow_damage.png",
             "crow_wilted_plant": "crow_wilted_plant.png",
         }
@@ -752,9 +805,43 @@ class FarmAIController:
             if os.path.exists(path):
                 image = pygame.image.load(path).convert_alpha()
                 assets[key] = pygame.transform.scale(image, (TILE_SIZE, TILE_SIZE))
+        lightning = assets.get("lightning")
+        if lightning is not None:
+            effect_size = (
+                lightning.get_width() * self.LIGHTNING_EFFECT_SCALE,
+                lightning.get_height() * self.LIGHTNING_EFFECT_SCALE,
+            )
+            assets["lightning_effect"] = pygame.transform.scale(
+                lightning, effect_size)
         bat_animations = self._load_bat_animations(asset_dir)
         assets.update(bat_animations)
+        rock_frames = self._load_rock_frames(asset_dir)
+        if rock_frames:
+            assets["rocks"] = rock_frames
         return assets
+
+
+    def _load_rock_frames(self, asset_dir):
+        path = os.path.join(asset_dir, "Rocks.png")
+        if not os.path.exists(path):
+            return []
+
+        sheet = pygame.image.load(path).convert_alpha()
+        frame_size = 16
+        frames = []
+        for y in range(0, sheet.get_height(), frame_size):
+            for x in range(0, sheet.get_width(), frame_size):
+                if x + frame_size > sheet.get_width() or y + frame_size > sheet.get_height():
+                    continue
+                frame = sheet.subsurface(
+                    pygame.Rect(x, y, frame_size, frame_size)).copy()
+                image = pygame.transform.scale(
+                    frame, (TILE_SIZE - 14, TILE_SIZE - 14))
+                surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                surf.blit(image, image.get_rect(
+                    midbottom=(TILE_SIZE // 2, TILE_SIZE - 4)))
+                frames.append(surf)
+        return frames
 
 
     def _load_bat_animations(self, asset_dir):
@@ -822,6 +909,10 @@ class FarmAIController:
         image = self.visual_assets.get(asset_key)
         if image is None:
             return
+        if isinstance(image, list):
+            if not image:
+                return
+            image = image[(tile[0] * 7 + tile[1] * 11) % len(image)]
         world = self._tile_center(tile)
         rect = image.get_rect(center=(int(world.x - offset.x),
                                       int(world.y - offset.y + y_offset)))
@@ -835,9 +926,18 @@ class FarmAIController:
         self.mode6_lightning_effects.append((tile, expires_at))
 
 
+    def _draw_mode6_lightning_rod(self, surface, offset):
+        if (self.mode != 6
+                or self.algorithm_name not in ("Expectimax", "Expectiminimax")
+                or self.mode6_lightning_rod_tile is None):
+            return
+        self._blit_tile_asset(
+            surface, offset, self.mode6_lightning_rod_tile, "lightning_rod")
+
+
     def _draw_lightning_effects(self, surface, offset):
-        image = self.visual_assets.get("lightning")
-        if image is None or not self.mode6_lightning_effects:
+        image = self.visual_assets.get("lightning_effect")
+        if not self.mode6_lightning_effects:
             return
 
         now = pygame.time.get_ticks()
@@ -846,18 +946,13 @@ class FarmAIController:
             if now >= expires_at:
                 continue
             active_effects.append((tile, expires_at))
+            if image is None:
+                continue
             world = self._tile_center(tile)
-            alpha = max(40, int(255 * (expires_at - now) / self.LIGHTNING_EFFECT_MS))
-            frame = image.copy()
-            frame.set_alpha(alpha)
-            lightning_size = (
-                max(1, int(frame.get_width() * self.LIGHTNING_EFFECT_SCALE)),
-                max(1, int(frame.get_height() * self.LIGHTNING_EFFECT_SCALE)))
-            frame = pygame.transform.scale(frame, lightning_size)
-            rect = frame.get_rect(center=(
+            rect = image.get_rect(center=(
                 int(world.x - offset.x),
                 int(world.y - offset.y - 24)))
-            surface.blit(frame, rect)
+            surface.blit(image, rect)
         self.mode6_lightning_effects = active_effects
 
 
@@ -1259,33 +1354,48 @@ class FarmAIController:
         blocked.discard(start)
         blocked.discard(goal)
         name = algorithm_name or self.algorithm_name
+        prev_dir = self.mode2_prev_dir if name == "A*_v2" else None
         path, explored, fgh, stats = algorithms.find_path_by_algorithm(
             name, start, goal, blocked, self._neighbors, self._search_heuristic,
-            self.counter, self._step_cost)
+            self.counter, self._step_cost, prev_dir_override=prev_dir)
         self.astar_current_fgh = fgh
         stats["Algorithm"] = name
         if self.mode == 2 and goal in self.farm_tiles:
             g_leg = len(path)
             self.mode2_current_leg_g = g_leg
             self.mode2_current_leg_target = goal
-            display_g = self.mode2_total_g + g_leg
-            if name == "Greedy":
+            if name == "A*_v2":
+                weighted_f, real_g, h_val = fgh
+                display_g = self.mode2_total_g + real_g
+                weighted_g_leg = weighted_f - h_val
+                self.mode2_current_leg_weighted_g = weighted_g_leg
+                self._apply_mode2_hud_stats(
+                    stats, start, goal, fgh, display_g,
+                    weighted_display=True)
+                stats["g leg"] = real_g
+                stats["g weighted leg"] = f"{weighted_g_leg:.1f}"
+                stats["g completed"] = self.mode2_total_g
+                stats["g weighted completed"] = (
+                    f"{self.mode2_total_weighted_g:.1f}")
+            elif name == "Greedy":
                 stats.pop("f(n)", None)
                 stats.pop("g(n)", None)
                 stats["Priority"] = "min h(n)"
                 self._apply_mode2_hud_stats(stats, start, goal)
+                stats["g leg"] = g_leg
+                stats["g completed"] = self.mode2_total_g
             else:
-                # For A*/IDSA, fgh returned by algorithms uses real accumulated
-                # g and the heuristic supplied above.
+                # For A*/IDSA, display cumulative travel to this target.
+                display_g = self.mode2_total_g + g_leg
                 self._apply_mode2_hud_stats(
                     stats, start, goal, self.astar_current_fgh, display_g)
-            stats["g leg"] = g_leg
-            stats["g completed"] = self.mode2_total_g
+                stats["g leg"] = g_leg
+                stats["g completed"] = self.mode2_total_g
         if self.mode == 1:
             self.bfs_explored = set(explored)
         elif self.mode == 2:
             self.astar_explored = explored
-        elif name == "A*":
+        elif name in ("A*", "A*_v2"):
             self.astar_explored = explored
         self.stats = stats
         return path
@@ -1529,13 +1639,58 @@ class FarmAIController:
         return priority, distance, condition_cost, distance + condition_cost
 
 
+    @staticmethod
+    def _step_direction(from_tile, to_tile):
+        dx = to_tile[0] - from_tile[0]
+        dy = to_tile[1] - from_tile[1]
+        if dx > 0:
+            return "R"
+        if dx < 0:
+            return "L"
+        if dy > 0:
+            return "D"
+        if dy < 0:
+            return "U"
+        return None
+
+
+    def _count_turns_in_path(self, path, start=None, initial_dir=None):
+        turns = 0
+        previous_dir = initial_dir
+        for index in range(len(path)):
+            from_tile = start if index == 0 else path[index - 1]
+            if from_tile is None:
+                continue
+            direction = self._step_direction(from_tile, path[index])
+            if (previous_dir is not None and direction is not None
+                    and direction != previous_dir):
+                turns += 1
+            previous_dir = direction
+        return turns
+
+
     def _apply_mode2_hud_stats(
-            self, stats, current_node, target, fgh=None, display_g=None):
+            self, stats, current_node, target, fgh=None, display_g=None,
+            weighted_display=False):
         priority, distance, condition_cost, h = self._mode2_h_parts(
             current_node, target)
         condition = self._condition_for_tile(target)
 
-        if fgh is not None and self.algorithm_name != "Greedy":
+        if fgh is not None and self.algorithm_name == "A*_v2":
+            weighted_f, real_g, h_val = fgh
+            if weighted_display and display_g is not None:
+                weighted_g = (
+                    self.mode2_total_weighted_g + weighted_f - h_val)
+                stats["f(n)"] = f"{weighted_g + h_val:.1f}"
+                stats["g(n)"] = (
+                    f"{display_g} + turns*{algorithms.TURN_PENALTY:.1f}")
+            else:
+                stats["f(n)"] = f"{weighted_f:.1f}"
+                stats["g(n)"] = (
+                    f"{real_g} + turns*{algorithms.TURN_PENALTY:.1f}")
+            stats["g steps"] = real_g
+            stats["h(n)"] = f"{h_val:.1f}"
+        elif fgh is not None and self.algorithm_name != "Greedy":
             _, g_val, _ = fgh
             if display_g is not None:
                 g_val = display_g
@@ -1551,7 +1706,9 @@ class FarmAIController:
         stats["h condition"] = (
             f"2 * {priority} = {condition_cost} ({condition})")
         stats["h formula"] = "Manhattan + 2 * condition"
-        stats["g formula"] = "+1 per move"
+        stats["g formula"] = (
+            f"steps + turns*{algorithms.TURN_PENALTY:.1f}"
+            if self.algorithm_name == "A*_v2" else "+1 per move")
         return stats
 
 
@@ -1674,6 +1831,10 @@ class FarmAIController:
             return
         self.mode2_total_g += self.mode2_current_leg_g
         self.mode2_current_leg_g = 0
+        if self.algorithm_name == "A*_v2":
+            self.mode2_total_weighted_g += (
+                self.mode2_current_leg_weighted_g)
+            self.mode2_current_leg_weighted_g = 0.0
         self.mode2_current_leg_target = None
         self.mode2_current_leg_start = None
         self.mode2_current_step_stats = []
@@ -1831,7 +1992,7 @@ class FarmAIController:
         }
 
 
-    def _mode2_plan_one_leg(self, parent, target):
+    def _mode2_plan_one_leg(self, parent, target, prev_dir_override=None):
         """Plan one Mode-2 leg from parent to target.
 
         The search algorithm still owns the path.  The only change is that
@@ -1848,7 +2009,8 @@ class FarmAIController:
         return algorithms.find_path_by_algorithm(
             self.algorithm_name, parent, target, blocked,
             self._neighbors, self._search_heuristic,
-            self.counter, self._step_cost)
+            self.counter, self._step_cost,
+            prev_dir_override=prev_dir_override)
 
 
     def _mode2_set_leg_runtime_stats(
@@ -1859,6 +2021,15 @@ class FarmAIController:
         self.mode2_current_leg_start = parent
         self.mode2_current_leg_target = target
         self.mode2_current_step_index = 0
+        if self.algorithm_name == "A*_v2":
+            weighted_f, _, h_val = fgh
+            self.mode2_current_leg_weighted_g = weighted_f - h_val
+            if path:
+                previous_tile = parent if len(path) == 1 else path[-2]
+                self.mode2_prev_dir = self._step_direction(
+                    previous_tile, path[-1])
+        else:
+            self.mode2_current_leg_weighted_g = 0.0
         if step_stats is None:
             self.mode2_current_step_stats = self._mode2_build_step_stats(
                 parent, target, path, len(explored), sort_key)
@@ -1871,22 +2042,33 @@ class FarmAIController:
 
     def _mode2_build_step_stats(
             self, parent, target, path, explored_count, sort_key,
-            completed_g=None):
+            completed_g=None, completed_weighted_g=None):
         if completed_g is None:
             completed_g = self.mode2_total_g
+        if completed_weighted_g is None:
+            completed_weighted_g = self.mode2_total_weighted_g
         nodes = [parent] + list(path)
         result = []
         priority, distance, condition_cost, h = self._mode2_h_parts(
             parent, target)
         g_val = completed_g + len(path)
         f_val = g_val + h
+        turns = self._count_turns_in_path(
+            path, parent, self.mode2_prev_dir)
+        weighted_g = (
+            completed_weighted_g + len(path)
+            + turns * algorithms.TURN_PENALTY)
         for step_index, node in enumerate(nodes):
             next_node = nodes[step_index + 1] if step_index + 1 < len(nodes) else target
             stats = {
                 "Algorithm": self.algorithm_name,
                 "Target": f"{target}",
-                "f(n)": f"{f_val}",
-                "g(n)": f"{g_val}",
+                "f(n)": (
+                    f"{weighted_g + h:.1f}"
+                    if self.algorithm_name == "A*_v2" else f"{f_val}"),
+                "g(n)": (
+                    f"{g_val} + {turns}*{algorithms.TURN_PENALTY:.1f}"
+                    if self.algorithm_name == "A*_v2" else f"{g_val}"),
                 "h(n)": f"{h}",
                 "h distance": f"{distance}",
                 "h condition": (
@@ -1906,6 +2088,11 @@ class FarmAIController:
                 "score(target)": sort_key[0],
                 "Tie-break": "score, condition, Manhattan, tile",
             }
+            if self.algorithm_name == "A*_v2":
+                stats["g steps"] = g_val
+                stats["g weighted"] = f"{weighted_g:.1f}"
+                stats["Turns"] = turns
+                stats["Turn penalty"] = algorithms.TURN_PENALTY
             if self.algorithm_name == "Greedy":
                 stats.pop("f(n)", None)
                 stats.pop("g(n)", None)
@@ -1925,7 +2112,15 @@ class FarmAIController:
         g_val = stats.get("g(n)")
         h_val = stats.get("h(n)")
         if f_val is not None and g_val is not None and h_val is not None:
-            self.astar_current_fgh = (int(f_val), int(g_val), int(h_val))
+            try:
+                self.astar_current_fgh = (
+                    int(f_val), int(g_val), int(h_val))
+            except (ValueError, TypeError):
+                try:
+                    self.astar_current_fgh = (
+                        float(f_val), float(g_val), float(h_val))
+                except (ValueError, TypeError):
+                    self.astar_current_fgh = (0, 0, 0)
         self.stats = stats
 
 
@@ -1962,6 +2157,8 @@ class FarmAIController:
         queued = set()
         current = start
         total_g = self.mode2_total_g
+        total_weighted_g = self.mode2_total_weighted_g
+        planning_prev_dir = self.mode2_prev_dir
         last_fgh = (0, 0, 0)
         max_frontier = 0
 
@@ -2022,8 +2219,8 @@ class FarmAIController:
         def push_next_frontier(center):
             push_frontier_neighbors(center)
 
-        def save_leg(parent, target, path, explored):
-            nonlocal current, last_fgh
+        def save_leg(parent, target, path, explored, leg_fgh=None):
+            nonlocal current, last_fgh, total_weighted_g, planning_prev_dir
             if path and not self._path_is_contiguous(parent, path):
                 return False
 
@@ -2031,12 +2228,21 @@ class FarmAIController:
             priority, distance, _, h_before = self._mode2_h_parts(
                 parent, target)
             g_leg = len(path)
-            fgh = (completed_g + g_leg + h_before,
-                   completed_g + g_leg,
-                   h_before)
+            if self.algorithm_name == "A*_v2":
+                turns = self._count_turns_in_path(
+                    path, parent, planning_prev_dir)
+                weighted_leg = (
+                    g_leg + turns * algorithms.TURN_PENALTY)
+                fgh = (weighted_leg + h_before, g_leg, h_before)
+            else:
+                weighted_leg = 0.0
+                fgh = (completed_g + g_leg + h_before,
+                       completed_g + g_leg,
+                       h_before)
             sort_key = (h_before, priority, distance, target)
             step_stats = self._mode2_build_step_stats(
-                parent, target, path, len(explored), sort_key, completed_g)
+                parent, target, path, len(explored), sort_key, completed_g,
+                total_weighted_g)
 
             plan.append(target)
             planned.add(target)
@@ -2046,6 +2252,12 @@ class FarmAIController:
                 parent, list(path), set(explored), fgh, sort_key, step_stats)
             explored_all.update(explored)
             last_fgh = fgh
+            if self.algorithm_name == "A*_v2":
+                total_weighted_g += weighted_leg
+                if path:
+                    previous_tile = parent if len(path) == 1 else path[-2]
+                    planning_prev_dir = self._step_direction(
+                        previous_tile, path[-1])
             current = target
             return True
 
@@ -2079,13 +2291,18 @@ class FarmAIController:
 
             if self._is_adjacent_tile(current, target):
                 path, explored = [target], {current, target}
+                leg_fgh = None
             else:
-                path, explored, _, _ = self._mode2_plan_one_leg(
-                    current, target)
+                path, explored, leg_fgh, _ = self._mode2_plan_one_leg(
+                    current, target,
+                    prev_dir_override=(
+                        planning_prev_dir
+                        if self.algorithm_name == "A*_v2" else None))
                 if not path and current != target:
                     continue
 
-            if not save_leg(current, target, path, explored):
+            if not save_leg(
+                    current, target, path, explored, leg_fgh=leg_fgh):
                 continue
             push_next_frontier(target)
 
@@ -2104,6 +2321,8 @@ class FarmAIController:
             "Frontier rule": "push only 4-neighbor farm tiles",
             "Priority": (
                 "h(n)" if self.algorithm_name == "Greedy"
+                else "weighted g(n) + h(n)"
+                if self.algorithm_name == "A*_v2"
                 else "f(n) = g(n) + h(n)"),
             "Tie-break": (
                 "h, condition, tile"
@@ -4084,6 +4303,15 @@ class FarmAIController:
         return bad
 
 
+    def _csp_mark_conflict_fixed(self, tile):
+        """Min-Conflicts da sua xong tile nay trong replay, khong di lai nua."""
+        if tile is None:
+            return
+        self.done_tiles.add(tile)
+        self.csp_seeded_tiles.add(tile)
+        self._advance_full_garden_plan(tile)
+
+
     def _update_csp_flash_timers(self, dt):
         """Keep temporary red backtrack flashes moving even while the robot walks."""
         for tile in list(self.csp_flash_timers):
@@ -4348,6 +4576,7 @@ class FarmAIController:
             # Day la luc o nay THUC SU duoc sua -> chuyen tu do sang xanh.
             self.csp_display[var] = (value, "assign")
             self.csp_assigned[var] = value
+            self._csp_mark_conflict_fixed(var)
             # Tinh lai TOAN BO tap xung dot tu csp_assigned hien tai, thay vi
             # chi xoa/them tung tile rieng le. Ly do: khi var doi gia tri,
             # mot hang xom A da bi to do truoc do (vi tung cung mau VOI GIA
@@ -4598,16 +4827,14 @@ class FarmAIController:
         elif self.algorithm_name == "Expectimax":
             live.update({
                 "Node flow": "MAX -> CHANCE",
-                "Chance interval": (
-                    f"{self.mode6_random_chance_elapsed:.1f}/"
-                    f"{self.MODE6_EXPECTIMAX_CHANCE_INTERVAL:.1f}s"),
+                "Chance outcomes": "An toan 50% | Set 20% | Cot thu loi 30%",
                 "Chance event": self.mode6_chance_event or "-",
                 "Chance probability": (
                     f"{self.mode6_chance_probability * 100:.0f}%"),
             })
         else:
             live.update({
-                "Node flow": "MAX -> GREEDY -> CHANCE",
+                "Node flow": "MAX -> MIN -> CHANCE",
                 "Chance event": self.mode6_chance_event or "-",
                 "Chance probability": (
                     f"{self.mode6_chance_probability * 100:.0f}%"),
@@ -4658,11 +4885,11 @@ class FarmAIController:
     def _resolve_mode6_outcome(self, target):
         """Resolve MIN directly or sample the CHANCE node at the target."""
         damaged_tile = target
-        outcome_key = "sabotage_success"
+        outcome_key = "weather_damage"
         outcome_label = "Crow destroyed tree"
         sampled_probability = 1.0
 
-        if self.algorithm_name in ("Expectimax", "Expectiminimax"):
+        if self.algorithm_name == "Expectimax":
             outcomes = algorithms.mode6_chance_outcomes(
                 target, self.mode6_crop_profiles)
             roll = random.random()
@@ -4674,21 +4901,24 @@ class FarmAIController:
                     sampled_probability = probability
                     break
             outcome_label = algorithms.MODE6_CHANCE_LABELS[outcome_key]
-            if outcome_key == "no_damage":
+            if outcome_key in ("no_damage", "lightning_rod"):
                 damaged_tile = None
             self.mode6_chance_event = outcome_label
             self.mode6_chance_probability = sampled_probability
 
         if damaged_tile is not None:
             self.enemy_done_tiles.add(damaged_tile)
-            if self.algorithm_name in ("Expectimax", "Expectiminimax"):
+            if self.algorithm_name == "Expectimax":
                 self._trigger_lightning_effect(damaged_tile)
             self.message = f"{outcome_label}: {damaged_tile}"
         else:
+            if outcome_key == "lightning_rod" and target is not None:
+                self._trigger_lightning_effect(
+                    self.mode6_lightning_rod_tile or target)
             self.message = f"Chance node: {outcome_label}"
         self.mode6_phase = (
             "MODE6_CHANCE"
-            if self.algorithm_name in ("Expectimax", "Expectiminimax")
+            if self.algorithm_name == "Expectimax"
             else "MODE6_RESOLVE")
         self._update_mode6_step_hud(
             phase=self.mode6_phase,
@@ -4775,6 +5005,15 @@ class FarmAIController:
             tile for tile in self.farm_tiles
             if tile not in processed
         ]
+
+
+    def _mode6_select_active_chance_tile(self):
+        remaining = self._mode6_remaining_tiles()
+        if not remaining:
+            return None
+        tiles, weights = algorithms.mode6_chance_tile_weights(
+            remaining, self.mode6_crop_profiles)
+        return random.choices(tiles, weights=weights, k=1)[0]
 
 
     def _mode6_should_interrupt_repair(self, robot_tile, remaining_set):
@@ -4960,7 +5199,7 @@ class FarmAIController:
             self.mode6_phase = "RESOLVE"
             self._update_mode6_step_hud(phase="RESOLVE")
             return
-        if self.algorithm_name in ("Expectimax", "Expectiminimax"):
+        if self.algorithm_name == "Expectimax":
             self.state = "CHANCE"
             self.mode6_phase = "CHANCE"
             self.mode6_pending_actor = "enemy"
@@ -5006,7 +5245,11 @@ class FarmAIController:
         self.mode6_chance_probability = probability
         if event_key == "no_damage":
             self.message = f"CHANCE: {label}, cay {tile} van con remaining"
-        else:
+        elif event_key == "lightning_rod":
+            self._trigger_lightning_effect(
+                self.mode6_lightning_rod_tile or tile)
+            self.message = f"CHANCE: {label}, cay {tile} duoc bao ve"
+        elif event_key == "weather_damage":
             self.enemy_done_tiles.add(tile)
             self._trigger_lightning_effect(tile)
             if self.mode6_robot_repair_tile == tile:
@@ -5217,6 +5460,41 @@ class FarmAIController:
         return self.mode6_shared_target_count >= 3
 
 
+    def _mode6_apply_enemy_aim_commit(self, enemy_tile, remaining_set):
+        target = self.mode6_tree_details.get("enemy_priority_target")
+        if target not in remaining_set:
+            self.mode6_enemy_aim_target = None
+            self.mode6_enemy_aim_count = 0
+            return
+
+        if target == self.mode6_enemy_aim_target:
+            self.mode6_enemy_aim_count += 1
+        else:
+            self.mode6_enemy_aim_target = target
+            self.mode6_enemy_aim_count = 1
+
+        self.mode6_tree_details["enemy_aim_count"] = (
+            f"{self.mode6_enemy_aim_target}: "
+            f"{self.mode6_enemy_aim_count}/2")
+        if self.mode6_enemy_aim_count < 2:
+            return
+
+        path = self._mode6_path_to_target(enemy_tile, target)
+        if not path and enemy_tile != target:
+            return
+
+        self.mode6_enemy_target = target
+        self.mode6_enemy_path = path
+        enemy_step = path[0] if path else enemy_tile
+        self.mode6_enemy_action = self._mode6_action_from_step(
+            enemy_tile, enemy_step)
+        self.mode6_tree_details["enemy_aim_commit"] = (
+            f"enemy commits {target} after {self.mode6_enemy_aim_count} aims")
+        if isinstance(self.stats, dict):
+            self.stats["Enemy aim commit"] = (
+                f"{target} ({self.mode6_enemy_aim_count}/2)")
+
+
     def _mode6_action_from_step(self, start, step):
         dx = step[0] - start[0]
         dy = step[1] - start[1]
@@ -5391,30 +5669,16 @@ class FarmAIController:
             self._update_mode6_step_hud(phase="DONE")
             return
 
+        if (self.algorithm_name in ("Expectimax", "Expectiminimax")
+                and self.state != "CHANCE"):
+            self.mode6_random_chance_elapsed += dt
+
         if self.state in ("PLAN_STEP", "CHOOSE_TARGET"):
             self._mode6_clear_resolved_targets()
         remaining = self._mode6_remaining_tiles()
         if not remaining and self.state not in ("CHANCE", "RESOLVE_STEP"):
             self._mode6_finish_game()
             return
-        if (self.algorithm_name == "Expectimax"
-                and self.state not in ("CHANCE", "DONE")):
-            self.mode6_random_chance_elapsed = min(
-                self.MODE6_EXPECTIMAX_CHANCE_INTERVAL,
-                self.mode6_random_chance_elapsed + dt)
-            if (self.mode6_random_chance_elapsed
-                    >= self.MODE6_EXPECTIMAX_CHANCE_INTERVAL
-                    and remaining
-                    and self.state in ("PLAN_STEP", "CHOOSE_TARGET")):
-                self.mode6_random_chance_elapsed = 0.0
-                self.mode6_pending_actor = "chance"
-                self.mode6_pending_target = random.choice(list(remaining))
-                self.state = "CHANCE"
-                self.mode6_phase = "CHANCE"
-                self.message = (
-                    f"CHANCE 5s chon {self.mode6_pending_target}")
-                self._update_mode6_step_hud(phase="CHANCE")
-                return
 
         if self.state in ("PLAN_STEP", "CHOOSE_TARGET"):
             self.state = "CHOOSE_TARGET"
@@ -5488,7 +5752,7 @@ class FarmAIController:
                 if isinstance(self.stats, dict):
                     self.stats["Enemy Policy"] = "Random Chance"
                     self.stats["Enemy Action"] = "CHANCE"
-                    self.stats["MIN action"] = "CHANCE"
+                    self.stats["MIN action"] = "N/A"
             partial_repair = (
                 robot_tile in remaining_set
                 and self.mode6_robot_repair_tile == robot_tile
@@ -5586,6 +5850,8 @@ class FarmAIController:
                             if self.mode6_enemy_path else enemy_tile)
                         self.mode6_enemy_action = self._mode6_action_from_step(
                             enemy_tile, enemy_step)
+                self._mode6_apply_enemy_aim_commit(
+                    enemy_tile, remaining_set)
             self.mode6_robot_step_target = self._mode6_apply_action(
                 robot_tile, self.mode6_robot_action)
             self.mode6_enemy_step_target = self._mode6_apply_action(
@@ -5640,7 +5906,7 @@ class FarmAIController:
                     else self.mode6_enemy_target)
                 if self.algorithm_name == "Expectimax":
                     self.stats["Enemy Action"] = "CHANCE"
-                    self.stats["MIN action"] = "CHANCE"
+                    self.stats["MIN action"] = "N/A"
             self.mode6_tree_details["crop_profiles"] = {
                 tile: {
                     "condition": self._condition_for_tile(tile),
@@ -5832,15 +6098,6 @@ class FarmAIController:
                         self.mode6_enemy_threat_tile = enemy_tile
                         self.mode6_enemy_threat_turns = 1
                     if self.mode6_enemy_threat_turns >= 2:
-                        if self.algorithm_name in (
-                                "Expectimax", "Expectiminimax"):
-                            self.mode6_pending_actor = "enemy"
-                            self.mode6_pending_target = enemy_tile
-                            self.state = "CHANCE"
-                            self.mode6_phase = "CHANCE"
-                            self.message = f"Qua pha {enemy_tile} (2/2); CHANCE"
-                            self._update_mode6_step_hud(phase="CHANCE")
-                            return
                         self.enemy_done_tiles.add(enemy_tile)
                         if self.mode6_robot_repair_tile == enemy_tile:
                             self.mode6_robot_repair_tile = None
@@ -5861,6 +6118,22 @@ class FarmAIController:
                 self.mode6_enemy_threat_turns = 0
 
             self._mode6_clear_resolved_targets()
+            chance_ready = (
+                self.algorithm_name in ("Expectimax", "Expectiminimax")
+                and self.mode6_random_chance_elapsed
+                >= self.MODE6_EXPECTIMAX_CHANCE_INTERVAL
+            )
+            if chance_ready:
+                chance_tile = self._mode6_select_active_chance_tile()
+                if chance_tile is not None:
+                    self.mode6_random_chance_elapsed = 0.0
+                    self.mode6_pending_actor = "chance"
+                    self.mode6_pending_target = chance_tile
+                    self.state = "CHANCE"
+                    self.mode6_phase = "CHANCE"
+                    self.message += f"; CHANCE tai {chance_tile}"
+                    self._update_mode6_step_hud(phase="CHANCE")
+                    return
             self._update_mode6_step_hud(phase="RESOLVE_STEP")
             self._mode6_next_state_or_done()
             return
@@ -6277,6 +6550,7 @@ class FarmAIController:
     def update(self, dt):
         if self.mode == 4:
             self.fog_time += dt
+        self._tick_algorithm_timer(dt)
 
         if self.mode == 6:
             self._update_mode6(dt)
@@ -6518,6 +6792,7 @@ class FarmAIController:
                         and not self._path_is_contiguous(start, self.path)):
                     self.path = []
                     self.mode2_current_leg_g = 0
+                    self.mode2_current_leg_weighted_g = 0.0
                     self.mode2_current_leg_start = None
                     self.mode2_current_leg_target = None
                     self.mode2_current_step_stats = []
@@ -6566,6 +6841,7 @@ class FarmAIController:
                 self.done_tiles.add(target)
                 if self.mode == 2 and target == self.mode2_current_leg_target:
                     self.mode2_current_leg_g = 0
+                    self.mode2_current_leg_weighted_g = 0.0
                     self.mode2_current_leg_start = None
                     self.mode2_current_leg_target = None
                     self.mode2_current_step_stats = []
@@ -6838,6 +7114,7 @@ class FarmAIController:
         surface (khong phai sprite cua level) nen se bi ground/soil sprite
         cua level VE SAU de len che mat neu goi truoc customize_draw."""
         self._draw_map_overlays(surface, offset)
+        self._draw_mode6_lightning_rod(surface, offset)
         self._draw_lightning_effects(surface, offset)
         self._draw_map_foreground(surface, offset)
         self._draw_panel(surface)
@@ -7021,7 +7298,7 @@ class FarmAIController:
 
             # Váº½ Ă´ block Ä‘Ă£ phĂ¡t hiá»‡n
             for tile in self.discovered_blocked:
-                self._blit_tile_asset(surface, offset, tile, "storm_debris")
+                self._blit_tile_asset(surface, offset, tile, "rocks")
                 world = self._tile_center(tile)
                 rect = pygame.Rect(0, 0, TILE_SIZE - 8, TILE_SIZE - 8)
                 rect.center = (int(world.x - offset.x),
@@ -7342,6 +7619,42 @@ class FarmAIController:
 
     # ------------------------------------------------------------ panel
 
+    def _filtered_hud_stats(self):
+        common = {
+            1: ("Target", "Path length", "Nodes explored", "Queue max",
+                "Stack max", "Depth limit", "This iteration",
+                "Total expansions", "Unique explored", "g(n)",
+                "Terrain + condition cost"),
+            2: ("Target", "f(n)", "g(n)", "h(n)", "h distance",
+                "h condition", "h formula", "f limit", "Path length",
+                "Nodes explored", "This iteration", "Total expansions"),
+            3: ("Target", "Target type", "Current score", "Hill steps",
+                "Beam width", "Generated", "Temperature", "Delta",
+                "Accepted worse", "Rejected", "Restarts"),
+            4: ("Current target", "Current node", "Next node", "Path length",
+                "Nodes explored", "Queue max", "Replanned", "Blocks found"),
+            5: ("Variables", "Backtracks", "Arc checks", "Conflicts",
+                "Assigned"),
+        }
+        keys = (
+            ("Target", "f(n)", "g(n)", "g steps", "Turns",
+             "Turn penalty", "h(n)")
+            if self.mode == 2 and self.algorithm_name == "A*_v2"
+            else common.get(self.mode, ()))
+        items = [(key, self.stats[key]) for key in keys if key in self.stats]
+        if self.mode in common:
+            return items[:7]
+
+        hidden = {
+            "Algorithm", "Robot Algorithm", "Planning mode", "Phase",
+            "Selection reason", "Online policy", "Value order", "Domain",
+        }
+        return [
+            (key, value) for key, value in self.stats.items()
+            if key not in hidden
+        ][:5]
+
+
     def _draw_panel(self, surface):
         """Draw the left control panel with algorithm selection and run buttons."""
         font = pygame.font.Font(None, 22)
@@ -7384,6 +7697,9 @@ class FarmAIController:
         y = panel.y + 14
         y = draw_text(f"KHU {self.mode}", x, y, border_color, font_title)
         y = draw_text(self.mode_name, x, y, Colors.TEXT_SUBTITLE, font_small)
+        y = draw_text(
+            f"TIME: {self._format_elapsed_time(self._current_algorithm_elapsed())}",
+            x, y, (255, 218, 70), font)
         y += 4
 
         if self.mode in selectable_modes:
@@ -7475,20 +7791,22 @@ class FarmAIController:
                 f"Frontier: {belief.get('frontier', 0)} | "
                 f"Unknown: {belief.get('unknown', 0)}",
                 x, y, Colors.TEXT_STAT, font_small)
-            y = draw_text(
-                f"Belief worlds: {belief.get('belief_worlds', 0)} | "
-                f"Replan: {belief.get('replans', self.replan_count)}",
-                x, y, Colors.TEXT_STAT, font_small)
-            y = draw_text(
-                f"Known free: {belief.get('known_free', 0)} | "
-                f"Blocked: {belief.get('discovered_blocked', 0)} | "
-                f"Obs: {belief.get('belief_before', 0)} -> "
-                f"{belief.get('belief_after', 0)}",
-                x, y, Colors.TEXT_STAT, font_small)
-            if belief.get("inconsistent", False):
+            if self.algorithm_name in ("Belief-State BFS", "AND-OR Search"):
                 y = draw_text(
-                    "Inconsistent belief: no possible worlds remain",
-                    x, y, Colors.TEXT_WARNING, font_small)
+                    f"Belief: {belief.get('belief_worlds', 0)} worlds | "
+                    f"Obs: {belief.get('belief_before', 0)} -> "
+                    f"{belief.get('belief_after', 0)}",
+                    x, y, Colors.TEXT_STAT, font_small)
+                if belief.get("inconsistent", False):
+                    y = draw_text(
+                        "Belief inconsistent: 0 worlds",
+                        x, y, Colors.TEXT_WARNING, font_small)
+            else:
+                y = draw_text(
+                    f"Known: {belief.get('known_free', 0)} | "
+                    f"Blocked: {belief.get('discovered_blocked', 0)} | "
+                    f"Replan: {belief.get('replans', self.replan_count)}",
+                    x, y, Colors.TEXT_STAT, font_small)
 
         # --- Mode 5: CSP HUD realtime ---
         if self.mode == 5 and self.csp_phase == "replay":
@@ -7540,18 +7858,16 @@ class FarmAIController:
                 f"Con lai: {objective['remaining']}",
                 x, y, Colors.TEXT_WARNING, font_small)
             node_flow = {
-                "Minimax": "MAX -> GREEDY",
-                "Alpha-Beta": "MAX -> GREEDY + pruning",
+                "Minimax": "MAX -> MIN",
+                "Alpha-Beta": "MAX -> MIN + prune",
                 "Expectimax": "MAX -> CHANCE",
-                "Expectiminimax": "MAX -> GREEDY -> CHANCE",
-            }.get(self.algorithm_name, "MAX -> GREEDY")
-            y = draw_text(f"Luot {self.mode6_turn}: {self.mode6_phase}",
-                          x, y, Colors.TEXT_STAT, font_small)
+                "Expectiminimax": "MAX -> MIN -> CHANCE",
+            }.get(self.algorithm_name, "MAX -> MIN")
+            depth = self.mode6_tree_details.get(
+                "depth", algorithms.MODE6_SEARCH_DEPTH)
             y = draw_text(
-                f"Buoc AGRI: {self.mode6_move_done}/{self.mode6_move_total}"
-                f" | Qua: {self.mode6_enemy_move_done}/"
-                f"{self.mode6_enemy_move_total}",
-                x, y, Colors.TEXT_STAT, font_small)
+                f"Luot {self.mode6_turn}: {self.mode6_phase} | Depth: {depth}",
+                          x, y, Colors.TEXT_STAT, font_small)
             if (self.mode6_robot_repair_tile is not None
                     or self.mode6_enemy_threat_tile is not None):
                 repair_text = (
@@ -7569,18 +7885,6 @@ class FarmAIController:
                     x, y, Colors.TEXT_WARNING, font_small)
             y = draw_text(f"Mo hinh: {node_flow}",
                           x, y, Colors.TEXT_STAT, font_small)
-            y = draw_text(
-                f"Diem bao ve: {protected_score} | "
-                f"Diem bi pha: {destroyed_score}",
-                x, y, Colors.TEXT_SUCCESS, font_small)
-            y = draw_text("Evaluation = protected_score - destroyed_score",
-                          x, y, Colors.TEXT_MUTED, font_small)
-            y = draw_text(
-                "Trang thai: dry / critical / pest / dead",
-                x, y, Colors.TEXT_MUTED, font_small)
-            y = draw_text(
-                "Moi luot chi di 1 action: UP/DOWN/LEFT/RIGHT/STAY",
-                x, y, Colors.TEXT_MUTED, font_small)
             robot_action = self.mode6_tree_details.get(
                 "robot_action", self.mode6_robot_action)
             enemy_action = self.mode6_tree_details.get(
@@ -7588,120 +7892,46 @@ class FarmAIController:
             robot_target = self.mode6_tree_details.get(
                 "robot_target", self.mode6_robot_target)
             enemy_target = self.mode6_tree_details.get(
-                "enemy_priority_target",
-                self.mode6_tree_details.get(
-                    "enemy_target", self.mode6_enemy_target))
-            robot_path_length = self.mode6_tree_details.get(
-                "robot_path_length", len(self.mode6_robot_path))
-            enemy_path_length = self.mode6_tree_details.get(
-                "enemy_path_length", len(self.mode6_enemy_path))
-            depth = self.mode6_tree_details.get(
-                "depth", algorithms.MODE6_SEARCH_DEPTH)
-            enemy_label = (
-                "Random Chance" if self.algorithm_name == "Expectimax"
-                else "Full MIN legal actions")
-            y = draw_text(
-                f"Robot: {self.algorithm_name} | Enemy: {enemy_label}",
-                x, y, Colors.TEXT_STAT, font_small)
+                "enemy_target", self.mode6_enemy_target)
             target_text = (
-                f"Next AGRI: {robot_target} | Random tree damage"
+                f"Target: {robot_target} | Weather theo risk"
                 if self.algorithm_name == "Expectimax"
-                else f"Next AGRI: {robot_target} | Enemy target: {enemy_target}")
+                else f"Target: {robot_target} | Qua: {enemy_target}")
             y = draw_text(target_text, x, y, Colors.TEXT_PRIMARY, font_small)
-            action_text = (
-                f"Next AGRI: {robot_action} ({robot_path_length}) | "
-                "Chance: random"
-                if self.algorithm_name == "Expectimax"
-                else f"Next AGRI: {robot_action} ({robot_path_length}) | "
-                     f"Qua: {enemy_action} ({enemy_path_length})")
+            action_text = (f"Action AGRI: {robot_action} | CHANCE"
+                           if self.algorithm_name == "Expectimax"
+                           else f"Action AGRI: {robot_action} | Qua: {enemy_action}")
             y = draw_text(action_text, x, y, Colors.TEXT_STAT, font_small)
             y = draw_text(
-                f"Golden: {self._mode6_golden_status()}",
-                x, y, (255, 218, 70), font_small)
-            if self.algorithm_name == "Minimax":
-                y = draw_text(
-                    f"Depth: {depth} | MAX action: {robot_action}",
-                    x, y, Colors.TEXT_PRIMARY, font_small)
-                y = draw_text(
-                    f"Enemy action: {enemy_action} | Eval: {self.minimax_value:.1f}",
-                    x, y, Colors.TEXT_SUCCESS, font_small)
-            elif self.algorithm_name == "Alpha-Beta":
-                y = draw_text(
-                    f"Depth: {depth} | MAX action: {robot_action}"
-                    f" | Eval: {self.minimax_value:.1f}",
-                    x, y, Colors.TEXT_PRIMARY, font_small)
+                f"Bao ve: {protected_score} | Bi pha: {destroyed_score} | "
+                f"Eval: {self.minimax_value:.1f}",
+                x, y, Colors.TEXT_SUCCESS, font_small)
+            if self.algorithm_name == "Alpha-Beta":
                 y = draw_text(
                     f"Alpha: {self.alpha_beta_info['alpha']} | "
                     f"Beta: {self.alpha_beta_info['beta']} | "
                     f"Pruned: {self.alpha_beta_info['pruned']}",
                     x, y, (255, 120, 120), font_small)
-            elif self.algorithm_name == "Expectimax":
+            elif self.algorithm_name in ("Expectimax", "Expectiminimax"):
                 y = draw_text(
-                    f"Depth: {depth} | MAX action: {robot_action}",
-                    x, y, Colors.TEXT_PRIMARY, font_small)
-                y = draw_text(
-                    f"Chance timer: {self.mode6_random_chance_elapsed:.1f}/"
-                    f"{self.MODE6_EXPECTIMAX_CHANCE_INTERVAL:.1f}s",
+                    "CHANCE 5s: an toan 50% | set 20% | thu loi 30%",
                     x, y, Colors.TEXT_STAT, font_small)
-                y = draw_text(
-                    f"EV: {self.minimax_value:.1f} | "
-                    f"{self.mode6_chance_event}: "
-                    f"{self.mode6_chance_probability * 100:.0f}%",
-                    x, y, Colors.TEXT_WARNING, font_small)
-            else:
-                y = draw_text(
-                    f"MAX action: {robot_action} | Enemy action: {enemy_action}",
-                    x, y, Colors.TEXT_PRIMARY, font_small)
-                y = draw_text(
-                    f"Expected: {self.minimax_value:.1f} | "
-                    f"{self.mode6_chance_event}: "
-                    f"{self.mode6_chance_probability * 100:.0f}%",
-                    x, y, Colors.TEXT_WARNING, font_small)
-            y = draw_text(
-                f"Nodes evaluated: {self.stats.get('Nodes evaluated', 0)}",
-                x, y, Colors.TEXT_STAT, font_small)
-            y = draw_text(
-                f"MAX: {self.stats.get('MAX nodes', 0)} | "
-                f"MIN: {self.stats.get('MIN nodes', 0)} | "
-                f"CHANCE: {self.stats.get('CHANCE nodes', 0)}",
-                x, y, Colors.TEXT_STAT, font_small)
-            if self.mode6_enemy_threat_tile is not None:
-                y = draw_text(
-                    f"Threatened: {self.mode6_enemy_threat_tile} "
-                    f"({self.mode6_enemy_threat_turns}/2)",
-                    x, y, Colors.TEXT_WARNING, font_small)
-            destroy_remaining = self._enemy_destroy_remaining()
-            if destroy_remaining > 0:
-                actor = (
-                    self.mode6_chance_event
-                    if self.algorithm_name == "Expectimax"
-                    else "Enemy pha cay")
-                y = draw_text(f"{actor}: {destroy_remaining:.1f}s",
-                              x, y, Colors.TEXT_WARNING, font_small)
-            if self.mode6_fix_until:
-                fix_remaining = max(
-                    0.0,
-                    (self.mode6_fix_until - pygame.time.get_ticks())
-                    / 1000,
-                )
-                y = draw_text(
-                    f"AGRI-1 sua cay: {fix_remaining:.1f}s",
-                    x, y, Colors.TEXT_SUCCESS, font_small)
+                if self.mode6_chance_event:
+                    y = draw_text(
+                        f"Ket qua: {self.mode6_chance_event} "
+                        f"({self.mode6_chance_probability * 100:.0f}%)",
+                        x, y, Colors.TEXT_WARNING, font_small)
+            node_text = (
+                f"Nodes: {self.stats.get('Nodes evaluated', 0)} | "
+                f"MAX: {self.stats.get('MAX nodes', 0)}")
+            if self.algorithm_name != "Expectimax":
+                node_text += f" | MIN: {self.stats.get('MIN nodes', 0)}"
+            y = draw_text(node_text, x, y, Colors.TEXT_STAT, font_small)
 
         if self.stats and self.mode != 6:
             y = draw_text("THONG KE", x, y, Colors.TEXT_MUTED, font_small)
             stats_bottom = panel.bottom - 42
-            stats_items = list(self.stats.items())
-            if self.algorithm_name == "UCS" and "g(n)" in self.stats:
-                preferred = [("g(n)", self.stats["g(n)"])]
-                if "Target" in self.stats:
-                    preferred.append(("Target", self.stats["Target"]))
-                preferred_keys = {key for key, _ in preferred}
-                stats_items = preferred + [
-                    (key, val) for key, val in stats_items
-                    if key not in preferred_keys
-                ]
-            for key, val in stats_items[:7]:
+            for key, val in self._filtered_hud_stats():
                 if y + font_small.get_height() + 6 > stats_bottom:
                     break
                 y = draw_text(f"{key}: {val}", x, y, Colors.TEXT_STAT, font_small)

@@ -7,141 +7,253 @@ from design_tokens import Colors, MODE_COLORS
 
 STORY_DATA = {
     "intro": {
-        "title": "MUA HE CUOI CUNG",
-        "subtitle": "Cau chuyen cua AGRI-1",
+        "title": "LENH KHOI PHUC",
+        "subtitle": "Nhiem vu cua AGRI-1",
         "lines": [
-            "Trang trai ho Minh da nuoi song gia dinh ba doi.",
-            "Nhung tran bao lon da lam moi thu tan hoang.",
+            "Sau mot tran bao lon, he thong nong trai thong minh bi sap nguon.",
+            "Cac khu dat mat ket noi. Cay trong thieu nuoc. Vat can chan loi di.",
+            "Mot so khu bi suong che phu, mot so khu can gieo lai tu dau.",
             "",
-            "Hoa mau do rap. Vat can chan loi di.",
-            "Suong mu che phu nhung manh dat chua ai dam den.",
+            "Robot AGRI-1 duoc kich hoat trong che do tu dong.",
+            "No khong co nguoi dan duong.",
+            "No chi nhan duoc danh sach khu vuc can khoi phuc.",
             "",
-            "Ong Minh khoi dong lai AGRI-1 de di qua tung khu dat.",
-            "\"Trang trai nay can may.\"",
+            "Moi khu dat la mot kieu van de khac nhau.",
+            "Moi van de can mot cach suy nghi khac nhau.",
+            "",
+            "\"AGRI-1 online.\"",
+            "\"Bat dau tien trinh khoi phuc nong trai.\"",
         ],
         "hint": "Nhan SPACE hoac ENTER de bat dau",
     },
+
     1: {
         "day": "NGAY 1 - KHU 1",
-        "title": "Vuon Truoc Trai",
-        "algo": "BFS - Uninformed Search",
+        "title": "Khu Dat Mat Tin Hieu",
+        "algo": "BFS / DFS / IDS / UCS - Uninformed Search",
         "color": MODE_COLORS[1],
         "lines": [
-            "AGRI-1 bat dau o khu vuon truoc trai, chua co ban do.",
-            "Robot chi co the tham do deu theo tung lop.",
+            "AGRI-1 duoc dua den khu dat dau tien.",
+            "Du lieu cam bien tai day gan nhu trong rong.",
+            "Robot khong biet o nao quan trong hon o nao.",
             "",
-            "Muc tieu dau tien: tim manh dat gan nhat va bat dau cuoc.",
-            "\"Khong thong minh hon, chi kien nhan hon.\"",
+            "Nhiem vu cua no rat co ban:",
+            "di toi tung o dat, khoi phuc dat, gieo hat va tuoi nuoc.",
+            "",
+            "Khi khong co thong tin uu tien, AGRI-1 chi co the tim kiem theo cach may moc nhat.",
+            "No mo rong tung buoc, kiem tra tung nhanh, khong bo sot khu vuc nao.",
+            "",
+            "\"Khong can doan dung ngay tu dau.\"",
+            "\"Chi can tiep tuc tim cho den khi thay duong.\"",
         ],
         "hint": "Nhan SPACE de vao Khu 1",
     },
+
     2: {
         "day": "NGAY 2 - KHU 2",
-        "title": "Loi Vao Nha Kho",
-        "algo": "A* - Informed Search",
+        "title": "Loi Vao Bi Chan",
+        "algo": "Greedy / A* / IDA* - Informed Search",
         "color": MODE_COLORS[2],
         "lines": [
-            "Sang ngay hai, AGRI-1 duoc dieu toi loi vao nha kho.",
-            "Manh vo va da lon chan ngang duong vao khu dat.",
-            "AGRI-1 da biet vi tri dich va biet vat can.",
+            "Khu thu hai nam sau mot loi vao bi cay do va manh vo chan ngang.",
+            "Khac voi ngay dau tien, AGRI-1 da biet vi tri cac cay can cuu.",
+            "Nhung neu di sai duong, no se mat qua nhieu thoi gian.",
             "",
-            "Lan nay robot dung uoc luong Manhattan de di vong ngan hon.",
-            "\"Hom nay, toi di thong minh hon.\"",
+            "Lan nay robot khong chi tim duong.",
+            "No uoc luong khoang cach den muc tieu, tinh so buoc da di,",
+            "roi chon con duong co kha nang ngan va hop ly hon.",
+            "",
+            "Moi quyet dinh cua AGRI-1 deu dua tren cau hoi:",
+            "duong nay co dua minh den cay can cuu nhanh hon khong?",
+            "",
+            "\"Du lieu da co.\"",
+            "\"Bat dau tinh duong toi uu.\"",
         ],
         "hint": "Nhan SPACE de vao Khu 2",
     },
+
     3: {
         "day": "NGAY 3 - KHU 3",
-        "title": "Vuon Cay Phia Dong",
-        "algo": "Hill Climbing - Local Search",
+        "title": "Vuon Cay Can Uu Tien",
+        "algo": "Hill Climbing / Local Beam / Annealing / Restart Hill",
         "color": MODE_COLORS[3],
         "lines": [
-            "Khu vuon phia dong bi nang hon, nhieu cay dang heo kho.",
-            "AGRI-1 khong the cuu tat ca trong mot ngay.",
+            "Khu vuon thu ba khong bi chan duong.",
+            "Van de nam o chinh nhung cay trong.",
             "",
-            "Robot chon o co gia tri cham soc cao nhat trong vung lan can.",
-            "Doi khi tham lam cuc bo se khong toi uu toan cuc.",
+            "Co cay kho.",
+            "Co cay nguy cap.",
+            "Co cay bi sau benh.",
+            "Co cay da gan nhu khong the cuu.",
+            "",
+            "AGRI-1 khong con chi hoi: di duong nao ngan nhat?",
+            "No phai hoi: cay nao dang dang duoc xu ly truoc nhat?",
+            "",
+            "Robot danh diem tung cay theo tinh trang cua no,",
+            "roi chon buoc di co gia tri cham soc cao hon trong khu vuc hien tai.",
+            "",
+            "Nhung lua chon cuc bo co the lam no bi ket.",
+            "Vi vay, mot so module se thu nhieu ung vien, chap nhan rui ro,",
+            "hoac khoi dong lai khi duong hien tai khong con tot.",
+            "",
+            "\"Khong phai cay gan nhat nao cung la cay can cuu truoc.\"",
         ],
         "hint": "Nhan SPACE de vao Khu 3",
     },
+
     4: {
         "day": "NGAY 4 - KHU 4",
-        "title": "Bai Dat Suong Mu",
-        "algo": "Online Search - Partial Observability",
+        "title": "Khu Suong Mu",
+        "algo": "Online Search / Belief-State / AND-OR Search",
         "color": MODE_COLORS[4],
         "lines": [
-            "Ngay thu tu, AGRI-1 vao bai dat thap bi suong mu phu kin.",
-            "AGRI-1 chi thay duoc cac o sat ben canh.",
+            "Khu thu tu bi suong day bao phu.",
+            "Ban do khong con dang tin.",
+            "Mot so o trong nhu loi di, nhung co the la vat can an.",
             "",
-            "Hai buc tuong da an tao ngo cut tren duong toi cay o goc xa.",
-            "Khi phat hien da chan, robot phai quay lai va re-plan.",
-            "\"Ke hoach tot nhat la ke hoach biet thay doi.\"",
+            "AGRI-1 chi nhin thay vung rat gan quanh minh.",
+            "Moi khi buoc sang mot o moi, no cap nhat lai nhung gi da biet.",
+            "",
+            "Neu phat hien duong bi chan, robot khong tiep tuc co chap.",
+            "No danh dau vat can, sua lai niem tin ve ban do,",
+            "roi tinh lai duong di tu vi tri hien tai.",
+            "",
+            "O khu nay, ke hoach khong phai thu co dinh.",
+            "Ke hoach la thu duoc sua sau moi lan quan sat.",
+            "",
+            "\"Tam nhin bi gioi han.\"",
+            "\"Kich hoat che do vua di vua hoc.\"",
         ],
         "hint": "Nhan SPACE de vao Khu 4",
     },
+
     5: {
         "day": "NGAY 5 - KHU 5",
-        "title": "O Quy Hoach Trung Tam",
-        "algo": "CSP Backtracking - Constraint Satisfaction",
+        "title": "Luoi Gieo Trong",
+        "algo": "Backtracking / Forward Checking / AC-3 / Min-Conflicts",
         "color": MODE_COLORS[5],
         "lines": [
-            "Khu trung tam duoc don sach de quy hoach lai.",
-            "Ong Minh muon trong lai theo quy tac moi.",
-            "Hai o ke nhau khong duoc trong cung loai cay.",
+            "Khu thu nam da duoc don sach de gieo trong lai.",
+            "Nhung AGRI-1 khong the gieo hat tuy tien.",
             "",
-            "AGRI-1 phai gan crop cho tung o, sai thi lui lai va thu tiep.",
-            "\"Co viec phai nghi truoc khi hanh dong.\"",
+            "Moi o dat can mot loai cay.",
+            "Hai o ke nhau khong duoc trung loai.",
+            "Mot so cap cay khong duoc dung canh nhau vi xung dot dinh duong.",
+            "",
+            "Lan nay, robot khong chi di toi muc tieu.",
+            "No phai gan gia tri cho tung o dat, kiem tra rang buoc,",
+            "neu sai thi lui lai va thu cach khac.",
+            "",
+            "Moi hat giong dat xuong la mot quyet dinh.",
+            "Moi xung dot phat hien la mot lan robot phai sua lai ke hoach.",
+            "",
+            "\"Khong phai dat nao cung trong cay nao cung duoc.\"",
+            "\"Bat dau giai rang buoc gieo trong.\"",
         ],
         "hint": "Nhan SPACE de vao Khu 5",
     },
+
     6: {
         "day": "NGAY 6 - KHU 6",
-        "title": "Dau Truong Bao Ve Vuon",
+        "title": "Vong Bao Ve Cuoi",
         "algo": "Minimax / Alpha-Beta / Expectimax / Expectiminimax",
         "color": MODE_COLORS[6],
         "lines": [
-            "Ngay cuoi, AGRI-1 tien vao dau truong tu phia tay.",
-            "Qua pha hoai xuat phat doi xung tu phia dong.",
-            "Cay khoe, cay kho, cay sau benh va cay quy co muc uu tien khac nhau.",
+            "Khu cuoi cung la vung cay gia tri cao nhat cua nong trai.",
+            "Nhung day cung la noi sinh vat pha hoai xam nhap manh nhat.",
             "",
-            "Hai ben di tung o; game tree chi dung de chon muc tieu.",
-            "\"Doi mat voi ke thu thong minh, va dung de thua.\"",
+            "AGRI-1 xuat phat tu mot phia.",
+            "Ke pha hoai xuat phat tu phia doi dien.",
+            "",
+            "Cay kho, cay nguy cap, cay bi sau benh va cay dac biet",
+            "deu co gia tri va muc rui ro khac nhau.",
+            "",
+            "Neu robot chi chay den cay gan nhat, doi thu co the pha huy cay quan trong hon.",
+            "Neu robot dang sua mot cay, no phai quyet dinh nen sua tiep hay bo de chan muc tieu gia tri cao hon.",
+            "",
+            "Moi luot la mot van dau:",
+            "MAX co gang bao ve, MIN co gang pha huy,",
+            "va CHANCE mo phong nhung rui ro khong chac chan.",
+            "",
+            "\"Khong chi can tim duong.\"",
+            "\"Phai doan nuoc di tiep theo cua doi thu.\"",
         ],
         "hint": "Nhan SPACE de vao Khu 6",
     },
+
     "ending": {
-        "title": "MUA HE CUOI CUNG",
-        "subtitle": "Ket thuc",
+        "title": "LENH KHOI PHUC",
+        "subtitle": "Hoan tat nhiem vu",
         "lines": [
-            "Sau sau ngay, sau khu dat da duoc cuu lai.",
+            "Sau sau khu vuc, nong trai bat dau hoat dong tro lai.",
             "",
-            "AGRI-1 da hoc cach tim duong, lap ke hoach, thich nghi,",
-            "giai rang buoc va doi dau voi doi thu.",
+            "Nhung luong dat dau tien da duoc khoi phuc.",
+            "Nhung cay nguy cap da duoc cuu.",
+            "Nhung vung suong mu da duoc khao sat.",
+            "Luoi gieo trong da duoc sap xep dung rang buoc.",
+            "Va khu cay cuoi cung da vuot qua dot tan cong.",
             "",
-            "\"Mua he nay, chung ta da khong bo cuoc.\"",
+            "AGRI-1 khong chi hoan thanh nhiem vu.",
+            "No da lan luot kich hoat sau cach suy nghi:",
+            "tim kiem khi khong biet gi,",
+            "uoc luong khi da co thong tin,",
+            "uu tien khi tai nguyen co han,",
+            "thich nghi khi moi truong khong chac chan,",
+            "kiem tra rang buoc khi moi o dat lien quan den nhau,",
+            "va doi dau khi co ke chong lai minh.",
+            "",
+            "\"Tien trinh khoi phuc hoan tat.\"",
+            "\"AGRI-1 chuyen sang che do bao tri nong trai.\"",
         ],
         "hint": "Nhan SPACE de choi lai | ESC de thoat",
     },
 }
 
 
-def draw_wrapped_text(surface, text, font, color, x, y, max_width):
+def wrap_text(text, font, max_width):
     if text == "":
-        return y + font.get_linesize() // 2
+        return [""]
 
+    wrapped = []
     line = ""
     for word in text.split(" "):
         test = line + word + " "
         if line and font.size(test)[0] > max_width:
-            surface.blit(font.render(line.rstrip(), True, color), (x, y))
-            y += font.get_linesize()
+            wrapped.append(line.rstrip())
             line = word + " "
         else:
             line = test
 
     if line:
-        surface.blit(font.render(line.rstrip(), True, color), (x, y))
-        y += font.get_linesize()
+        wrapped.append(line.rstrip())
+    return wrapped
+
+
+def wrapped_lines_height(lines, font, max_width, line_gap=0):
+    height = 0
+    for text in lines:
+        if text == "":
+            height += font.get_linesize() // 2
+            continue
+        height += len(wrap_text(text, font, max_width)) * (font.get_linesize() + line_gap)
+    return height
+
+
+def fit_story_font(lines, max_width, max_height, base_size, min_size):
+    for size in range(base_size, min_size - 1, -1):
+        font = pygame.font.Font(None, size)
+        if wrapped_lines_height(lines, font, max_width) <= max_height:
+            return font
+    return pygame.font.Font(None, min_size)
+
+
+def draw_wrapped_text(surface, text, font, color, x, y, max_width, line_gap=0):
+    if text == "":
+        return y + font.get_linesize() // 2
+
+    for line in wrap_text(text, font, max_width):
+        surface.blit(font.render(line, True, color), (x, y))
+        y += font.get_linesize() + line_gap
     return y
 
 
@@ -179,7 +291,7 @@ class TypewriterScreen:
             return False
         return True
 
-    def _draw_lines(self, surface, font, x, y, width, accent=Colors.STORY_QUOTE):
+    def _draw_lines(self, surface, font, x, y, width, accent=Colors.STORY_QUOTE, line_gap=0):
         remaining = self.chars_shown
         for line in self.lines:
             if remaining <= 0:
@@ -190,7 +302,7 @@ class TypewriterScreen:
                 y += font.get_linesize() // 2
                 continue
             color = accent if line.startswith('"') else Colors.STORY_BODY
-            y = draw_wrapped_text(surface, chunk, font, color, x, y, width)
+            y = draw_wrapped_text(surface, chunk, font, color, x, y, width, line_gap)
         return y
 
 
@@ -208,10 +320,19 @@ class IntroScreen(TypewriterScreen):
         self.font_body = pygame.font.Font(None, 27)
         self.font_hint = pygame.font.Font(None, 24)
         self._init_typewriter(data["lines"])
+        self._fit_layout()
         self.stars = [
             (random.randint(0, self.W), random.randint(0, self.H), random.randint(1, 2))
             for _ in range(90)
         ]
+
+    def _fit_layout(self):
+        self.content_width = min(760, self.W - 180)
+        self.content_x = (self.W - self.content_width) // 2
+        self.body_top = 190
+        self.hint_bottom = self.H - 28
+        max_body_height = self.hint_bottom - self.body_top - 34
+        self.font_body = fit_story_font(self.lines, self.content_width, max_body_height, 27, 20)
 
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_RETURN):
@@ -225,11 +346,18 @@ class IntroScreen(TypewriterScreen):
         self.screen.blit(title, title.get_rect(centerx=self.W // 2, top=58))
         subtitle = self.font_subtitle.render(self.subtitle, True, Colors.STORY_SUBTITLE)
         self.screen.blit(subtitle, subtitle.get_rect(centerx=self.W // 2, top=128))
-        pygame.draw.line(self.screen, Colors.STORY_RULE, (430, 168), (850, 168), 1)
-        self._draw_lines(self.screen, self.font_body, self.W // 2 - 310, 195, 620)
+        rule_half = min(230, self.content_width // 2)
+        pygame.draw.line(
+            self.screen,
+            Colors.STORY_RULE,
+            (self.W // 2 - rule_half, 168),
+            (self.W // 2 + rule_half, 168),
+            1,
+        )
+        self._draw_lines(self.screen, self.font_body, self.content_x, self.body_top, self.content_width, line_gap=1)
         if self.chars_shown >= self.total_chars and self.hint_visible:
             hint = self.font_hint.render(self.hint, True, Colors.STORY_HINT)
-            self.screen.blit(hint, hint.get_rect(centerx=self.W // 2, bottom=self.H - 30))
+            self.screen.blit(hint, hint.get_rect(centerx=self.W // 2, bottom=self.hint_bottom))
 
 
 class DayTransitionScreen(TypewriterScreen):
@@ -249,6 +377,23 @@ class DayTransitionScreen(TypewriterScreen):
         self.font_body = pygame.font.Font(None, 26)
         self.font_hint = pygame.font.Font(None, 23)
         self._init_typewriter(data["lines"])
+        self._fit_layout()
+
+    def _fit_layout(self):
+        self.panel_width = min(self.W - 180, 860)
+        self.panel_height = min(self.H - 70, 620)
+        self.panel = pygame.Rect(
+            (self.W - self.panel_width) // 2,
+            (self.H - self.panel_height) // 2,
+            self.panel_width,
+            self.panel_height,
+        )
+        self.body_x = self.panel.left + 58
+        self.body_y = self.panel.top + 170
+        self.body_width = self.panel.width - 116
+        self.hint_bottom = self.panel.bottom - 20
+        body_height = self.hint_bottom - self.body_y - 34
+        self.font_body = fit_story_font(self.lines, self.body_width, body_height, 26, 18)
 
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_RETURN):
@@ -257,7 +402,7 @@ class DayTransitionScreen(TypewriterScreen):
     def draw(self):
         tint = (max(8, self.color[0] // 18), max(8, self.color[1] // 18), max(12, self.color[2] // 16))
         self.screen.fill(tint)
-        panel = pygame.Rect((self.W - 720) // 2, (self.H - 500) // 2, 720, 500)
+        panel = self.panel
         panel_surf = pygame.Surface(panel.size, pygame.SRCALPHA)
         panel_surf.fill(Colors.STORY_PANEL_BG)
         self.screen.blit(panel_surf, panel.topleft)
@@ -270,11 +415,11 @@ class DayTransitionScreen(TypewriterScreen):
         algo = self.font_algo.render(self.algo, True, Colors.STORY_TEXT_LIGHT)
         self.screen.blit(algo, algo.get_rect(centerx=self.W // 2, top=panel.top + 120))
         pygame.draw.line(self.screen, self.color, (panel.left + 44, panel.top + 154), (panel.right - 44, panel.top + 154), 1)
-        self._draw_lines(self.screen, self.font_body, panel.left + 55, panel.top + 175, panel.width - 110)
+        self._draw_lines(self.screen, self.font_body, self.body_x, self.body_y, self.body_width, line_gap=1)
 
         if self.chars_shown >= self.total_chars and self.hint_visible:
             hint = self.font_hint.render(self.hint, True, Colors.STORY_HINT_DARK)
-            self.screen.blit(hint, hint.get_rect(centerx=self.W // 2, bottom=panel.bottom - 18))
+            self.screen.blit(hint, hint.get_rect(centerx=self.W // 2, bottom=self.hint_bottom))
 
 
 class EndingScreen(IntroScreen):
@@ -287,6 +432,7 @@ class EndingScreen(IntroScreen):
         self.subtitle = data["subtitle"]
         self.hint = data["hint"]
         self._init_typewriter(data["lines"])
+        self._fit_layout()
 
     def handle_event(self, event):
         if event.type == pygame.KEYDOWN:
@@ -325,12 +471,15 @@ class StoryPanel:
     def draw(self, surface):
         if not self.visible:
             return
-        panel = pygame.Rect(surface.get_width() - 450, 20, 430, 122)
+        panel_width = min(460, surface.get_width() - 40)
+        panel = pygame.Rect(surface.get_width() - panel_width - 20, 18, panel_width, 148)
         panel_surf = pygame.Surface(panel.size, pygame.SRCALPHA)
         panel_surf.fill(Colors.STORY_PANEL_FLOAT)
         surface.blit(panel_surf, panel.topleft)
         pygame.draw.rect(surface, self.color, panel, 2, border_radius=8)
-        surface.blit(self.font_day.render(self.day, True, self.color), (panel.left + 14, panel.top + 10))
-        surface.blit(self.font_title.render(self.title, True, Colors.STORY_TITLE_LIGHT), (panel.left + 14, panel.top + 34))
-        surface.blit(self.font_algo.render(self.algo, True, Colors.STORY_TEXT_MUTED), (panel.left + 14, panel.top + 66))
-        surface.blit(self.font_body.render(self.mission[:60], True, Colors.STORY_BODY_MUTED), (panel.left + 14, panel.top + 92))
+        x = panel.left + 16
+        width = panel.width - 32
+        surface.blit(self.font_day.render(self.day, True, self.color), (x, panel.top + 10))
+        surface.blit(self.font_title.render(self.title, True, Colors.STORY_TITLE_LIGHT), (x, panel.top + 36))
+        draw_wrapped_text(surface, self.algo, self.font_algo, Colors.STORY_TEXT_MUTED, x, panel.top + 70, width)
+        draw_wrapped_text(surface, self.mission, self.font_body, Colors.STORY_BODY_MUTED, x, panel.top + 104, width)

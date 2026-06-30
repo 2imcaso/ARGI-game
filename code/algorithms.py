@@ -8,7 +8,7 @@ import random
 INF = float("inf")
 
 UNINFORMED_ALGORITHMS = ("BFS", "DFS", "IDS", "UCS")
-INFORMED_ALGORITHMS = ("Greedy", "IDSA", "A*")
+INFORMED_ALGORITHMS = ("Greedy", "IDSA", "A*", "A*_v2")
 LOCAL_ALGORITHMS = ("Local Beam", "Hill Climbing", "Annealing", "Restart Hill")
 ONLINE_ALGORITHMS = (
     "Online A*",
@@ -460,8 +460,114 @@ def idastar(start, goal, blocked, neighbors, heuristic, max_depth=900):
     return [], total_explored, stats
 
 
+TURN_PENALTY = 1.5
+
+
+def _expand_turn_penalty_node(state, blocked, neighbors):
+    tile, prev_dir = state
+    results = []
+    for next_tile in neighbors(tile, blocked):
+        dx = next_tile[0] - tile[0]
+        dy = next_tile[1] - tile[1]
+        if abs(dx) + abs(dy) != 1:
+            continue
+        if dx == 1:
+            direction = "R"
+        elif dx == -1:
+            direction = "L"
+        elif dy == 1:
+            direction = "D"
+        else:
+            direction = "U"
+        turn_cost = (
+            0 if prev_dir is None or direction == prev_dir
+            else TURN_PENALTY)
+        results.append(((next_tile, direction), 1 + turn_cost))
+    return results
+
+
+def _reconstruct_turn_penalty_path(came_from, state):
+    path = [state[0]]
+    directions = [state[1]]
+    while state in came_from:
+        state = came_from[state]
+        path.append(state[0])
+        directions.append(state[1])
+    path.reverse()
+    directions.reverse()
+    turns = sum(
+        1 for index in range(1, len(directions))
+        if directions[index] is not None
+        and directions[index - 1] is not None
+        and directions[index] != directions[index - 1])
+    return path[1:], turns
+
+
+def astar_turn_penalty(start, goal, blocked, neighbors, heuristic,
+                       prev_dir=None, counter=None, step_cost=unit_step_cost):
+    counter = counter or iter(range(10**9))
+    start_state = (start, prev_dir)
+    start_h = heuristic(start, goal)
+    open_set = [(start_h, 0.0, next(counter), start_state)]
+    came_from = {}
+    g_score = {start_state: 0.0}
+    closed = set()
+    explored = set()
+    max_frontier = 1
+
+    while open_set:
+        _, weighted_g, _, state = heapq.heappop(open_set)
+        if state in closed:
+            continue
+        tile, _ = state
+        closed.add(state)
+        explored.add(tile)
+
+        if tile == goal:
+            path, turns = _reconstruct_turn_penalty_path(came_from, state)
+            real_g = len(path)
+            goal_h = heuristic(tile, goal)
+            weighted_f = weighted_g + goal_h
+            return path, explored, (weighted_f, real_g, goal_h), {
+                "Nodes explored": len(explored),
+                "Path length": len(path),
+                "Turns": turns,
+                "Turn penalty": TURN_PENALTY,
+                "f(n)": f"{weighted_f:.1f}",
+                "g(n)": f"{real_g} + {turns}*{TURN_PENALTY:.1f}",
+                "g steps": real_g,
+                "h(n)": f"{goal_h:.1f}",
+                "Frontier max": max_frontier,
+            }
+
+        for next_state, move_cost in _expand_turn_penalty_node(
+                state, blocked, neighbors):
+            if next_state in closed:
+                continue
+            tentative_g = g_score[state] + move_cost
+            if tentative_g >= g_score.get(next_state, INF):
+                continue
+            came_from[next_state] = state
+            g_score[next_state] = tentative_g
+            next_h = heuristic(next_state[0], goal)
+            heapq.heappush(
+                open_set,
+                (tentative_g + next_h, tentative_g,
+                 next(counter), next_state))
+            max_frontier = max(max_frontier, len(open_set))
+
+    return [], explored, (0, 0, 0), {
+        "Nodes explored": len(explored),
+        "Path length": 0,
+        "Turns": 0,
+        "Turn penalty": TURN_PENALTY,
+        "Frontier max": max_frontier,
+    }
+
+
 def find_path_by_algorithm(algorithm, start, goal, blocked, neighbors,
-                           heuristic, counter, step_cost=unit_step_cost):
+                           heuristic, counter, step_cost=unit_step_cost,
+                           prev_dir_override=None):
     if algorithm == "BFS":
         path, explored, stats = bfs(start, goal, blocked, neighbors)
         return path, explored, (0, 0, 0), stats
@@ -486,6 +592,12 @@ def find_path_by_algorithm(algorithm, start, goal, blocked, neighbors,
         g = len(path)
         h = heuristic(start, goal)
         return path, explored, (g + h, g, h), stats
+
+    if algorithm == "A*_v2":
+        return astar_turn_penalty(
+            start, goal, blocked, neighbors, heuristic,
+            prev_dir=prev_dir_override, counter=counter,
+            step_cost=step_cost)
 
     path, explored, fgh, stats = astar(
         start, goal, blocked, neighbors, heuristic, counter, step_cost)
@@ -1991,10 +2103,11 @@ MODE6_ACTION_DELTAS = {
     "STAY": (0, 0),
 }
 MODE6_CHANCE_LABELS = {
-    "sabotage_success": "Sabotage success",
-    "weather_damage": "Weather damage",
-    "no_damage": "No damage",
+    "no_damage": "An toan",
+    "lightning_rod": "Cot thu loi hut set",
+    "weather_damage": "Set danh",
 }
+MODE6_LIGHTNING_ROD_BONUS = 15.0
 
 
 def _crop_value(tile, crop_profiles):
@@ -2006,14 +2119,37 @@ def _crop_risk(tile, crop_profiles):
 
 
 def mode6_chance_outcomes(tile, crop_profiles=None):
-    crop_profiles = crop_profiles or {}
-    risk = min(1.0, max(0.0, _crop_risk(tile, crop_profiles)))
-    weather = (1.0 - risk) * 0.20
-    no_damage = 1.0 - risk - weather
     return (
-        ("sabotage_success", risk),
-        ("weather_damage", weather),
-        ("no_damage", no_damage),
+        ("no_damage", 0.50),
+        ("weather_damage", 0.20),
+        ("lightning_rod", 0.30),
+    )
+
+
+def mode6_chance_tile_weights(remaining, crop_profiles=None):
+    crop_profiles = crop_profiles or {}
+    tiles = tuple(remaining)
+    weights = tuple(max(0.0, _crop_risk(tile, crop_profiles)) for tile in tiles)
+    if tiles and sum(weights) <= 0:
+        weights = tuple(1.0 for _ in tiles)
+    return tiles, weights
+
+
+def _mode6_select_chance_tile(remaining, crop_profiles, preferred=None):
+    remaining = set(remaining)
+    if preferred in remaining:
+        return preferred
+    if not remaining:
+        return None
+    return max(
+        remaining,
+        key=lambda tile: (
+            _crop_value(tile, crop_profiles) * (1.0 + _crop_risk(
+                tile, crop_profiles)),
+            _crop_risk(tile, crop_profiles),
+            _crop_value(tile, crop_profiles),
+            tile,
+        ),
     )
 
 
@@ -2371,11 +2507,210 @@ def _mode6_apply_chance(tile, protected, destroyed, all_crops,
         damage_value = evaluate_farm_state(
             all_crops, protected, damage_destroyed, crop_profiles)
         return sum(
-            (safe_value if event == "no_damage" else damage_value) * prob
+            (
+                safe_value
+                if event == "no_damage"
+                else safe_value + MODE6_LIGHTNING_ROD_BONUS
+                if event == "lightning_rod"
+                else damage_value
+            ) * prob
             for event, prob in outcomes)
 
     return evaluate_farm_state(
         all_crops, protected, damage_destroyed, crop_profiles)
+
+
+def _mode6_chance_search_value(
+        algorithm, chance_tiles, robot_pos, enemy_pos, protected, destroyed,
+        all_crops, walkable_tiles, crop_profiles, next_depth, counters,
+        memo, robot_prev, enemy_prev, enemy_threat_tile,
+        enemy_threat_turns, robot_repair_tile, robot_repair_turns):
+    chance_tiles = tuple(chance_tiles or ())
+    safe_value, safe_line = _mode6_search(
+        algorithm, robot_pos, enemy_pos, protected, destroyed,
+        all_crops, walkable_tiles, crop_profiles, next_depth, counters,
+        memo=memo, robot_prev=robot_prev, enemy_prev=enemy_prev,
+        enemy_threat_tile=enemy_threat_tile,
+        enemy_threat_turns=enemy_threat_turns,
+        robot_repair_tile=robot_repair_tile,
+        robot_repair_turns=robot_repair_turns)
+    if not chance_tiles:
+        return safe_value, safe_line
+
+    # Runtime weather chooses by crop-risk weight every five seconds. Fold its
+    # immediate expected delta into one recursive branch so depth 6 does not
+    # duplicate the complete subtree for every CHANCE outcome.
+    counters["chance"] += 3
+    delta_cache = counters.setdefault("chance_delta_cache", {})
+    delta_key = (protected, destroyed)
+    if delta_key in delta_cache:
+        return safe_value + delta_cache[delta_key], safe_line
+
+    base_state_value = evaluate_farm_state(
+        all_crops, protected, destroyed, crop_profiles)
+    weighted_tiles, tile_weights = mode6_chance_tile_weights(
+        chance_tiles, crop_profiles)
+    total_weight = sum(tile_weights)
+    expected_delta = sum(
+        weight * (
+            _mode6_apply_chance(
+                tile, protected, destroyed, all_crops, crop_profiles,
+                expected=True) - base_state_value)
+        for tile, weight in zip(weighted_tiles, tile_weights)
+    ) / total_weight
+    delta_cache[delta_key] = expected_delta
+    return safe_value + expected_delta, safe_line
+
+
+def _mode6_expectimax_search(
+        robot_pos, enemy_pos, protected, destroyed, all_crops,
+        walkable_tiles, crop_profiles, depth, counters, memo,
+        robot_prev=None, enemy_prev=None, enemy_threat_tile=None,
+        enemy_threat_turns=0, robot_repair_tile=None,
+        robot_repair_turns=0):
+    memo_key = (
+        "Expectimax", robot_pos, enemy_pos, protected, destroyed, depth,
+        robot_prev, enemy_prev, robot_repair_tile, robot_repair_turns,
+    )
+    if memo_key in memo:
+        return memo[memo_key]
+
+    counters["evaluated"] += 1
+    remaining = _mode6_remaining(all_crops, protected, destroyed)
+    if depth <= 0 or not remaining:
+        result = (
+            _mode6_positional_evaluation(
+                robot_pos, enemy_pos, all_crops, protected, destroyed,
+                crop_profiles, robot_repair_tile=robot_repair_tile,
+                robot_repair_turns=robot_repair_turns,
+                enemy_active=False),
+            [],
+        )
+        memo[memo_key] = result
+        return result
+
+    action_cache = counters.setdefault("action_cache", {})
+    resolved = set(all_crops) - remaining
+    robot_actions = _mode6_rank_actions(
+        robot_pos, walkable_tiles, remaining, crop_profiles, robot_prev,
+        resolved, None, action_cache)
+    counters["max"] += 1
+    best_value = -INF
+    best_line = []
+
+    for robot_action in robot_actions:
+        next_robot = _mode6_move(robot_pos, robot_action)
+        (next_protected, next_destroyed, _ignored_chance_tile,
+         _next_threat_tile, _next_threat_turns,
+         next_repair_tile, next_repair_turns) = _mode6_resolve_positions(
+            next_robot, enemy_pos, protected, destroyed, all_crops,
+            False, crop_profiles, None, 0,
+            robot_repair_tile, robot_repair_turns, enemy_active=False)
+        next_remaining = _mode6_remaining(
+            all_crops, next_protected, next_destroyed)
+        child, child_line = _mode6_chance_search_value(
+            "Expectimax", next_remaining, next_robot, enemy_pos,
+            next_protected, next_destroyed, all_crops, walkable_tiles,
+            crop_profiles, depth - 1, counters, memo, robot_pos, enemy_pos,
+            None, 0, next_repair_tile, next_repair_turns)
+        if _mode6_no_progress(
+                robot_pos, enemy_pos, next_robot, enemy_pos,
+                protected, destroyed, next_protected, next_destroyed,
+                None, None, robot_repair_tile, robot_repair_turns,
+                next_repair_tile, next_repair_turns):
+            child -= 100
+        if child > best_value:
+            best_value = child
+            best_line = [(robot_action, "CHANCE")] + child_line
+
+    result = (best_value, best_line)
+    memo[memo_key] = result
+    return result
+
+
+def _mode6_expectiminimax_search(
+        robot_pos, enemy_pos, protected, destroyed, all_crops,
+        walkable_tiles, crop_profiles, depth, counters, memo,
+        robot_prev=None, enemy_prev=None, enemy_threat_tile=None,
+        enemy_threat_turns=0, robot_repair_tile=None,
+        robot_repair_turns=0):
+    memo_key = (
+        "Expectiminimax", robot_pos, enemy_pos, protected, destroyed, depth,
+        robot_prev, enemy_prev, enemy_threat_tile, enemy_threat_turns,
+        robot_repair_tile, robot_repair_turns,
+    )
+    if memo_key in memo:
+        return memo[memo_key]
+
+    counters["evaluated"] += 1
+    remaining = _mode6_remaining(all_crops, protected, destroyed)
+    if depth <= 0 or not remaining:
+        result = (
+            _mode6_positional_evaluation(
+                robot_pos, enemy_pos, all_crops, protected, destroyed,
+                crop_profiles, enemy_threat_tile, enemy_threat_turns,
+                robot_repair_tile, robot_repair_turns, enemy_active=True),
+            [],
+        )
+        memo[memo_key] = result
+        return result
+
+    action_cache = counters.setdefault("action_cache", {})
+    resolved = set(all_crops) - remaining
+    robot_actions = _mode6_rank_actions(
+        robot_pos, walkable_tiles, remaining, crop_profiles, robot_prev,
+        resolved, enemy_threat_tile, action_cache)
+    counters["max"] += 1
+    best_value = -INF
+    best_line = []
+
+    for robot_action in robot_actions:
+        next_robot = _mode6_move(robot_pos, robot_action)
+        enemy_actions = _mode6_enemy_legal_actions(
+            enemy_pos, remaining, all_crops, protected, destroyed,
+            crop_profiles, walkable_tiles, enemy_threat_tile,
+            enemy_threat_turns, action_cache)
+        counters["min"] += 1
+        min_value = INF
+        min_line = []
+
+        for enemy_action in enemy_actions:
+            next_enemy = _mode6_move(enemy_pos, enemy_action)
+            (next_protected, next_destroyed, _ignored_chance_tile,
+             next_threat_tile, next_threat_turns,
+             next_repair_tile, next_repair_turns) = (
+                _mode6_resolve_positions(
+                    next_robot, next_enemy, protected, destroyed,
+                    all_crops, False, crop_profiles,
+                    enemy_threat_tile, enemy_threat_turns,
+                    robot_repair_tile, robot_repair_turns,
+                    enemy_active=True))
+            next_remaining = _mode6_remaining(
+                all_crops, next_protected, next_destroyed)
+            child, child_line = _mode6_chance_search_value(
+                "Expectiminimax", next_remaining, next_robot, next_enemy,
+                next_protected, next_destroyed, all_crops, walkable_tiles,
+                crop_profiles, depth - 2, counters, memo,
+                robot_pos, enemy_pos, next_threat_tile,
+                next_threat_turns, next_repair_tile, next_repair_turns)
+            if _mode6_no_progress(
+                    robot_pos, enemy_pos, next_robot, next_enemy,
+                    protected, destroyed, next_protected, next_destroyed,
+                    enemy_threat_tile, next_threat_tile,
+                    robot_repair_tile, robot_repair_turns,
+                    next_repair_tile, next_repair_turns):
+                child -= 100
+            if child < min_value:
+                min_value = child
+                min_line = [(robot_action, enemy_action)] + child_line
+
+        if min_value > best_value:
+            best_value = min_value
+            best_line = min_line
+
+    result = (best_value, best_line)
+    memo[memo_key] = result
+    return result
 
 
 def _mode6_search(algorithm, robot_pos, enemy_pos, protected, destroyed,
@@ -2385,6 +2720,19 @@ def _mode6_search(algorithm, robot_pos, enemy_pos, protected, destroyed,
                    enemy_threat_tile=None, enemy_threat_turns=0,
                    robot_repair_tile=None, robot_repair_turns=0):
     memo = memo if memo is not None else {}
+    if algorithm == "Expectimax":
+        return _mode6_expectimax_search(
+            robot_pos, enemy_pos, protected, destroyed, all_crops,
+            walkable_tiles, crop_profiles, depth, counters, memo,
+            robot_prev, enemy_prev, enemy_threat_tile,
+            enemy_threat_turns, robot_repair_tile, robot_repair_turns)
+    if algorithm == "Expectiminimax":
+        return _mode6_expectiminimax_search(
+            robot_pos, enemy_pos, protected, destroyed, all_crops,
+            walkable_tiles, crop_profiles, depth, counters, memo,
+            robot_prev, enemy_prev, enemy_threat_tile,
+            enemy_threat_turns, robot_repair_tile, robot_repair_turns)
+
     memo_key = (
         algorithm, robot_pos, enemy_pos, protected, destroyed, depth,
         robot_prev, enemy_prev, enemy_threat_tile, enemy_threat_turns,
@@ -2631,7 +2979,7 @@ def adversarial_choose(algorithm, robot_pos, enemy_pos, all_crops,
         "Lookahead rounds": depth // 2,
         "Enemy response": enemy_response,
         "MAX action": robot_action,
-        "MIN action": enemy_action,
+        "MIN action": "N/A" if algorithm == "Expectimax" else enemy_action,
         "Robot Action": robot_action,
         "Enemy Action": enemy_action,
         "Evaluation score": f"{value:.1f}",
@@ -2901,9 +3249,10 @@ def adversarial_choose_target(algorithm, robot_pos, enemy_pos, all_crops,
         projected_protected += _crop_value(robot_target, crop_profiles)
     if enemy_target is not None and enemy_target != robot_target:
         enemy_value = _crop_value(enemy_target, crop_profiles)
-        if algorithm in ("Expectimax", "Expectiminimax"):
-            risk = _crop_risk(enemy_target, crop_profiles)
-            projected_destroyed += enemy_value * risk
+        if algorithm == "Expectiminimax":
+            projected_destroyed += enemy_value
+            counters["chance"] = 3
+        elif algorithm == "Expectimax":
             counters["chance"] = 3
         else:
             projected_destroyed += enemy_value
