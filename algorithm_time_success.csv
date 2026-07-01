@@ -1,0 +1,25 @@
+﻿algo,time,success
+BFS,34,1
+DFS,27,1
+UCS,36,1
+Greedy,34,1
+A*,37,1
+IDA*,38,1
+Hill Climbing,6,0
+Local Beam,29,1
+SA,15,0
+Online A*,30,1
+Belief BFS,37,1
+AND-OR,28,1
+Backtracking,65,1
+AC-3,60,1
+Min-conflict,26,1
+Minimax,46,1
+Alpha-Beta,46,1
+Expectimax,51,1
+Expectiminimax,52,1
+Forward Checking,65,1
+Online BFS,39,1
+IDS,30,1
+A*VS,38,1
+Restart Hill,30,1
