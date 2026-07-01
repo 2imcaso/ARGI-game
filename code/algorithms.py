@@ -164,11 +164,15 @@ def _depth_limited_search(start, goal, blocked, neighbors, limit):
         if current == goal:
             return reconstruct_path(came_from, current), explored, False
 
+        neighbor_list = list(neighbors(current, blocked))
         if depth >= limit:
-            cutoff = True
+            for next_tile in neighbor_list:
+                if next_tile not in reached and next_tile not in frontier:
+                    cutoff = True
+                    break
             continue
 
-        for next_tile in neighbors(current, blocked):
+        for next_tile in neighbor_list:
             if next_tile not in reached and next_tile not in frontier:
                 reached.add(next_tile)
                 came_from[next_tile] = current
@@ -700,11 +704,15 @@ def _depth_limited_search_to_any_goal(start, goals, blocked, neighbors, limit):
         if current in goals:
             return reconstruct_path(came_from, current), current, explored, False
 
+        neighbor_list = list(neighbors(current, blocked))
         if depth >= limit:
-            cutoff = True
+            for next_tile in neighbor_list:
+                if next_tile not in reached and next_tile not in frontier:
+                    cutoff = True
+                    break
             continue
 
-        for next_tile in neighbors(current, blocked):
+        for next_tile in neighbor_list:
             if next_tile not in reached and next_tile not in frontier:
                 reached.add(next_tile)
                 came_from[next_tile] = current
@@ -718,6 +726,48 @@ def depth_limited_search_to_any_goal(start, goals, blocked, neighbors, limit):
     """Run one IDS iteration so the controller can visualize each limit."""
     return _depth_limited_search_to_any_goal(
         start, goals, blocked, neighbors, limit)
+
+
+def depth_limited_search_collect_goals(start, goals, blocked, neighbors, limit):
+    """Run one IDS iteration and collect every goal reached at this limit."""
+    goals = set(goals)
+    stack = [(start, 0)]
+    came_from = {}
+    reached = {start}
+    frontier = {start}
+    explored = set()
+    found = []
+    cutoff = False
+
+    while stack:
+        current, depth = stack.pop()
+        frontier.remove(current)
+        explored.add(current)
+
+        if current in goals and current not in found:
+            found.append(current)
+
+        neighbor_list = list(neighbors(current, blocked))
+        if depth >= limit:
+            for next_tile in neighbor_list:
+                if next_tile not in reached and next_tile not in frontier:
+                    cutoff = True
+                    break
+            continue
+
+        for next_tile in neighbor_list:
+            if next_tile not in reached and next_tile not in frontier:
+                reached.add(next_tile)
+                came_from[next_tile] = current
+                stack.append((next_tile, depth + 1))
+                frontier.add(next_tile)
+
+    paths = {
+        target: reconstruct_path(came_from, target)
+        for target in found
+        if target == start or target in came_from
+    }
+    return found, paths, explored, cutoff
 
 
 def ids_to_any_goal(start, goals, blocked, neighbors, max_depth=200):
@@ -951,11 +1001,15 @@ def ids_full_traversal_plan(start, goals, blocked, neighbors, max_depth=200):
                 if len(plan) == len(goals):
                     break
 
+            neighbor_list = list(neighbors(current, blocked))
             if depth >= limit:
-                cutoff = True
+                for next_tile in neighbor_list:
+                    if next_tile not in reached:
+                        cutoff = True
+                        break
                 continue
 
-            for next_tile in neighbors(current, blocked):
+            for next_tile in neighbor_list:
                 if next_tile not in reached:
                     reached.add(next_tile)
                     stack.append((next_tile, depth + 1))

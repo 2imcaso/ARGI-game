@@ -68,6 +68,7 @@ class FarmAIController:
     BAT_ANIMATION_MS = 90
     LIGHTNING_EFFECT_MS = 900
     LIGHTNING_EFFECT_SCALE = 10
+    IDS_STEP_DELAY = 0.06
     IDS_ITERATION_DELAY = 0.65
     IDSA_ITERATION_DELAY = 0.65
 
@@ -145,8 +146,19 @@ class FarmAIController:
         self.ids_search_start = None
         self.ids_search_goals = set()
         self.ids_search_blocked = set()
+        self.ids_pending_depth_increment = False
+        self.ids_stack = []
+        self.ids_reached = set()
+        self.ids_frontier = set()
+        self.ids_came_from = {}
+        self.ids_iteration_found = []
+        self.ids_iteration_cutoff = False
+        self.ids_iteration_expansions = 0
         self.ids_total_expansions = 0
         self.ids_unique_explored = set()
+        self.ids_found_targets = []
+        self.ids_found_paths = {}
+        self.ids_found_depths = {}
         self.idsa_f_limit = 0
         self.idsa_search_timer = 0.0
         self.idsa_search_start = None
@@ -1396,59 +1408,238 @@ class FarmAIController:
         self.ids_search_start = None
         self.ids_search_goals = set()
         self.ids_search_blocked = set()
+        self.ids_pending_depth_increment = False
+        self.ids_stack = []
+        self.ids_reached = set()
+        self.ids_frontier = set()
+        self.ids_came_from = {}
+        self.ids_iteration_found = []
+        self.ids_iteration_cutoff = False
+        self.ids_iteration_expansions = 0
         self.ids_total_expansions = 0
         self.ids_unique_explored = set()
+        self.ids_found_targets = []
+        self.ids_found_paths = {}
+        self.ids_found_depths = {}
+
+
+    def _reset_ids_iteration_stack(self):
+        self.ids_stack = [(self.ids_search_start, 0)]
+        self.ids_reached = {self.ids_search_start}
+        self.ids_frontier = {self.ids_search_start}
+        self.ids_came_from = {}
+        self.ids_iteration_found = []
+        self.ids_iteration_cutoff = False
+        self.ids_iteration_expansions = 0
+        self.bfs_explored = set()
+
+
+    def _begin_ids_search(self, start, goals):
+        self.ids_depth_limit = 0
+        self.ids_search_timer = 0.0
+        self.ids_search_start = start
+        self.ids_search_goals = set(goals)
+        self.ids_search_blocked = self._blocked_tiles()
+        self.ids_pending_depth_increment = False
+        self.ids_search_blocked.discard(start)
+        for goal in self.ids_search_goals:
+            self.ids_search_blocked.discard(goal)
+        self.ids_total_expansions = 0
+        self.ids_unique_explored = set()
+        self.ids_found_targets = []
+        self.ids_found_paths = {}
+        self.ids_found_depths = {}
+        self._reset_ids_iteration_stack()
+        self.current_target = None
+        self.path = []
+        self.state = "IDS_SEARCH"
+        self.player.direction.update(0, 0)
+        self.message = f"IDS bat dau depth 0 tu {start}"
+        self.stats = {
+            "Algorithm": "IDS",
+            "Depth limit": self.ids_depth_limit,
+            "Restart from": f"{self.ids_search_start}",
+            "This iteration": 0,
+            "Total expansions": self.ids_total_expansions,
+            "Unique explored": len(self.ids_unique_explored),
+            "Target": "None",
+        }
+
+
+    def _next_ids_found_target(self, remaining=None):
+        remaining_set = set(remaining) if remaining is not None else None
+        for target in self.ids_found_targets:
+            if target in self.done_tiles:
+                continue
+            if target in self.discovered_blocked:
+                continue
+            if target in self.enemy_done_tiles:
+                continue
+            if remaining_set is not None and target not in remaining_set:
+                continue
+            return target
+        return None
+
+
+    def _move_to_ids_target(self, target):
+        start = self._world_to_tile(self.player.rect.center)
+        if start == target:
+            path = []
+        elif start == self.ids_search_start and target in self.ids_found_paths:
+            path = list(self.ids_found_paths[target])
+        else:
+            blocked = self._blocked_tiles()
+            blocked.discard(start)
+            blocked.discard(target)
+            path, _, _ = algorithms.bfs(start, target, blocked, self._neighbors)
+        self.current_target = target
+        self.path = path
+        self.state = "MOVE"
+        self.stats.update({
+            "Target": f"{target}",
+            "Path length": len(path),
+            "Found depth": self.ids_found_depths.get(target, "-"),
+        })
+        self.message = (
+            f"IDS den {target} "
+            f"(tim thay o depth {self.ids_found_depths.get(target, '-')})")
 
 
     def _update_ids_search(self, dt):
         self.player.direction.update(0, 0)
         if self.ids_search_timer > 0:
             self.ids_search_timer = max(0, self.ids_search_timer - dt)
+            if self.ids_search_timer == 0 and self.ids_pending_depth_increment:
+                self.ids_depth_limit += 1
+                self.ids_pending_depth_increment = False
+                self._reset_ids_iteration_stack()
+                self.stats.update({
+                    "Depth limit": self.ids_depth_limit,
+                    "This iteration": 0,
+                    "Target": "None",
+                    "Found this depth": 0,
+                })
+                self.message = (
+                    f"IDS bat dau depth {self.ids_depth_limit} "
+                    f"tu {self.ids_search_start}")
+            return
+        if self.ids_pending_depth_increment:
+            self.ids_depth_limit += 1
+            self.ids_pending_depth_increment = False
+            self._reset_ids_iteration_stack()
+            self.stats.update({
+                "Depth limit": self.ids_depth_limit,
+                "This iteration": 0,
+                "Target": "None",
+                "Found this depth": 0,
+            })
+            self.message = (
+                f"IDS bat dau depth {self.ids_depth_limit} "
+                f"tu {self.ids_search_start}")
             return
 
-        path, target, explored, cutoff = (
-            algorithms.depth_limited_search_to_any_goal(
-                self.ids_search_start,
-                self.ids_search_goals,
-                self.ids_search_blocked,
-                self._neighbors,
-                self.ids_depth_limit))
+        available_goals = (
+            set(self.ids_search_goals)
+            - set(self.done_tiles)
+            - set(self.discovered_blocked)
+            - set(self.enemy_done_tiles))
+        if not available_goals and not self.ids_stack:
+            target = self._next_ids_found_target()
+            if target is not None:
+                self._move_to_ids_target(target)
+                return
+            self.state = "DONE"
+            self.message = "IDS: da xu ly het muc tieu"
+            return
 
-        # Show only this iteration so every larger limit visibly restarts.
-        self.bfs_explored = set(explored)
-        self.ids_unique_explored.update(explored)
-        self.ids_total_expansions += len(explored)
+        if self.ids_stack:
+            current, depth = self.ids_stack.pop()
+            self.ids_frontier.discard(current)
+            self.bfs_explored.add(current)
+            self.ids_unique_explored.add(current)
+            self.ids_total_expansions += 1
+            self.ids_iteration_expansions += 1
+
+            if (current in available_goals
+                    and current not in self.ids_found_targets
+                    and current not in self.ids_iteration_found):
+                self.ids_iteration_found.append(current)
+                self.ids_found_targets.append(current)
+                self.ids_found_depths[current] = self.ids_depth_limit
+                self.ids_found_paths[current] = algorithms.reconstruct_path(
+                    self.ids_came_from, current)
+
+            neighbor_list = list(self._neighbors(
+                current, self.ids_search_blocked))
+            if depth >= self.ids_depth_limit:
+                for next_tile in neighbor_list:
+                    if (next_tile not in self.ids_reached
+                            and next_tile not in self.ids_frontier):
+                        self.ids_iteration_cutoff = True
+                        break
+            else:
+                for next_tile in neighbor_list:
+                    if (next_tile not in self.ids_reached
+                            and next_tile not in self.ids_frontier):
+                        self.ids_reached.add(next_tile)
+                        self.ids_came_from[next_tile] = current
+                        self.ids_stack.append((next_tile, depth + 1))
+                        self.ids_frontier.add(next_tile)
+
+            self.stats = {
+                "Algorithm": "IDS",
+                "Depth limit": self.ids_depth_limit,
+                "Restart from": f"{self.ids_search_start}",
+                "Current node": f"{current}",
+                "Node depth": depth,
+                "Stack size": len(self.ids_stack),
+                "This iteration": self.ids_iteration_expansions,
+                "Total expansions": self.ids_total_expansions,
+                "Unique explored": len(self.ids_unique_explored),
+                "Target": (
+                    f"{self.ids_iteration_found[0]}"
+                    if self.ids_iteration_found else "None"),
+                "Found this depth": len(self.ids_iteration_found),
+            }
+            self.message = (
+                f"IDS depth {self.ids_depth_limit}: "
+                f"pop {current} o depth {depth}, "
+                f"stack con {len(self.ids_stack)}")
+            self.ids_search_timer = self.IDS_STEP_DELAY
+            return
+
         self.stats = {
             "Algorithm": "IDS",
             "Depth limit": self.ids_depth_limit,
             "Restart from": f"{self.ids_search_start}",
-            "This iteration": len(explored),
+            "This iteration": self.ids_iteration_expansions,
             "Total expansions": self.ids_total_expansions,
             "Unique explored": len(self.ids_unique_explored),
-            "Target": f"{target}",
+            "Target": (
+                f"{self.ids_iteration_found[0]}"
+                if self.ids_iteration_found else "None"),
+            "Found this depth": len(self.ids_iteration_found),
+            "Stack size": 0,
         }
 
+        target = self._next_ids_found_target()
         if target is not None:
-            self.current_target = target
-            self.path = path
-            self.state = "MOVE"
-            self.message = (
-                f"IDS tim thay {target} o depth {self.ids_depth_limit}")
+            self.ids_pending_depth_increment = self.ids_iteration_cutoff
             self.ids_search_timer = 0.0
+            self._move_to_ids_target(target)
             return
 
-        if not cutoff:
+        if not self.ids_iteration_cutoff:
             self.state = "DONE"
             self.message = "IDS: khong con node de duyet"
             return
 
         finished_limit = self.ids_depth_limit
-        self.ids_depth_limit += 1
+        self.ids_pending_depth_increment = True
         self.ids_search_timer = self.IDS_ITERATION_DELAY
         self.message = (
-            f"IDS limit {finished_limit} chua thay; "
-            f"quay lai {self.ids_search_start}, tang len "
-            f"{self.ids_depth_limit}")
+            f"IDS limit {finished_limit} da duyet xong; "
+            f"chuan bi depth {finished_limit + 1}")
 
 
     def _reset_idsa_search(self):
@@ -6031,7 +6222,9 @@ class FarmAIController:
         # Mode 3 must run step-by-step through _local_search_choose(),
         # not through build_local_search_full_plan(), otherwise it uses
         # the old full-plan score and can stop/route incorrectly.
-        return self.mode in (1, 2, 5)
+        return (
+            self.mode in (1, 2, 5)
+            and not (self.mode == 1 and self.algorithm_name == "IDS"))
 
 
     def _apply_full_plan_stats(self):
@@ -6056,15 +6249,29 @@ class FarmAIController:
                     current_plan_target, stats.get("Depth limit"))
                 stats["Current depth limit"] = current_limit
         if self.algorithm_name == "UCS" and "Target g(n)" in stats:
-            current_g = stats["Target g(n)"].get(current_plan_target, 0)
-            stats["g(n)"] = current_g
-            stats["Cost"] = current_g
-            stats["Cumulative path length"] = (
+            precomputed_g = stats["Target g(n)"].get(
+                current_plan_target, 0)
+            cumulative_path = (
                 self.mode1_ucs_path_length_total
                 + self.mode1_ucs_current_leg_length)
-            stats["Terrain + condition cost"] = (
+            cumulative_extra = (
                 self.mode1_ucs_extra_cost_total
                 + self.mode1_ucs_current_leg_extra_cost)
+            cumulative_g = cumulative_path + cumulative_extra
+            completed_g = (
+                self.mode1_ucs_path_length_total
+                + self.mode1_ucs_extra_cost_total)
+            leg_g = (
+                self.mode1_ucs_current_leg_length
+                + self.mode1_ucs_current_leg_extra_cost)
+            stats["PQ target g(n)"] = precomputed_g
+            stats["Route g(n)"] = cumulative_g
+            stats["Completed g(n)"] = completed_g
+            stats["Leg g(n)"] = leg_g
+            stats["g(n)"] = cumulative_g
+            stats["Cost"] = cumulative_g
+            stats["Cumulative path length"] = cumulative_path
+            stats["Terrain + condition cost"] = cumulative_extra
         self.stats = stats
 
 
@@ -6248,7 +6455,8 @@ class FarmAIController:
                             planned_parent, target, planned_path, set(),
                             display_fgh,
                             fallback_key)
-                self._apply_full_plan_stats()
+                if not (self.mode == 1 and self.algorithm_name == "UCS"):
+                    self._apply_full_plan_stats()
                 return target
             self.full_garden_index += 1
 
@@ -6485,6 +6693,22 @@ class FarmAIController:
             # Mode 4: má»Ÿ rá»™ng táº§m nhĂ¬n
             if self.mode == 4:
                 self._expand_vision(start)
+
+            if self.mode == 1 and self.algorithm_name == "IDS":
+                if self.ids_search_start is None:
+                    self._begin_ids_search(start, remaining)
+                    return
+                self.ids_search_goals.update(remaining)
+                target = self._next_ids_found_target(remaining)
+                if target is not None:
+                    self._move_to_ids_target(target)
+                    return
+                self.state = "IDS_SEARCH"
+                self.player.direction.update(0, 0)
+                self.message = (
+                    f"IDS tiep tuc depth {self.ids_depth_limit} "
+                    f"tu {self.ids_search_start}")
+                return
 
             target = self._next_full_garden_target(remaining, start)
             if target is None:
@@ -7395,10 +7619,14 @@ class FarmAIController:
 
     def _filtered_hud_stats(self):
         common = {
-            1: ("Target", "Path length", "Nodes explored", "Queue max",
-                "Stack max", "Depth limit", "Current depth limit", "This iteration",
-                "Total expansions", "Unique explored", "g(n)",
-                "Terrain + condition cost"),
+            1: ("Target", "Current node", "Node depth", "Stack size",
+                "Depth limit", "This iteration", "Found this depth",
+                "Found depth", "Total expansions", "Unique explored",
+                "g(n)", "Route g(n)", "Leg g(n)", "Completed g(n)",
+                "PQ target g(n)", "Cost", "Cumulative path length",
+                "Terrain + condition cost",
+                "Path length", "Nodes explored", "Queue max",
+                "Stack max", "Current depth limit"),
             2: ("Target", "f(n)", "g(n)", "h(n)", "h distance",
                 "h condition", "h formula", "f limit", "Path length",
                 "Nodes explored", "This iteration", "Total expansions"),

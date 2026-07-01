@@ -49,7 +49,7 @@ class Level:
 		# Day 1 - BFS: front-left recovery plot.
 		1: {
 			'area_name': 'Khu 1 - Vuon truoc trai',
-			'spawn_tile': (11, 18),
+			'spawn_tile': (11, 17),
 			'obstacles': [],
 			'terrain_costs': {
 				(13,18): 12,
