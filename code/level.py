@@ -354,10 +354,6 @@ class Level:
 		left, top, right, bottom = self.HOUSE_ORIGINAL_BOUNDS
 		return left <= x <= right and top <= y <= bottom
 
-	def _shift_house_pos(self, x, y):
-		dx, dy = self.HOUSE_SHIFT_TILES
-		return ((x + dx) * TILE_SIZE, (y + dy) * TILE_SIZE)
-
 	def _shift_house_object_pos(self, x, y):
 		tx = int(x // TILE_SIZE)
 		ty = int(y // TILE_SIZE)
@@ -528,12 +524,6 @@ class Level:
 		self.overview_timer = self.OVERVIEW_DURATION
 		self.overview_active = True
 		self.all_sprites.set_overview(self.overview_rect)
-
-	def show_overview_once(self):
-		if self.has_shown_overview:
-			return
-		self.has_shown_overview = True
-		self._start_overview()
 
 	# ----------------------------------------------------------------
 	# Dynamic obstacles

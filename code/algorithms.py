@@ -2135,24 +2135,6 @@ def mode6_chance_tile_weights(remaining, crop_profiles=None):
     return tiles, weights
 
 
-def _mode6_select_chance_tile(remaining, crop_profiles, preferred=None):
-    remaining = set(remaining)
-    if preferred in remaining:
-        return preferred
-    if not remaining:
-        return None
-    return max(
-        remaining,
-        key=lambda tile: (
-            _crop_value(tile, crop_profiles) * (1.0 + _crop_risk(
-                tile, crop_profiles)),
-            _crop_risk(tile, crop_profiles),
-            _crop_value(tile, crop_profiles),
-            tile,
-        ),
-    )
-
-
 def mode6_state_scores(protected, destroyed, crop_profiles=None):
     crop_profiles = crop_profiles or {}
     protected_score = sum(_crop_value(tile, crop_profiles) for tile in protected)
@@ -2265,10 +2247,6 @@ def _mode6_walkable_actions(pos, walkable_tiles, action_cache=None):
     if action_cache is not None:
         action_cache[pos] = tuple(actions)
     return actions
-
-
-def _mode6_legal_actions(pos, walkable_tiles):
-    return _mode6_walkable_actions(pos, walkable_tiles)
 
 
 def _mode6_enemy_legal_actions(enemy_pos, remaining, all_crops, protected,

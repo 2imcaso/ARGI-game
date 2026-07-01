@@ -1092,18 +1092,6 @@ class FarmAIController:
         return conditions
 
 
-    def _condition_priority(self, tile):
-        priorities = {
-            "critical": 50,
-            "crow": 45,
-            "pest": 40,
-            "dead": 20,
-            "dry": 10,
-            "replant": 5,
-        }
-        return priorities.get(self._condition_for_tile(tile), 0)
-
-
     def _build_danger_levels(self):
         # Kept for older HUD/code paths. For Mode 2 test version, smaller
         # means higher priority: dry=0, critical=1, pest/crow=2, dead=3.
@@ -1119,10 +1107,6 @@ class FarmAIController:
         for tile in self.farm_tiles:
             levels[tile] = priorities.get(self._condition_for_tile(tile), 3)
         return levels
-
-
-    def _care_value(self, tile):
-        return self._condition_priority(tile) + self.dryness.get(tile, 50) / 10.0
 
 
     def _condition_asset(self, condition):
@@ -1183,10 +1167,6 @@ class FarmAIController:
         if "W" not in cell:
             return "WATER"
         return "DONE_TILE"
-
-
-    def _is_living_crop(self, tile):
-        return self._condition_for_tile(tile) in ("dry", "critical", "pest", "crow")
 
 
     def _state_after_arrival(self, tile):
@@ -1265,22 +1245,6 @@ class FarmAIController:
         self.state = "DONE" if self.stop_after_current_target else "CHOOSE_TARGET"
         self.stop_after_current_target = False
         self.wait_time = 0.35
-
-
-    def _condition_label(self, condition):
-        labels = {
-            "dry": "Cay kho -> tuoi phuc hoi",
-            "critical": "Cay nguy cap -> cap cuu bang nuoc",
-            "pest": "Sau benh sau bao -> phun sinh hoc",
-            "crow": "Cay bi qua pha -> den sua cay",
-            "dead": "Cay chet -> don va trong lai",
-            "replant": "Dat trong -> lap ke hoach gieo lai",
-        }
-        return labels.get(condition, "Dat trong -> gieo lai")
-
-
-    def _target_label(self, tile):
-        return self._condition_label(self._condition_for_tile(tile))
 
 
     def _target_summary(self, tile):
@@ -1436,19 +1400,6 @@ class FarmAIController:
         self.ids_unique_explored = set()
 
 
-    def _begin_ids_search(self, start, goals):
-        self._reset_ids_search()
-        self.ids_search_start = start
-        self.ids_search_goals = set(goals)
-        self.ids_search_blocked = self._blocked_tiles()
-        self.ids_search_blocked.discard(start)
-        for goal in goals:
-            self.ids_search_blocked.discard(goal)
-        self.state = "IDS_SEARCH"
-        self.player.direction.update(0, 0)
-        self.message = f"IDS: bat dau lai tu {start}, depth limit 0"
-
-
     def _update_ids_search(self, dt):
         self.player.direction.update(0, 0)
         if self.ids_search_timer > 0:
@@ -1508,22 +1459,6 @@ class FarmAIController:
         self.idsa_search_blocked = set()
         self.idsa_total_expansions = 0
         self.idsa_unique_explored = set()
-
-
-    def _begin_idsa_search(self, start, goal):
-        self._reset_idsa_search()
-        self.idsa_search_start = start
-        self.idsa_search_goal = goal
-        self.idsa_f_limit = self._search_heuristic(start, goal)
-        self.idsa_search_blocked = self._blocked_tiles()
-        self.idsa_search_blocked.discard(start)
-        self.idsa_search_blocked.discard(goal)
-        self.current_target = goal
-        self.state = "IDSA_SEARCH"
-        self.player.direction.update(0, 0)
-        self.message = (
-            f"IDSA: bat dau lai tu {start}, f-limit "
-            f"{self.idsa_f_limit}")
 
 
     def _update_idsa_search(self, dt):
@@ -2619,25 +2554,6 @@ class FarmAIController:
         return target
 
 
-    def _climb_from_tile(self, start_tile, remaining, scores):
-        # "Downhill" variant: follow steepest descent (lowest score neighbour).
-        current = start_tile
-        trace = [current]
-        current_score = scores.get(current, 0)
-        while True:
-            neighbors = [
-                tile for tile in self._remaining_neighbors(remaining, current)
-                if tile != current and scores.get(tile, 0) < current_score
-            ]
-            if not neighbors:
-                return current, current_score, trace
-            current = min(
-                neighbors,
-                key=lambda tile: (scores.get(tile, 0), self._heuristic(current, tile), tile))
-            current_score = scores.get(current, 0)
-            trace.append(current)
-
-
     def _restart_hill_choose(self, remaining, start):
         """Restart Hill: di xuong nhu Hill, neu ket thi khoi dong lai o tile co score cao nhat (xa nhat)."""
         scores = self._local_scores(start, remaining)
@@ -2802,36 +2718,6 @@ class FarmAIController:
     # ------------------------------------------------------------------
     # mode 4 online / belief / AND-OR search
     # ------------------------------------------------------------------
-
-    def _belief_neighbors(self, tile, blocked, goal=None, risk_map=None):
-        x, y = tile
-        candidates = []
-
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            nx, ny = x + dx, y + dy
-            nt = (nx, ny)
-
-            if 0 <= nx < self.cols and 0 <= ny < self.rows \
-                    and nt not in blocked \
-                    and (self.walkable_tiles is None
-                         or nt in self.walkable_tiles):
-                risk = risk_map.get(nt, 0.0) if risk_map else 0.0
-                known_penalty = 0 if nt in self.explored_tiles else 1
-                h = self._heuristic(nt, goal) if goal else 0
-                stable_tie = (
-                    nt[0] * 73856093
-                    ^ nt[1] * 19349663
-                    ^ tile[0] * 83492791
-                    ^ tile[1] * 2654435761
-                    ^ (goal[0] * 97531 if goal else 0)
-                    ^ (goal[1] * 314159 if goal else 0)
-                ) & 0xffff
-                candidates.append((risk, known_penalty, h, stable_tie, nt))
-
-        candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
-        for _, _, _, _, nt in candidates:
-            yield nt
-
 
     def _draw_belief_minimap(self, surface):
         if not self.rows or not self.cols:
@@ -5161,61 +5047,6 @@ class FarmAIController:
         self._update_mode6_step_hud(phase="DONE")
 
 
-    def _mode6_enter_next_turn(self):
-        self.current_target = None
-        self.enemy_target = None
-        self.path = []
-        self.enemy_path = []
-        self.mode6_pending_actor = None
-        self.mode6_pending_target = None
-        self.mode6_pending_event = None
-        self.mode6_move_total = 0
-        self.mode6_move_done = 0
-        self.mode6_enemy_move_total = 0
-        self.mode6_enemy_move_done = 0
-        self.player.direction.update(0, 0)
-        if self._mode6_remaining_tiles():
-            self.state = "PLAN_STEP"
-            self.mode6_phase = "PLAN_STEP"
-        else:
-            self._mode6_finish_game()
-
-
-    def _mode6_resolve_robot(self, tile):
-        if tile in self.done_tiles or tile in self.enemy_done_tiles:
-            self.message = f"AGRI-1 den {tile}, nhung cay da duoc xu ly"
-        else:
-            self.done_tiles.add(tile)
-            value = self.mode6_crop_profiles.get(tile, {}).get("value", 0)
-            self.message = f"AGRI-1 da sua cay {tile} (+{value})"
-        self.state = "PLAN_STEP"
-        self.mode6_phase = "RESOLVE"
-        self._update_mode6_step_hud(phase="RESOLVE")
-
-
-    def _mode6_resolve_enemy(self, tile):
-        if tile in self.done_tiles or tile in self.enemy_done_tiles:
-            self.message = f"Qua den {tile}, nhung cay da duoc xu ly"
-            self.state = "PLAN_STEP"
-            self.mode6_phase = "RESOLVE"
-            self._update_mode6_step_hud(phase="RESOLVE")
-            return
-        if self.algorithm_name == "Expectimax":
-            self.state = "CHANCE"
-            self.mode6_phase = "CHANCE"
-            self.mode6_pending_actor = "enemy"
-            self.mode6_pending_target = tile
-            self.message = f"Qua toi {tile}; kich hoat CHANCE"
-            self._update_mode6_step_hud(phase="CHANCE")
-            return
-        self.enemy_done_tiles.add(tile)
-        value = self.mode6_crop_profiles.get(tile, {}).get("value", 0)
-        self.message = f"Qua da pha cay {tile} (-{value})"
-        self.state = "PLAN_STEP"
-        self.mode6_phase = "RESOLVE"
-        self._update_mode6_step_hud(phase="RESOLVE")
-
-
     def _mode6_run_chance(self):
         self.mode6_enemy_threat_tile = None
         self.mode6_enemy_threat_turns = 0
@@ -5261,27 +5092,6 @@ class FarmAIController:
         self._mode6_clear_resolved_targets()
         self._update_mode6_step_hud(phase="CHANCE")
         self._mode6_next_state_or_done()
-
-
-    def _mode6_move_enemy_step(self, dt):
-        if self.enemy_tile is None or not self.enemy_path:
-            return False
-        next_tile = self.enemy_path[0]
-        ex, ey = self.enemy_tile
-        dx = next_tile[0] - ex
-        dy = next_tile[1] - ey
-        distance = abs(dx) + abs(dy)
-        step = self.player.speed * self.MODE6_ENEMY_SPEED_SCALE / TILE_SIZE * dt
-        if distance <= step:
-            self.enemy_tile = next_tile
-            self.enemy_path.pop(0)
-            self.mode6_enemy_move_done += 1
-            return True
-        if abs(dx) > 0:
-            self.enemy_tile = (ex + (step if dx > 0 else -step), ey)
-        elif abs(dy) > 0:
-            self.enemy_tile = (ex, ey + (step if dy > 0 else -step))
-        return False
 
 
     def _mode6_actor_tile(self, pos):
@@ -5336,20 +5146,6 @@ class FarmAIController:
             start, target, blocked, self._neighbors, self._heuristic,
             self.counter, self._step_cost)
         return path
-
-
-    def _mode6_nearest_reachable_step(self, start, remaining):
-        best = None
-        for tile in remaining:
-            path = self._mode6_path_to_target(start, tile)
-            if path or start == tile:
-                key = (len(path), tile)
-                if best is None or key < best[0]:
-                    best = (key, path, tile)
-        if best is None:
-            return start, None, []
-        _, path, tile = best
-        return (path[0] if path else start), tile, path
 
 
     def _mode6_retarget_from_ranked(self, start, ranked_targets,
@@ -5526,35 +5322,6 @@ class FarmAIController:
             return "STAY"
         candidates.sort()
         return candidates[0][2]
-
-
-    def _mode6_guard_no_progress_actions(self, robot_tile, enemy_tile):
-        remaining = set(self._mode6_remaining_tiles())
-        if not remaining:
-            return
-        if not (
-                self.mode6_robot_action == "STAY"
-                and self.mode6_enemy_action == "STAY"):
-            return
-        if robot_tile in remaining or enemy_tile in remaining:
-            return
-        if enemy_tile == self.mode6_enemy_threat_tile:
-            return
-
-        fallback = self._mode6_progress_action(
-            robot_tile, remaining, forbidden_tile=enemy_tile)
-        if fallback != "STAY":
-            self.mode6_robot_action = fallback
-            self.mode6_tree_details["robot_action"] = fallback
-            self.mode6_tree_details["no_progress_guard"] = "robot fallback"
-            return
-
-        fallback = self._mode6_progress_action(
-            enemy_tile, remaining, forbidden_tile=robot_tile)
-        if fallback != "STAY":
-            self.mode6_enemy_action = fallback
-            self.mode6_tree_details["enemy_action"] = fallback
-            self.mode6_tree_details["no_progress_guard"] = "enemy fallback"
 
 
     def _mode6_snap_player_to_tile(self, tile):
