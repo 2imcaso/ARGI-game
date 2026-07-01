@@ -933,6 +933,7 @@ def ids_full_traversal_plan(start, goals, blocked, neighbors, max_depth=200):
     unique_explored = set()
     total_expansions = 0
     final_limit = 0
+    target_depth_limits = {}
 
     for limit in range(max_depth + 1):
         stack = [(start, 0)]
@@ -946,6 +947,7 @@ def ids_full_traversal_plan(start, goals, blocked, neighbors, max_depth=200):
             total_expansions += 1
             if current in goals and current not in plan:
                 plan.append(current)
+                target_depth_limits[current] = limit
                 if len(plan) == len(goals):
                     break
 
@@ -963,7 +965,12 @@ def ids_full_traversal_plan(start, goals, blocked, neighbors, max_depth=200):
 
     stats = _full_traversal_stats(
         "IDS", plan, goals, unique_explored,
-        {"Depth limit": final_limit, "Total expansions": total_expansions})
+        {
+            "Depth limit": final_limit,
+            "Current depth limit": final_limit,
+            "Depth limit by target": target_depth_limits,
+            "Total expansions": total_expansions,
+        })
     return plan, unique_explored, stats
 
 

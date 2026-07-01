@@ -6046,13 +6046,19 @@ class FarmAIController:
             f"{min(self.full_garden_index + 1, len(self.full_garden_plan))}/"
             f"{len(self.full_garden_plan)}")
         stats["Completed"] = f"{len(self.done_tiles)}/{len(self.farm_tiles)}"
+        index = min(self.full_garden_index, len(self.full_garden_plan) - 1)
+        current_plan_target = self.full_garden_plan[index]
+        stats["Target"] = f"{current_plan_target}"
+        if self.algorithm_name == "IDS":
+            depth_by_target = stats.get("Depth limit by target", {})
+            if isinstance(depth_by_target, dict):
+                current_limit = depth_by_target.get(
+                    current_plan_target, stats.get("Depth limit"))
+                stats["Current depth limit"] = current_limit
         if self.algorithm_name == "UCS" and "Target g(n)" in stats:
-            index = min(self.full_garden_index, len(self.full_garden_plan) - 1)
-            current_plan_target = self.full_garden_plan[index]
             current_g = stats["Target g(n)"].get(current_plan_target, 0)
             stats["g(n)"] = current_g
             stats["Cost"] = current_g
-            stats["Target"] = f"{current_plan_target}"
             stats["Cumulative path length"] = (
                 self.mode1_ucs_path_length_total
                 + self.mode1_ucs_current_leg_length)
@@ -7390,7 +7396,7 @@ class FarmAIController:
     def _filtered_hud_stats(self):
         common = {
             1: ("Target", "Path length", "Nodes explored", "Queue max",
-                "Stack max", "Depth limit", "This iteration",
+                "Stack max", "Depth limit", "Current depth limit", "This iteration",
                 "Total expansions", "Unique explored", "g(n)",
                 "Terrain + condition cost"),
             2: ("Target", "f(n)", "g(n)", "h(n)", "h distance",
