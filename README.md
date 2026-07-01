@@ -322,8 +322,4 @@ Cup Nooble. (n.d.). Cup Nooble official links.
 https://cupnooble.carrd.co/
 ```
 
-Bản quyền gốc của các asset thuộc về tác giả Cup Nooble. Dự án này chỉ sử dụng tài nguyên trong phạm vi học tập và báo cáo môn học. Nếu phát triển hoặc phát hành ở phạm vi thương mại, cần kiểm tra lại điều khoản sử dụng chính thức của asset pack.
-
-### 10.3. Ghi chú sử dụng trong đồ án
-
 Toàn bộ phần cài đặt, chỉnh sửa logic game, tích hợp thuật toán, giao diện demo, animation và báo cáo được nhóm thực hiện nhằm phục vụ đồ án môn học. Các phần có sử dụng tài nguyên hoặc mã nguồn bên thứ ba đã được ghi rõ ở mục credit/license để đảm bảo minh bạch nguồn gốc.
