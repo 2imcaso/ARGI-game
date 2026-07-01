@@ -124,6 +124,7 @@ class FarmAIController:
         self.full_garden_leg_stats = {}
         self.full_garden_index = 0
         self.full_garden_stats = {}
+        self.mode1_bfs_queue_size_after_pop = {}
         self.mode1_ucs_tile_costs = {}
         self.mode1_ucs_path_length_total = 0
         self.mode1_ucs_current_leg_length = 0
@@ -693,6 +694,7 @@ class FarmAIController:
         self.full_garden_leg_stats = {}
         self.full_garden_index = 0
         self.full_garden_stats = {}
+        self.mode1_bfs_queue_size_after_pop = {}
         self.chosen_target_path = None
 
 
@@ -3346,6 +3348,9 @@ class FarmAIController:
             self.belief_unknown_tiles, self._neighbors)
         risky_steps = sum(tile in self.belief_unknown_tiles for tile in path)
         stats = dict(bfs_stats)
+        stats.pop("Nodes explored", None)
+        stats.pop("Queue max", None)
+        stats.pop("Queue size", None)
         stats.update({
             "Algorithm": self.algorithm_name,
             "Current node": f"{start}",
@@ -3353,6 +3358,7 @@ class FarmAIController:
             "Target rule": "belief-state BFS to current target",
             "Neighbor rule": "push only 4 adjacent neighbors",
             "Risky steps": risky_steps,
+            "Frontier remaining": len(self.mode4_belief_bfs_queue),
         })
         return path, explored, (0, len(path), 0), stats
 
@@ -3456,16 +3462,15 @@ class FarmAIController:
                     "Belief BFS", "Belief A*"):
                 priority_keys = (
                     "Algorithm", "Selected target", "Current tile",
-                    "Next node", "Frontier size", "Frontier max",
+                    "Next node", "Frontier remaining",
                     "Frontier rule", "Target rule", "Neighbor rule",
-                    "Path source", "Path length", "Nodes explored",
-                    "Queue max", "Queued farms",
+                    "Path source", "Path length", "Queued farms",
                 )
             else:
                 priority_keys = (
                     "Algorithm", "Selected target", "f(n)", "g(n)", "h(n)",
                     "condition", "h distance", "Current tile", "Next node",
-                    "Frontier size", "Frontier max", "Frontier rule",
+                    "Frontier remaining", "Frontier rule",
                     "Target rule", "Neighbor rule", "Path source",
                     "Path length", "Queued farms",
                 )
@@ -3476,6 +3481,10 @@ class FarmAIController:
                     ordered_stats[key] = merged_stats[key]
             for key, val in merged_stats.items():
                 ordered_stats.setdefault(key, val)
+            for key in (
+                    "Nodes explored", "Queue max", "Queue size",
+                    "Frontier size", "Frontier max"):
+                ordered_stats.pop(key, None)
             self.stats = ordered_stats
         else:
             self.stats = base_stats
@@ -3579,9 +3588,7 @@ class FarmAIController:
                 "Current tile": f"{start}",
                 "Next node": f"{path[0] if path else start}",
                 "Path length": len(path),
-                "Nodes explored": len(self.mode4_belief_bfs_explored),
-                "Queue size": len(self.mode4_belief_bfs_queue),
-                "Queue max": self.mode4_belief_bfs_frontier_max,
+                "Frontier remaining": len(self.mode4_belief_bfs_queue),
                 "Adjacent added": added,
                 "Possible worlds": len(self.belief_worlds),
                 "Belief unknowns": len(self.belief_unknown_tiles),
@@ -3609,7 +3616,7 @@ class FarmAIController:
             "Worlds after obs": self.belief_worlds_after_observation,
             "Current belief size": len(self.belief_worlds),
             "Possible worlds": len(self.belief_worlds),
-            "Queue size": len(self.mode4_belief_bfs_queue),
+            "Frontier remaining": len(self.mode4_belief_bfs_queue),
             "Result": (
                 "Inconsistent belief: no possible worlds remain"
                 if self.belief_inconsistent
@@ -3701,7 +3708,7 @@ class FarmAIController:
                 continue
             target_blocked = set(blocked)
             target_blocked.discard(target)
-            path, explored, _, core_stats = algorithms.find_path_by_algorithm(
+            path, explored, _, _ = algorithms.find_path_by_algorithm(
                 "BFS", start, target, target_blocked, self._neighbors,
                 self._search_heuristic, self.counter, self._step_cost)
             if start != target and not path:
@@ -3714,8 +3721,7 @@ class FarmAIController:
                 "Selected target": f"{target}",
                 "Current tile": f"{start}",
                 "Next node": f"{path[0] if path else start}",
-                "Frontier size": len(self.mode4_online_bfs_queue),
-                "Frontier max": self.mode4_online_bfs_frontier_max,
+                "Frontier remaining": len(self.mode4_online_bfs_queue),
                 "Frontier rule": "FIFO queue stores discovered farm tiles",
                 "Target rule": "popleft() first discovered farm",
                 "Neighbor rule": "add farm tiles in 4 adjacent directions",
@@ -3725,8 +3731,6 @@ class FarmAIController:
                         "Belief-State BFS", "Belief BFS", "Belief A*")
                     else "BFS core from Mode 1"),
                 "Path length": len(path),
-                "Nodes explored": len(explored),
-                "Queue max": core_stats.get("Queue max", "-"),
                 "Queued farms": len(self.mode4_online_bfs_queued),
                 "Adjacent farms added": added,
             }
@@ -3735,8 +3739,7 @@ class FarmAIController:
         return None, [], set(self.mode4_online_bfs_explored), (0, 0, 0), {
             "Algorithm": self.algorithm_name,
             "Path length": 0,
-            "Frontier size": 0,
-            "Frontier max": self.mode4_online_bfs_frontier_max,
+            "Frontier remaining": len(self.mode4_online_bfs_queue),
             "Queued farms": len(self.mode4_online_bfs_queued),
             "Adjacent farms added": added,
             "Result": "FIFO frontier empty",
@@ -3839,12 +3842,12 @@ class FarmAIController:
             target_blocked = set(blocked)
             target_blocked.discard(target)
             if self.algorithm_name == "Online BFS":
-                path, explored, _, core_stats = algorithms.find_path_by_algorithm(
+                path, explored, _, _ = algorithms.find_path_by_algorithm(
                     "BFS", start, target, target_blocked, self._neighbors,
                     self._search_heuristic, self.counter, self._step_cost)
                 path_source = "BFS core from Mode 1"
             else:
-                path, explored, _, core_stats = algorithms.astar_4dir_f_update(
+                path, explored, _, _ = algorithms.astar_4dir_f_update(
                     start, target, target_blocked, self._neighbors,
                     self._heuristic, self.counter)
                 path_source = "A* 4-dir from current start to popped farm"
@@ -3865,15 +3868,12 @@ class FarmAIController:
                 "h distance": f"{self._heuristic(start, target)}",
                 "Current tile": f"{start}",
                 "Next node": f"{next_node}",
-                "Frontier size": len(self.mode4_online_astar_open),
-                "Frontier max": self.mode4_online_astar_frontier_max,
+                "Frontier remaining": len(self.mode4_online_astar_open),
                 "Frontier rule": "persistent PQ stores only farm tiles",
                 "Target rule": "heapq.heappop(farm frontier)",
                 "Neighbor rule": "add farm tiles in 4 adjacent directions",
                 "Path source": path_source,
                 "Path length": len(path),
-                "Nodes explored": len(explored),
-                "Queue max": core_stats.get("Queue max", "-"),
                 "g completed": f"{self.mode4_completed_g}",
                 "Queued farms": len(self.mode4_online_astar_queued),
                 "Adjacent farms added": added,
@@ -3886,8 +3886,7 @@ class FarmAIController:
         return None, [], set(self.mode4_online_astar_explored), (0, 0, 0), {
             "Algorithm": self.algorithm_name,
             "Path length": 0,
-            "Frontier size": 0,
-            "Frontier max": self.mode4_online_astar_frontier_max,
+            "Frontier remaining": len(self.mode4_online_astar_open),
             "Queued farms": len(self.mode4_online_astar_queued),
             "Adjacent farms added": added,
             "Result": "No adjacent farm in persistent PQ",
@@ -4158,7 +4157,6 @@ class FarmAIController:
                 "Algorithm": self.algorithm_name,
                 "Current target": f"{goal}",
                 "Path length": 0,
-                "Nodes explored": 1,
                 "f(n)": f"{self.mode4_completed_g}",
                 "g(n)": f"{self.mode4_completed_g}",
                 "h(n)": "0",
@@ -4170,10 +4168,16 @@ class FarmAIController:
                     f"{len(self.discovered_blocked)}/{len(self.hidden_blocked)}"),
                 "Online policy": "Already at selected target",
             }
-            if self.algorithm_name in (
-                    "Online BFS", "Belief-State BFS",
-                    "Belief BFS", "Belief A*"):
-                self.stats["Queue max"] = 1
+            if self.algorithm_name == "Online A*":
+                self.stats["Frontier remaining"] = len(
+                    self.mode4_online_astar_open)
+            elif self.algorithm_name in (
+                    "Belief-State BFS", "Belief BFS", "Belief A*"):
+                self.stats["Frontier remaining"] = len(
+                    self.mode4_belief_bfs_queue)
+            elif self.algorithm_name == "Online BFS":
+                self.stats["Frontier remaining"] = len(
+                    self.mode4_online_bfs_queue)
             return []
 
         self._update_belief_state()
@@ -4274,8 +4278,9 @@ class FarmAIController:
         }
         priority_keys = (
             "Algorithm", "Current target", "f(n)", "g(n)", "h(n)",
-            "Current node", "Next node", "Path length", "Queue max",
-            "Frontier max", "Belief states", "Possible worlds",
+            "Current node", "Next node", "Path length",
+            "Frontier remaining",
+            "Belief states", "Possible worlds",
             "g leg", "g completed", "Search style", "Target rule",
             "Update rule", "Neighbor rule",
         )
@@ -4289,6 +4294,10 @@ class FarmAIController:
             ordered_stats.setdefault(key, val)
         for key, val in belief_stats.items():
             ordered_stats.setdefault(key, val)
+        for key in (
+                "Nodes explored", "Queue max", "Queue size",
+                "Frontier size", "Frontier max"):
+            ordered_stats.pop(key, None)
         self.stats = ordered_stats
         if self.algorithm_name == "Online A*":
             self.stats["Online policy"] = "Plan known map; patch on discovery"
@@ -6513,6 +6522,16 @@ class FarmAIController:
         self.stats = stats
 
 
+    def _update_mode1_bfs_queue_hud(self, tile):
+        if self.mode != 1 or self.algorithm_name != "BFS":
+            return
+        queue_size = self.mode1_bfs_queue_size_after_pop.get(tile)
+        if queue_size is None:
+            return
+        self.stats["Current node"] = f"{tile}"
+        self.stats["Queue size after pop"] = queue_size
+
+
     def _build_full_garden_plan(self, remaining, start):
         self._clear_full_garden_plan()
         if not remaining:
@@ -6579,6 +6598,9 @@ class FarmAIController:
                         self._neighbors, self._search_heuristic, self.counter,
                         self._step_cost))
                 self.full_garden_plan = list(plan)
+                if self.algorithm_name == "BFS":
+                    self.mode1_bfs_queue_size_after_pop = dict(
+                        stats.pop("Queue size after pop by node", {}))
                 self.full_garden_stats = stats
                 self.astar_current_fgh = fgh
                 self.bfs_explored = set(explored)
@@ -7234,6 +7256,10 @@ class FarmAIController:
                     self.mode4_active_step = None
                     self.mode4_completed_g += 1
                 self.path.pop(0)
+                if (self.mode == 1
+                        and self.algorithm_name == "BFS"
+                        and next_tile == self.current_target):
+                    self._update_mode1_bfs_queue_hud(next_tile)
                 if self.mode == 6:
                     self.mode6_move_done += 1
                     self._update_mode6_step_hud(
@@ -7874,6 +7900,7 @@ class FarmAIController:
     def _filtered_hud_stats(self):
         common = {
             1: ("Target", "Current node", "Node depth", "Stack size",
+                "Queue size after pop",
                 "Depth limit", "This iteration", "Found this depth",
                 "Found depth", "Total expansions", "Unique explored",
                 "g(n)", "Route g(n)", "Leg g(n)", "Completed g(n)",
@@ -7890,17 +7917,33 @@ class FarmAIController:
                 "Beam width", "Generated", "Temperature", "Delta",
                 "Accepted worse", "Rejected", "Restarts"),
             4: ("Current target", "Current node", "Next node", "Path length",
-                "Nodes explored", "Queue max", "Replanned", "Blocks found"),
+                "Frontier remaining", "Replanned", "Blocks found"),
             5: ("Variables", "Backtracks", "Arc checks", "Conflicts",
                 "Assigned"),
         }
-        keys = (
-            ("Target", "f(n)", "g(n)", "g steps", "Turns",
-             "Turn penalty", "h(n)")
-            if self.mode == 2 and self.algorithm_name == "A*_v2"
-            else common.get(self.mode, ()))
+        if self.mode == 1 and self.algorithm_name == "UCS":
+            hidden_ucs_keys = {"g(n)", "Route g(n)", "Completed g(n)"}
+            pq_target_index = common[1].index("PQ target g(n)") + 1
+            keys = tuple(
+                key for key in common[1][:pq_target_index]
+                if key not in hidden_ucs_keys)
+        elif self.mode == 1 and self.algorithm_name == "BFS":
+            keys = tuple(
+                key for key in common[1]
+                if key not in ("Current node", "Nodes explored"))
+        elif self.mode == 1 and self.algorithm_name == "DFS":
+            keys = tuple(
+                key for key in common[1] if key != "Nodes explored")
+        elif self.mode == 2 and self.algorithm_name == "A*_v2":
+            keys = (
+                "Target", "f(n)", "g(n)", "g steps", "Turns",
+                "Turn penalty", "h(n)")
+        else:
+            keys = common.get(self.mode, ())
         items = [(key, self.stats[key]) for key in keys if key in self.stats]
         if self.mode in common:
+            if self.mode == 1 and self.algorithm_name == "UCS":
+                return items
             return items[:10] if self.mode == 2 else items[:7]
 
         hidden = {

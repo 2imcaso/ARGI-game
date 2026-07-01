@@ -959,9 +959,11 @@ def bfs_full_traversal_plan(start, goals, blocked, neighbors):
     visited = {start}
     explored = []
     plan = []
+    queue_size_after_pop = {}
 
     while queue and len(plan) < len(goals):
         current = queue.popleft()
+        queue_size_after_pop[current] = len(queue)
         explored.append(current)
         if current in goals and current not in plan:
             plan.append(current)
@@ -973,7 +975,10 @@ def bfs_full_traversal_plan(start, goals, blocked, neighbors):
 
     stats = _full_traversal_stats(
         "BFS", plan, goals, explored,
-        {"Queue max": len(visited)})
+        {
+            "Queue max": len(visited),
+            "Queue size after pop by node": queue_size_after_pop,
+        })
     return plan, set(explored), stats
 
 
