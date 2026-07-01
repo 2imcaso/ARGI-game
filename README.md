@@ -1,8 +1,8 @@
 # Smart Farm AI Robot
 
-Đồ án mô phỏng robot nông nghiệp **AGRI-1** khôi phục khu vườn sau bão bằng các thuật toán Trí tuệ nhân tạo. Game được xây dựng bằng Python và Pygame, trong đó mỗi khu vực trên bản đồ đại diện cho một nhóm thuật toán khác nhau.
+Đồ án mô phỏng robot nông nghiệp **AGRI-1** khôi phục khu vườn sau bão bằng các thuật toán Trí tuệ nhân tạo. Game được xây dựng bằng **Python** và **Pygame**, trong đó mỗi khu vực trên bản đồ đại diện cho một nhóm thuật toán khác nhau.
 
-Robot không chỉ đi theo đường có sẵn mà phải tự chọn mục tiêu, tìm đường, cập nhật trạng thái môi trường và xử lý nhiệm vụ. Nhờ cách mô phỏng bằng bản đồ lưới, quá trình hoạt động của từng thuật toán có thể được quan sát trực tiếp qua đường đi, node đã duyệt, trạng thái cây và các hiệu ứng trong game.
+Robot không chỉ di chuyển theo đường có sẵn mà phải tự chọn mục tiêu, tìm đường, cập nhật trạng thái môi trường và xử lý nhiệm vụ. Nhờ mô phỏng trên bản đồ lưới, quá trình hoạt động của từng thuật toán có thể được quan sát trực tiếp thông qua đường đi, node đã duyệt, trạng thái cây, vùng quan sát, đối thủ và các hiệu ứng trong game.
 
 ---
 
@@ -12,8 +12,8 @@ Dự án được thực hiện nhằm:
 
 - Trực quan hóa các thuật toán AI trong một môi trường game dễ quan sát.
 - So sánh cách robot ra quyết định giữa các nhóm thuật toán khác nhau.
-- Mô phỏng đầy đủ các dạng bài toán: tìm kiếm đường đi, tìm kiếm cục bộ, môi trường chưa biết, bài toán ràng buộc và tìm kiếm đối kháng.
-- Xây dựng một sản phẩm hoàn chỉnh có giao diện, bản đồ, nhân vật, hiệu ứng và ảnh GIF minh họa kết quả chạy.
+- Mô phỏng nhiều dạng bài toán AI: tìm kiếm đường đi, tìm kiếm có heuristic, tìm kiếm cục bộ, môi trường chưa biết, bài toán ràng buộc và tìm kiếm đối kháng.
+- Xây dựng một sản phẩm hoàn chỉnh có giao diện, bản đồ, nhân vật, hiệu ứng, GIF minh họa và biểu đồ so sánh kết quả chạy.
 
 ---
 
@@ -26,65 +26,12 @@ Dự án được thực hiện nhằm:
 | Bản đồ | Tiled Map Editor, TMX, pytmx |
 | Kiểu bản đồ | Grid map |
 | Heuristic chính | Manhattan Distance |
-| Trực quan hóa | HUD, đường đi, node đã duyệt, fog-of-war, hiệu ứng đối thủ, GIF |
+| Trực quan hóa | HUD, đường đi, node đã duyệt, fog-of-war, hiệu ứng đối thủ, GIF, biểu đồ |
+| Dữ liệu so sánh | `algorithm_time_success.csv` |
 
 ---
 
-## 3. Cấu trúc thư mục
-
-```text
-Smart-Farm-AI-Robot/
-│
-├── main.py                  # File chính khởi chạy game
-├── level.py                 # Quản lý bản đồ, mode và khu vực demo
-├── ai_controller.py         # Điều khiển robot AI và state machine
-├── algorithms.py            # Cài đặt thuật toán tìm kiếm, CSP và đối kháng
-├── design_tokens.py         # Màu sắc và token hiển thị giao diện
-│
-├── data/                    # File bản đồ TMX
-├── graphics/                # Tài nguyên hình ảnh trong game
-├── audio/                   # Âm thanh nền và hiệu ứng
-├── gif/                     # GIF minh họa thuật toán
-│   ├── A-ezgif.com-video-to-gif-converter.gif
-│   ├── A_v2-ezgif.com-video-to-gif-converter.gif
-│   ├── BFS-ezgif.com-video-to-gif-converter.gif
-│   ├── DFS-ezgif.com-video-to-gif-converter.gif
-│   ├── Greedy-ezgif.com-video-to-gif-converter.gif
-│   ├── IDS-ezgif.com-video-to-gif-converter.gif
-│   ├── IDSA-ezgif.com-video-to-gif-converter.gif
-│   ├── UCS-ezgif.com-video-to-gif-converter.gif
-│   ├── ac3.gif
-│   ├── alphabeta.gif
-│   ├── and-or.gif
-│   ├── backtrack.gif
-│   ├── belief bfs.gif
-│   ├── exceptimax.gif
-│   ├── exceptiminmax.gif
-│   ├── forward.gif
-│   ├── hillclimping-ezgif.com-video-to-gif-converter.gif
-│   ├── localbeam1-ezgif.com-video-to-gif-converter.gif
-│   ├── minconflit.gif
-│   ├── minimax.gif
-│   ├── online astar.gif
-│   ├── online bfs.gif
-│   ├── randomrestart-ezgif.com-video-to-gif-converter.gif
-│   └── simulatedannealing-ezgif.com-video-to-gif-converter.gif
-│
-├── charts/                  # Biểu đồ so sánh thời gian chạy theo từng mode
-│   ├── mode_1_comparison.png
-│   ├── mode_2_comparison.png
-│   ├── mode_3_comparison.png
-│   ├── mode_4_comparison.png
-│   ├── mode_5_comparison.png
-│   ├── mode_6_comparison.png
-│   └── best_by_mode_comparison.png
-│
-└── README.md
-```
-
----
-
-## 4. Cách chạy chương trình
+## 3. Cách chạy chương trình
 
 Cài đặt thư viện cần thiết:
 
@@ -92,7 +39,13 @@ Cài đặt thư viện cần thiết:
 pip install pygame pytmx
 ```
 
-Chạy game:
+Nếu đang đứng ở thư mục gốc của project, chạy:
+
+```bash
+python code/main.py
+```
+
+Nếu đã mở trực tiếp thư mục `code`, chạy:
 
 ```bash
 python main.py
@@ -102,7 +55,7 @@ Sau khi chạy, cửa sổ **Smart Farm AI Robot** sẽ hiển thị. Người d
 
 ---
 
-## 5. Hướng dẫn điều khiển
+## 4. Hướng dẫn điều khiển
 
 | Phím / thao tác | Chức năng |
 |---|---|
@@ -114,7 +67,7 @@ Sau khi chạy, cửa sổ **Smart Farm AI Robot** sẽ hiển thị. Người d
 
 ---
 
-## 6. Mô hình bài toán
+## 5. Mô hình bài toán
 
 Trong game, bản đồ được biểu diễn như một không gian trạng thái dạng lưới. Mỗi trạng thái có thể gồm vị trí robot, danh sách ô đã xử lý, danh sách ô còn lại, vật cản, đường đi hiện tại và các trạng thái riêng của từng mode.
 
@@ -124,7 +77,24 @@ Luồng xử lý chung của robot:
 Chọn mục tiêu → Tìm đường → Di chuyển → Xử lý cây/ô đất → Cập nhật trạng thái
 ```
 
-Tùy thuật toán đang được chọn, robot sẽ có cách duyệt node, chọn mục tiêu và lập kế hoạch khác nhau.
+Tùy thuật toán được chọn, robot sẽ có cách duyệt node, chọn mục tiêu, lập kế hoạch và cập nhật trạng thái khác nhau.
+
+---
+
+## 6. Tổng quan các nhóm thuật toán
+
+Project chia các thuật toán thành 6 nhóm chính tương ứng với 6 mode trong game:
+
+| Mode | Nhóm thuật toán | Vai trò mô phỏng |
+|---|---|---|
+| Mode 1 | Uninformed Search | Tìm kiếm đường đi khi chưa có heuristic |
+| Mode 2 | Informed Search | Tìm kiếm có định hướng bằng hàm đánh giá |
+| Mode 3 | Local Search | Tối ưu lựa chọn cục bộ, dễ gặp cực trị địa phương |
+| Mode 4 | Online Search / Unknown Environment | Vừa di chuyển vừa cập nhật môi trường chưa biết |
+| Mode 5 | Constraint Satisfaction Problem | Gieo cây theo các ràng buộc hợp lệ |
+| Mode 6 | Adversarial Search | Ra quyết định khi có đối thủ và yếu tố ngẫu nhiên |
+
+Các biểu đồ trong README được tạo từ file `algorithm_time_success.csv`. Cột `time` là thời gian chạy tính bằng giây, còn `success` cho biết thuật toán hoàn thành nhiệm vụ hay bị kẹt.
 
 ---
 
@@ -143,11 +113,11 @@ Mode 1 mô phỏng nhóm thuật toán tìm kiếm không có thông tin. Robot 
 
 Nhóm thuật toán này phù hợp để minh họa nền tảng của tìm kiếm trạng thái. BFS và IDS có tính ổn định cao hơn, DFS tiết kiệm bộ nhớ hơn, còn UCS có ý nghĩa rõ khi bản đồ có chi phí di chuyển khác nhau.
 
-#### Biểu đồ so sánh Mode 1
+**Biểu đồ so sánh Mode 1:**
 
 ![Biểu đồ so sánh Mode 1](charts/mode_1_comparison.png)
 
-Trong lần chạy thực nghiệm này, **DFS** có thời gian hoàn thành thấp nhất trong Mode 1 với **27 giây**, nên được chọn làm thuật toán đại diện tốt nhất của nhóm Uninformed Search.
+Kết quả thực nghiệm cho thấy **DFS** có thời gian thấp nhất trong Mode 1 với **27 giây**.
 
 ---
 
@@ -166,16 +136,16 @@ f(n) = g(n) + h(n)
 |---|---|---|
 | Greedy | Chọn node có `h(n)` nhỏ nhất | ![Greedy](gif/Greedy-ezgif.com-video-to-gif-converter.gif) |
 | A* | Kết hợp chi phí đã đi `g(n)` và heuristic `h(n)` | ![A*](gif/A-ezgif.com-video-to-gif-converter.gif) |
-| A*_v2 | A* có thêm chi phí phạt khi rẽ hướng | ![A*_v2](gif/A_v2-ezgif.com-video-to-gif-converter.gif) |
-| IDSA | Tìm kiếm theo ngưỡng `f(n)` tăng dần | ![IDSA](gif/IDSA-ezgif.com-video-to-gif-converter.gif) |
+| A*VS | A* có thêm biến thể đánh giá để so sánh hiệu quả tìm đường | ![A*VS](gif/A_v2-ezgif.com-video-to-gif-converter.gif) |
+| IDA* | Tìm kiếm theo ngưỡng `f(n)` tăng dần | ![IDA*](gif/IDSA-ezgif.com-video-to-gif-converter.gif) |
 
 So với Mode 1, nhóm này giúp robot di chuyển có định hướng hơn. Greedy phản ứng nhanh nhưng có thể chọn đường chưa tối ưu. A* cân bằng tốt hơn vì xét cả chi phí đã đi và ước lượng còn lại.
 
-#### Biểu đồ so sánh Mode 2
+**Biểu đồ so sánh Mode 2:**
 
 ![Biểu đồ so sánh Mode 2](charts/mode_2_comparison.png)
 
-Trong lần chạy thực nghiệm này, **Greedy** hoàn thành nhanh nhất với **34 giây**. Kết quả này phù hợp với đặc điểm của Greedy là ra quyết định nhanh dựa trên heuristic, dù không luôn đảm bảo tối ưu toàn cục như A*.
+Kết quả thực nghiệm cho thấy **Greedy** có thời gian thấp nhất trong Mode 2 với **34 giây**.
 
 ---
 
@@ -198,11 +168,11 @@ score = điểm loại cây + Manhattan(current, tile) - turn_penalty
 
 Nhóm Local Search cho thấy robot có thể ra quyết định nhanh trong khu vực nhỏ, nhưng cũng dễ bị ảnh hưởng bởi cực trị cục bộ nếu chỉ nhìn vào lựa chọn gần nhất.
 
-#### Biểu đồ so sánh Mode 3
+**Biểu đồ so sánh Mode 3:**
 
 ![Biểu đồ so sánh Mode 3](charts/mode_3_comparison.png)
 
-Trong Mode 3, **Hill Climbing** và **Simulated Annealing** bị kẹt trong lần chạy thực nghiệm nên không được chọn dù thời gian dừng thấp. Trong các thuật toán hoàn thành, **Local Beam** có thời gian tốt nhất với **29 giây**.
+Trong lần chạy thực nghiệm, **Hill Climbing** và **Simulated Annealing** bị kẹt nên không được chọn dù thời gian dừng thấp. Trong các thuật toán hoàn thành, **Local Beam** tốt nhất với **29 giây**.
 
 ---
 
@@ -219,11 +189,11 @@ Mode 4 đặt robot vào khu vực có sương mù và vật cản ẩn. Robot k
 
 Mode này thể hiện rõ sự khác biệt giữa môi trường biết trước và môi trường chưa biết. Robot phải liên tục cập nhật thông tin thay vì chỉ chạy một kế hoạch cố định từ đầu đến cuối.
 
-#### Biểu đồ so sánh Mode 4
+**Biểu đồ so sánh Mode 4:**
 
 ![Biểu đồ so sánh Mode 4](charts/mode_4_comparison.png)
 
-Trong lần chạy thực nghiệm này, **AND-OR Search** hoàn thành nhanh nhất với **28 giây**, cho thấy cách lập kế hoạch theo nhiều khả năng xảy ra phù hợp với môi trường chưa biết và có yếu tố bất định.
+Kết quả thực nghiệm cho thấy **AND-OR Search** có thời gian thấp nhất trong Mode 4 với **28 giây**.
 
 ---
 
@@ -248,15 +218,15 @@ Một số ràng buộc chính:
 | Backtracking | Thử gán giá trị và quay lui khi vi phạm | ![Backtracking](gif/backtrack.gif) |
 | Forward Checking | Loại trước giá trị không còn hợp lệ ở biến lân cận | ![Forward Checking](gif/forward.gif) |
 | AC-3 | Duy trì tính nhất quán cung giữa các biến | ![AC-3](gif/ac3.gif) |
-| Min Conflict | Sửa dần các biến đang gây xung đột | ![Min Conflict](gif/minconflit.gif) |
+| Min-conflict | Sửa dần các biến đang gây xung đột | ![Min Conflict](gif/minconflit.gif) |
 
 Nhóm CSP giúp minh họa bài toán không chỉ cần tìm đường đi mà còn cần tìm một cách sắp xếp thỏa tất cả điều kiện.
 
-#### Biểu đồ so sánh Mode 5
+**Biểu đồ so sánh Mode 5:**
 
 ![Biểu đồ so sánh Mode 5](charts/mode_5_comparison.png)
 
-Trong Mode 5, **Min-conflict** có thời gian hoàn thành thấp nhất với **26 giây**. Thuật toán này phù hợp với bài toán ràng buộc vì tập trung sửa các xung đột hiện có thay vì thử lại toàn bộ tổ hợp từ đầu.
+Kết quả thực nghiệm cho thấy **Min-conflict** có thời gian thấp nhất trong Mode 5 với **26 giây**.
 
 ---
 
@@ -273,23 +243,34 @@ Mode 6 là khu vực đối kháng. Robot AGRI-1 đóng vai trò **MAX**, có nh
 
 Mode này thể hiện bài toán ra quyết định khi có đối thủ. Robot không chỉ cần chọn cây gần nhất, mà phải cân nhắc nước đi của đối phương và rủi ro từ các sự kiện ngẫu nhiên.
 
-#### Biểu đồ so sánh Mode 6
+**Biểu đồ so sánh Mode 6:**
 
 ![Biểu đồ so sánh Mode 6](charts/mode_6_comparison.png)
 
-Trong Mode 6, **Minimax** và **Alpha-Beta** cùng đạt **46 giây**. Báo cáo chọn **Alpha-Beta** làm đại diện tốt nhất vì thuật toán này giữ logic quyết định của Minimax nhưng có thêm cơ chế cắt tỉa nhánh không cần xét.
+Kết quả thực nghiệm cho thấy **Minimax** và **Alpha-Beta** cùng đạt **46 giây**. Báo cáo chọn **Alpha-Beta** làm đại diện tốt nhất vì thuật toán này giữ nguyên logic Minimax nhưng có thêm cơ chế cắt tỉa nhánh.
 
 ---
 
-### 7.7. So sánh thuật toán tốt nhất giữa các mode
+## 8. So sánh thuật toán tốt nhất giữa các mode
 
-![Biểu đồ so sánh thuật toán tốt nhất từng mode](charts/best_by_mode_comparison.png)
+Sau khi lấy thuật toán hoàn thành có thời gian thấp nhất trong từng mode, kết quả đại diện như sau:
 
-Khi chỉ xét các thuật toán tốt nhất của từng mode, **Min-conflict** là thuật toán có thời gian thấp nhất toàn bộ thực nghiệm với **26 giây**. Tuy nhiên, kết quả này chỉ phản ánh mức độ phù hợp của thuật toán với bài toán CSP trong demo, không có nghĩa Min-conflict tốt hơn mọi thuật toán ở mọi dạng bài toán.
+| Mode | Thuật toán tốt nhất | Thời gian |
+|---|---|---:|
+| Mode 1 | DFS | 27s |
+| Mode 2 | Greedy | 34s |
+| Mode 3 | Local Beam | 29s |
+| Mode 4 | AND-OR | 28s |
+| Mode 5 | Min-conflict | 26s |
+| Mode 6 | Alpha-Beta | 46s |
+
+![So sánh thuật toán tốt nhất từng mode](charts/best_by_mode_comparison.png)
+
+Theo số liệu thực nghiệm, **Min-conflict** là thuật toán có thời gian tốt nhất trong toàn bộ các thuật toán đại diện, với **26 giây**. Tuy nhiên, kết quả này không có nghĩa Min-conflict tốt hơn trong mọi bài toán, mà cho thấy nó phù hợp nhất với bài toán ràng buộc ở Mode 5 trong môi trường demo hiện tại.
 
 ---
 
-## 8. Kết quả đạt được
+## 9. Kết quả đạt được
 
 Dự án đã hoàn thành một game demo có thể chạy trực tiếp, gồm 6 khu vực tương ứng với 6 nhóm thuật toán AI. Mỗi nhóm thuật toán được gắn với một tình huống cụ thể trong game để người xem dễ hiểu vai trò của thuật toán.
 
@@ -299,23 +280,24 @@ Các kết quả chính:
 - Tích hợp robot tự động di chuyển, tìm mục tiêu và xử lý nhiệm vụ.
 - Cài đặt các nhóm thuật toán: Uninformed Search, Informed Search, Local Search, Online Search, CSP và Adversarial Search.
 - Hiển thị được đường đi, node đã duyệt, thông số `f(n)`, `g(n)`, `h(n)`, trạng thái belief, bước backtracking và quyết định đối kháng.
-- Tạo GIF minh họa cho từng thuật toán để trình bày trong README và báo cáo.
+- Tạo GIF minh họa cho từng thuật toán.
+- Tạo biểu đồ so sánh thời gian chạy theo từng mode và so sánh thuật toán tốt nhất giữa các mode.
 
 ---
 
-## 9. Hướng phát triển
+## 10. Hướng phát triển
 
 Trong tương lai, dự án có thể mở rộng theo các hướng sau:
 
 - Bổ sung thêm thuật toán mới như D*, LRTA*, Genetic Algorithm hoặc Monte Carlo Tree Search.
 - Cho phép người dùng tự tạo bản đồ và tự đặt vật cản.
-- Thêm chế độ so sánh thời gian chạy, số node mở rộng và độ dài đường đi giữa các thuật toán.
+- Thêm chế độ so sánh số node mở rộng, độ dài đường đi và số lần quay lui giữa các thuật toán.
 - Cải thiện giao diện chọn mode, bảng thống kê và phần giải thích thuật toán trong game.
 - Mở rộng Mode 6 với nhiều loại đối thủ và nhiều dạng sự kiện ngẫu nhiên hơn.
 
 ---
 
-## 10. Nguồn tham khảo và credit
+## 11. Nguồn tham khảo và credit
 
 Dự án có sử dụng và tùy biến một số tài nguyên đồ họa pixel-art từ **Sprout Lands Asset Pack** của **Cup Nooble**. Các tài nguyên này được dùng cho mục đích học tập, minh họa giao diện và xây dựng môi trường game.
 
@@ -336,6 +318,3 @@ https://cupnooble.carrd.co/
 ```
 
 Bản quyền gốc của các asset thuộc về tác giả Cup Nooble. Dự án này chỉ sử dụng tài nguyên trong phạm vi học tập và báo cáo môn học. Nếu phát triển hoặc phát hành ở phạm vi thương mại, cần kiểm tra lại điều khoản sử dụng chính thức của asset pack.
-
----
-
