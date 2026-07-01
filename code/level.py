@@ -225,6 +225,7 @@ class Level:
 		self.setup()
 		self.overlay = Overlay(self.player)
 		self.current_mode = 1
+		self.manual_control = False
 		self.selected_algorithms = {
 			1: algorithms.UNINFORMED_ALGORITHMS[0],
 			2: algorithms.INFORMED_ALGORITHMS[-1],
@@ -802,6 +803,7 @@ class Level:
 			extra_walkable_tiles=extra_walkable_tiles,
 			entry_tile=cfg.get('entry_tile'),
 			selected_algorithm=self.selected_algorithms.get(mode))
+		self._apply_control_mode()
 		if show_overview:
 			self._start_overview()
 		else:
@@ -828,6 +830,8 @@ class Level:
 			f'{mode_names.get(mode, "")}')
 
 	def cycle_algorithm(self, step=1):
+		if getattr(self, 'manual_control', False):
+			return None
 		if self.current_mode not in (1, 2, 3, 4, 5, 6) or not hasattr(self, 'ai'):
 			return None
 		name = self.ai.cycle_algorithm(step)
@@ -845,11 +849,152 @@ class Level:
 		if action == 'reset':
 			self._init_mode(self.current_mode)
 			return True
+		if action == 'manual':
+			self.toggle_manual_control()
+			return True
 		if action == 'algorithm':
 			# Luu thuat toan vua chon de RESET dung lai
 			self.selected_algorithms[self.current_mode] = self.ai.algorithm_name
 			return True
 		return action is not None
+
+	def _apply_control_mode(self):
+		if not hasattr(self, 'player'):
+			return
+		self.player.auto_control = not self.manual_control
+		self.player.manual_repair_only = self.manual_control
+		if hasattr(self, 'ai'):
+			self.ai.manual_control = self.manual_control
+			if self.manual_control:
+				self.ai.is_running = False
+				if self.current_mode == 6:
+					self.player.speed = self.ai.mode6_player_base_speed
+				self.player.direction.update(0, 0)
+				self.ai.message = "Che do thu cong: WASD di chuyen, Space sua cay"
+
+	def toggle_manual_control(self):
+		self.manual_control = not self.manual_control
+		if self.manual_control and hasattr(self, 'ai'):
+			self.ai.pause()
+		self._apply_control_mode()
+		mode_label = "Manual" if self.manual_control else "AI"
+		area_name = self.MODE_CONFIGS[self.current_mode].get(
+			'area_name', f'Khu {self.current_mode}')
+		pygame.display.set_caption(
+			f'Smart Farm AI Robot - {area_name}: {mode_label}')
+		return self.manual_control
+
+	def _manual_candidate_tiles(self):
+		current = (
+			int(self.player.rect.centerx // TILE_SIZE),
+			int(self.player.rect.centery // TILE_SIZE))
+		target_pos = getattr(self.player, 'target_pos', self.player.rect.center)
+		facing = (
+			int(target_pos[0] // TILE_SIZE),
+			int(target_pos[1] // TILE_SIZE))
+		candidates = [facing, current]
+		for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+			candidates.append((current[0] + dx, current[1] + dy))
+		seen = set()
+		unique = []
+		for tile in candidates:
+			if tile not in seen:
+				seen.add(tile)
+				unique.append(tile)
+		return unique
+
+	def _manual_action_tile(self):
+		if not hasattr(self, 'ai'):
+			return None
+		unresolved = [
+			tile for tile in self._manual_candidate_tiles()
+			if tile in self.farm_tiles
+			and tile not in self.ai.done_tiles
+			and tile not in self.ai.discovered_blocked
+			and tile not in self.ai.enemy_done_tiles
+		]
+		if unresolved:
+			return unresolved[0]
+		player_pos = pygame.math.Vector2(self.player.rect.center)
+		nearby = [
+			tile for tile in self.farm_tiles
+			if tile not in self.ai.done_tiles
+			and tile not in self.ai.discovered_blocked
+			and tile not in self.ai.enemy_done_tiles
+			and player_pos.distance_to(self.ai._tile_center(tile)) <= TILE_SIZE * 1.35
+		]
+		if not nearby:
+			return None
+		return min(nearby, key=lambda tile: player_pos.distance_to(self.ai._tile_center(tile)))
+
+	def _finish_manual_if_complete(self):
+		total = len(self.farm_tiles)
+		resolved = (
+			len(self.ai.done_tiles)
+			+ len(self.ai.discovered_blocked)
+			+ len(self.ai.enemy_done_tiles))
+		if total and resolved >= total:
+			self.ai.state = "DONE"
+			if self.current_mode == 4:
+				self.ai.mode4_phase = "DONE"
+				self.ai._update_belief_state()
+			if self.current_mode == 6:
+				self.ai.mode6_phase = "DONE"
+				self.ai._update_mode6_step_hud(phase="DONE")
+			self.ai.message = f"Hoan thanh thu cong khu {self.current_mode}"
+
+	def manual_repair_current_tile(self):
+		if not self.manual_control or not hasattr(self, 'ai'):
+			return False
+		tile = self._manual_action_tile()
+		if tile is None:
+			self.ai.message = "Dung gan mot cay/luong dat roi nhan Space de sua"
+			return True
+
+		self.ai.current_target = tile
+		self.ai.path = []
+		self.ai.stop_after_current_target = False
+		condition = self.ai._condition_for_tile(tile)
+		target_pos = self.ai._tile_center(tile)
+
+		if self.current_mode == 6:
+			self.player.selected_tool = "water"
+			self.player.status = "down_water"
+			self.ai.done_tiles.add(tile)
+			self.ai._advance_full_garden_plan(tile)
+			self.ai.current_target = None
+			self.ai.mode6_fix_target = None
+			self.ai.mode6_fix_until = 0
+			self.ai.mode6_phase = "MODE6_RESOLVE"
+			self.ai.message = f"Da sua cay bi qua pha tai {tile}"
+			self.ai._update_mode6_step_hud(
+				phase=self.ai.mode6_phase, current=tile, next_tile=None)
+		elif condition in ("dry", "critical"):
+			self.ai._finish_rescue_target(tile, condition)
+		elif condition in ("pest", "crow"):
+			self.ai._finish_pest_target(tile, condition)
+		else:
+			cell = self.ai._soil_cell(tile)
+			if "X" not in cell:
+				self.player.selected_tool = "hoe"
+				self.soil_layer.get_hit(target_pos)
+			if "P" not in self.ai._soil_cell(tile):
+				seed = self.ai._seed_for_tile(tile)
+				self.player.selected_seed = seed
+				self.soil_layer.plant_seed(target_pos, seed)
+				if self.current_mode == 5:
+					self.ai.csp_assigned[tile] = seed
+			if "W" not in self.ai._soil_cell(tile):
+				self.player.selected_tool = "water"
+				self.soil_layer.water(target_pos)
+			self.ai._finish_cultivation_target(
+				tile, f"Da sua va cham cay tai {tile}")
+
+		self.player.timers['tool use'].activate()
+		self.player.direction = pygame.math.Vector2()
+		self.player.frame_index = 0
+		self._finish_manual_if_complete()
+		return True
 
 	
 	def player_add(self, item):
@@ -910,7 +1055,8 @@ class Level:
 			self.menu.update()
 		else:
 			if not self.overview_active:
-				self.ai.update(dt)
+				if not self.manual_control:
+					self.ai.update(dt)
 			self.all_sprites.update(dt)
 			self.plant_collision()
 

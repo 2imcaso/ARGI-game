@@ -73,6 +73,7 @@ class Player(pygame.sprite.Sprite):
 
 		# AI control flag: khi True, input ban phim bi tat va AI dat direction
 		self.auto_control = False
+		self.manual_repair_only = False
 		self.skip_auto_move_once = False
 
 		# sound
@@ -162,14 +163,15 @@ class Player(pygame.sprite.Sprite):
 				self.direction.x = 0
 
 			# tool use
-			if keys[pygame.K_SPACE]:
+			if keys[pygame.K_SPACE] and not self.manual_repair_only:
 				# timer for the tool use
 				self.timers['tool use'].activate()
 				self.direction = pygame.math.Vector2()
 				self.frame_index = 0
 
 			# change tool
-			if keys[pygame.K_q] and not self.timers['tool switch'].active:
+			if (keys[pygame.K_q] and not self.manual_repair_only
+					and not self.timers['tool switch'].active):
 				self.timers['tool switch'].activate()
 				self.tool_index += 1
 				if self.tool_index >= len(self.tools):
@@ -177,14 +179,15 @@ class Player(pygame.sprite.Sprite):
 				self.selected_tool = self.tools[self.tool_index]
 				
 			# seed use
-			if keys[pygame.K_LCTRL]:
+			if keys[pygame.K_LCTRL] and not self.manual_repair_only:
 				# timer for the seed use
 				self.timers['seed use'].activate()
 				self.direction = pygame.math.Vector2()
 				self.frame_index = 0
 
 			# change seed
-			if keys[pygame.K_e] and not self.timers['seed switch'].active:
+			if (keys[pygame.K_e] and not self.manual_repair_only
+					and not self.timers['seed switch'].active):
 				self.timers['seed switch'].activate()
 				self.seed_index += 1
 				if self.seed_index >= len(self.seeds):

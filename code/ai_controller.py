@@ -643,6 +643,8 @@ class FarmAIController:
         for action, rect in self.control_buttons.items():
             if not rect.collidepoint(pos):
                 continue
+            if getattr(self, "manual_control", False) and action in ("start", "pause"):
+                return None
             if action == "start":
                 self.start()
                 return "start"
@@ -651,6 +653,8 @@ class FarmAIController:
                 return "pause"
             if action == "reset":
                 return "reset"
+            if action == "manual":
+                return "manual"
         return None
     # -------------------------------------------------------- helpers chung
 
@@ -7724,15 +7728,23 @@ class FarmAIController:
                              (x, y), (panel.right - 15, y))
             y += 12
             y = draw_text("DIEU KHIEN", x, y, Colors.TEXT_MUTED, font_small)
-            start_rect = pygame.Rect(x, y, 108, 36)
-            pause_rect = pygame.Rect(x + 116, y, 108, 36)
-            reset_rect = pygame.Rect(x + 232, y, 108, 36)
+            start_rect = pygame.Rect(x, y, 82, 36)
+            pause_rect = pygame.Rect(x + 88, y, 82, 36)
+            reset_rect = pygame.Rect(x + 176, y, 82, 36)
+            manual_rect = pygame.Rect(x + 264, y, 82, 36)
+            manual_mode = getattr(self, "manual_control", False)
             self.control_buttons["start"] = draw_button(
-                "start", start_rect, "START", selected=self.is_running)
+                "start", start_rect, "START",
+                selected=self.is_running and not manual_mode)
             self.control_buttons["pause"] = draw_button(
-                "pause", pause_rect, "PAUSE", selected=not self.is_running)
+                "pause", pause_rect, "PAUSE",
+                selected=not self.is_running and not manual_mode)
             self.control_buttons["reset"] = draw_button(
                 "reset", reset_rect, "RESET", danger=True)
+            self.control_buttons["manual"] = draw_button(
+                "manual", manual_rect,
+                "MANUAL" if not manual_mode else "AI",
+                selected=manual_mode)
             y += 50
         else:
             y = draw_text(f"Thuat toan: {self.algorithm_name}", x, y,
@@ -7743,7 +7755,10 @@ class FarmAIController:
                          (x, y), (panel.right - 15, y))
         y += 12
         objective = self._objective_snapshot()
-        status = "Dang chay" if self.is_running else "Cho START"
+        if getattr(self, "manual_control", False):
+            status = "Thu cong"
+        else:
+            status = "Dang chay" if self.is_running else "Cho START"
         if self.state == "DONE":
             status = "Hoan thanh"
         y = draw_text(f"MUC TIEU: {objective['title']}",
@@ -7934,7 +7949,13 @@ class FarmAIController:
                 y = draw_text(f"{key}: {val}", x, y, Colors.TEXT_STAT, font_small)
 
         if self.mode in (1, 2, 3):
-            hint = "Click nut hoac dung Q/E de d    oi thuat toan"
+            if getattr(self, "manual_control", False):
+                hint = "Manual: WASD di chuyen | Space sua cay | M ve AI"
+            else:
+                hint = "Click nut hoac dung Q/E de doi thuat toan | M choi thu cong"
         else:
-            hint = "Nhan phim 1-6 de doi khu nhiem vu"
+            if getattr(self, "manual_control", False):
+                hint = "Manual: WASD di chuyen | Space sua cay | M ve AI"
+            else:
+                hint = "Nhan phim 1-6 de doi khu nhiem vu | M choi thu cong"
         draw_text(hint, x, panel.bottom - 30, Colors.TEXT_MUTED, font_small)
