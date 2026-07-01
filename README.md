@@ -93,9 +93,6 @@ Project chia các thuật toán thành 6 nhóm chính tương ứng với 6 mode
 | Mode 4 | Online Search / Unknown Environment | Vừa di chuyển vừa cập nhật môi trường chưa biết |
 | Mode 5 | Constraint Satisfaction Problem | Gieo cây theo các ràng buộc hợp lệ |
 | Mode 6 | Adversarial Search | Ra quyết định khi có đối thủ và yếu tố ngẫu nhiên |
-
-Các biểu đồ trong README được tạo từ file `algorithm_time_success.csv`. Cột `time` là thời gian chạy tính bằng giây, còn `success` cho biết thuật toán hoàn thành nhiệm vụ hay bị kẹt.
-
 ---
 
 ## 7. Các nhóm thuật toán đã triển khai
@@ -284,20 +281,7 @@ Các kết quả chính:
 - Tạo biểu đồ so sánh thời gian chạy theo từng mode và so sánh thuật toán tốt nhất giữa các mode.
 
 ---
-
-## 10. Hướng phát triển
-
-Trong tương lai, dự án có thể mở rộng theo các hướng sau:
-
-- Bổ sung thêm thuật toán mới như D*, LRTA*, Genetic Algorithm hoặc Monte Carlo Tree Search.
-- Cho phép người dùng tự tạo bản đồ và tự đặt vật cản.
-- Thêm chế độ so sánh số node mở rộng, độ dài đường đi và số lần quay lui giữa các thuật toán.
-- Cải thiện giao diện chọn mode, bảng thống kê và phần giải thích thuật toán trong game.
-- Mở rộng Mode 6 với nhiều loại đối thủ và nhiều dạng sự kiện ngẫu nhiên hơn.
-
----
-
-## 11. Nguồn tham khảo và credit
+## 10. Nguồn tham khảo và credit
 
 Dự án có sử dụng và tùy biến một số tài nguyên đồ họa pixel-art từ **Sprout Lands Asset Pack** của **Cup Nooble**. Các tài nguyên này được dùng cho mục đích học tập, minh họa giao diện và xây dựng môi trường game.
 
