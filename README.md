@@ -1,5 +1,24 @@
 # Smart Farm AI Robot
 
+## Thông tin nhóm thực hiện
+
+| Thông tin | Nội dung |
+|---|---|
+| Môn học | Trí tuệ nhân tạo |
+| Lớp | ARIN330585_08 |
+| Giảng viên | Phan Thị Huyền Trang |
+
+### Nhóm thực hiện
+
+| STT | Họ và tên | MSSV |
+|---:|---|---|
+| 1 | Nguyễn Thanh Tâm | 24133052 |
+| 2 | Bùi Phạm Đức Thắng | 24133056 |
+| 3 | Trần Thị Phương Trang | 24133065 |
+| 4 | Phạm Quý Vỹ | 24133077 |
+
+---
+
 Đồ án mô phỏng robot nông nghiệp **AGRI-1** khôi phục khu vườn sau bão bằng các thuật toán Trí tuệ nhân tạo. Game được xây dựng bằng **Python** và **Pygame**, trong đó mỗi khu vực trên bản đồ đại diện cho một nhóm thuật toán khác nhau.
 
 Robot không chỉ di chuyển theo đường có sẵn mà phải tự chọn mục tiêu, tìm đường, cập nhật trạng thái môi trường và xử lý nhiệm vụ. Nhờ mô phỏng trên bản đồ lưới, quá trình hoạt động của từng thuật toán có thể được quan sát trực tiếp thông qua đường đi, node đã duyệt, trạng thái cây, vùng quan sát, đối thủ và các hiệu ứng trong game.
@@ -321,5 +340,9 @@ https://cupnooble.itch.io/sprout-lands-asset-pack
 Cup Nooble. (n.d.). Cup Nooble official links.
 https://cupnooble.carrd.co/
 ```
+
+Bản quyền gốc của các asset thuộc về tác giả Cup Nooble. Dự án này chỉ sử dụng tài nguyên trong phạm vi học tập và báo cáo môn học. Nếu phát triển hoặc phát hành ở phạm vi thương mại, cần kiểm tra lại điều khoản sử dụng chính thức của asset pack.
+
+### 10.3. Ghi chú sử dụng trong đồ án
 
 Toàn bộ phần cài đặt, chỉnh sửa logic game, tích hợp thuật toán, giao diện demo, animation và báo cáo được nhóm thực hiện nhằm phục vụ đồ án môn học. Các phần có sử dụng tài nguyên hoặc mã nguồn bên thứ ba đã được ghi rõ ở mục credit/license để đảm bảo minh bạch nguồn gốc.
