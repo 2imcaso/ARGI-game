@@ -281,7 +281,28 @@ Các kết quả chính:
 - Tạo biểu đồ so sánh thời gian chạy theo từng mode và so sánh thuật toán tốt nhất giữa các mode.
 
 ---
-## 10. Nguồn tham khảo và credit
+## 10. Nguồn tham khảo, credit và license
+
+### 10.1. License source code tham khảo
+
+Dự án có sử dụng, tham khảo hoặc tùy biến một số thành phần từ phần mềm được cấp phép theo **MIT License**. Nhóm giữ lại thông tin bản quyền và nội dung giấy phép gốc để tuân thủ điều kiện sử dụng của tác giả.
+
+Thông tin bản quyền gốc:
+
+```text
+Copyright (c) 2024 Artem Shchirov
+```
+
+MIT License cho phép sử dụng, sao chép, chỉnh sửa, gộp, phân phối và cấp phép lại phần mềm, với điều kiện phải giữ nguyên thông báo bản quyền và nội dung giấy phép trong các bản sao hoặc phần quan trọng của phần mềm.
+
+Nội dung license gốc đã được lưu trong file:
+
+```text
+LICENSE
+THIRD_PARTY_LICENSES.md
+```
+
+### 10.2. Credit tài nguyên đồ họa
 
 Dự án có sử dụng và tùy biến một số tài nguyên đồ họa pixel-art từ **Sprout Lands Asset Pack** của **Cup Nooble**. Các tài nguyên này được dùng cho mục đích học tập, minh họa giao diện và xây dựng môi trường game.
 
@@ -302,3 +323,7 @@ https://cupnooble.carrd.co/
 ```
 
 Bản quyền gốc của các asset thuộc về tác giả Cup Nooble. Dự án này chỉ sử dụng tài nguyên trong phạm vi học tập và báo cáo môn học. Nếu phát triển hoặc phát hành ở phạm vi thương mại, cần kiểm tra lại điều khoản sử dụng chính thức của asset pack.
+
+### 10.3. Ghi chú sử dụng trong đồ án
+
+Toàn bộ phần cài đặt, chỉnh sửa logic game, tích hợp thuật toán, giao diện demo, animation và báo cáo được nhóm thực hiện nhằm phục vụ đồ án môn học. Các phần có sử dụng tài nguyên hoặc mã nguồn bên thứ ba đã được ghi rõ ở mục credit/license để đảm bảo minh bạch nguồn gốc.
