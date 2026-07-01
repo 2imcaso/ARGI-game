@@ -70,6 +70,7 @@ class FarmAIController:
     LIGHTNING_EFFECT_SCALE = 10
     IDS_STEP_DELAY = 0.06
     IDS_ITERATION_DELAY = 0.65
+    IDSA_STEP_DELAY = 0.06
     IDSA_ITERATION_DELAY = 0.65
 
     # ------------------------------------------------------------------ init
@@ -164,6 +165,17 @@ class FarmAIController:
         self.idsa_search_start = None
         self.idsa_search_goal = None
         self.idsa_search_blocked = set()
+        self.idsa_pending_f_limit = None
+        self.idsa_next_f_limit = algorithms.INF
+        self.idsa_stack = []
+        self.idsa_reached = set()
+        self.idsa_frontier = set()
+        self.idsa_saved_g = {}
+        self.idsa_saved_parent = {}
+        self.idsa_saved_scores = {}
+        self.idsa_closed = set()
+        self.idsa_iteration_expansions = 0
+        self.idsa_found_path = None
         self.idsa_total_expansions = 0
         self.idsa_unique_explored = set()
         self.done_tiles = set()
@@ -1647,81 +1659,307 @@ class FarmAIController:
         self.idsa_search_timer = 0.0
         self.idsa_search_start = None
         self.idsa_search_goal = None
+        self.idsa_search_goals = set()
         self.idsa_search_blocked = set()
+        self.idsa_pending_f_limit = None
+        self.idsa_next_f_limit = algorithms.INF
+        self.idsa_stack = []
+        self.idsa_reached = set()
+        self.idsa_frontier = set()
+        self.idsa_saved_g = {}
+        self.idsa_saved_parent = {}
+        self.idsa_saved_scores = {}
+        self.idsa_closed = set()
+        self.idsa_iteration_expansions = 0
+        self.idsa_found_path = None
+        self.idsa_found_targets = []
+        self.idsa_found_paths = {}
+        self.idsa_found_limits = {}
         self.idsa_total_expansions = 0
         self.idsa_unique_explored = set()
+
+
+    def _reset_idsa_iteration_stack(self):
+        self.idsa_next_f_limit = algorithms.INF
+        _, _, _, _, start_h = self._best_idsa_h_parts(
+            self.idsa_search_start, self.idsa_search_goals)
+        self.idsa_stack = [(
+            start_h, start_h, 0, next(self.counter),
+            self.idsa_search_start)]
+        self.idsa_reached = {self.idsa_search_start}
+        self.idsa_frontier = {self.idsa_search_start}
+        self.idsa_closed = set()
+        self.idsa_iteration_expansions = 0
+        self.idsa_found_path = None
+        self.astar_explored = set()
+
+
+    def _active_idsa_goals(self):
+        return (
+            set(self.idsa_search_goals)
+            - set(self.idsa_found_targets)
+            - set(self.done_tiles)
+            - set(self.discovered_blocked)
+            - set(self.enemy_done_tiles))
+
+
+    def _best_idsa_h_parts(self, current, goals=None):
+        goals = set(goals) if goals is not None else self._active_idsa_goals()
+        if not goals:
+            return None, 0, 0, 0, 0
+        best = None
+        for target in goals:
+            priority, distance, condition_cost, h_val = (
+                self._mode2_h_parts(current, target))
+            key = (h_val, priority, distance, target, condition_cost)
+            if best is None or key < best[0]:
+                best = (
+                    key, target, priority, distance, condition_cost, h_val)
+        _, target, priority, distance, condition_cost, h_val = best
+        return target, priority, distance, condition_cost, h_val
+
+
+    def _idsa_parent_h_parts(self, node, goals=None):
+        parent = self.idsa_saved_parent.get(node, node)
+        target, priority, distance, condition_cost, h_val = (
+            self._best_idsa_h_parts(parent, goals))
+        return parent, target, priority, distance, condition_cost, h_val
+
+
+    def _next_idsa_found_target(self, remaining=None):
+        remaining_set = set(remaining) if remaining is not None else None
+        for target in self.idsa_found_targets:
+            if target in self.done_tiles:
+                continue
+            if target in self.discovered_blocked:
+                continue
+            if target in self.enemy_done_tiles:
+                continue
+            if remaining_set is not None and target not in remaining_set:
+                continue
+            return target
+        return None
+
+
+    def _move_to_idsa_target(self, target):
+        start = self._world_to_tile(self.player.rect.center)
+        if start == target:
+            path = []
+        elif start == self.idsa_search_start and target in self.idsa_found_paths:
+            path = list(self.idsa_found_paths[target])
+        else:
+            blocked = self._blocked_tiles()
+            blocked.discard(start)
+            blocked.discard(target)
+            path, _, _ = algorithms.bfs(start, target, blocked, self._neighbors)
+        self.mode2_current_leg_g = len(path)
+        self.mode2_current_leg_start = start
+        self.mode2_current_leg_target = target
+        self.current_target = target
+        self.path = path
+        self.state = "MOVE"
+        self.stats.update({
+            "Target": f"{target}",
+            "Path length": len(path),
+            "Found f limit": self.idsa_found_limits.get(target, "-"),
+        })
+        self.message = (
+            f"IDSA den {target} "
+            f"(tim thay o f-limit {self.idsa_found_limits.get(target, '-')})")
+
+
+    def _begin_idsa_search(self, start, goals):
+        self._clear_full_garden_plan()
+        self.idsa_search_start = start
+        self.idsa_search_goals = set(goals)
+        self.idsa_search_goal, _, _, _, start_h = self._best_idsa_h_parts(
+            start, self.idsa_search_goals)
+        self.idsa_f_limit = start_h
+        self.idsa_search_timer = 0.0
+        self.idsa_pending_f_limit = None
+        self.idsa_search_blocked = self._blocked_tiles()
+        self.idsa_search_blocked.discard(start)
+        for goal in self.idsa_search_goals:
+            self.idsa_search_blocked.discard(goal)
+        self.idsa_found_targets = []
+        self.idsa_found_paths = {}
+        self.idsa_found_limits = {}
+        self.idsa_saved_g = {start: 0}
+        self.idsa_saved_parent = {}
+        self.idsa_saved_scores = {}
+        self.idsa_total_expansions = 0
+        self.idsa_unique_explored = set()
+        self._reset_idsa_iteration_stack()
+        self.current_target = None
+        self.path = []
+        self.state = "IDSA_SEARCH"
+        self.player.direction.update(0, 0)
+        self.stats = {
+            "Algorithm": "IDSA",
+            "Target": f"{self.idsa_search_goal}",
+            "f limit": self.idsa_f_limit,
+            "Restart from": f"{start}",
+            "This iteration": 0,
+            "Total expansions": 0,
+            "Unique explored": 0,
+        }
+        self.message = (
+            f"IDSA bat dau f-limit {self.idsa_f_limit} tu spawn {start}")
 
 
     def _update_idsa_search(self, dt):
         self.player.direction.update(0, 0)
         if self.idsa_search_timer > 0:
             self.idsa_search_timer = max(0, self.idsa_search_timer - dt)
+            if (self.idsa_search_timer == 0
+                    and self.idsa_pending_f_limit is not None):
+                self.idsa_f_limit = self.idsa_pending_f_limit
+                self.idsa_pending_f_limit = None
+                self.idsa_next_f_limit = algorithms.INF
+                self.idsa_iteration_expansions = 0
+                self.astar_explored = set()
+                self.message = (
+                    f"IDSA mo rong tam nhin f-limit {self.idsa_f_limit}")
             return
 
-        next_limit, path, explored, hit_depth_guard = (
-            algorithms.idastar_iteration(
-                self.idsa_search_start,
-                self.idsa_search_goal,
-                self.idsa_search_blocked,
-                self._neighbors,
-                self._search_heuristic,
-                self.idsa_f_limit))
+        if self.idsa_pending_f_limit is not None:
+            self.idsa_f_limit = self.idsa_pending_f_limit
+            self.idsa_pending_f_limit = None
+            self.idsa_next_f_limit = algorithms.INF
+            self.idsa_iteration_expansions = 0
+            self.astar_explored = set()
+            self.message = (
+                f"IDSA mo rong tam nhin f-limit {self.idsa_f_limit}")
+            return
 
-        self.astar_explored = set(explored)
-        self.idsa_unique_explored.update(explored)
-        self.idsa_total_expansions += len(explored)
-        current_node = self.idsa_search_start
-        priority, distance_h, condition_cost, h_val = self._mode2_h_parts(
-            current_node, self.idsa_search_goal)
-        g_leg = len(path) if path is not None else 0
-        g_val = self.mode2_total_g + g_leg
-        f_val = g_val + h_val
+        active_goals = self._active_idsa_goals()
+        if not active_goals:
+            target = self._next_idsa_found_target()
+            if target is not None:
+                self._move_to_idsa_target(target)
+                return
+            self.state = "DONE"
+            self.message = "IDSA: da xu ly het muc tieu"
+            return
+
+        while self.idsa_stack:
+            queued_f, stored_h, queued_neg_g, _, queued_node = (
+                self.idsa_stack[0])
+            queued_g = self.idsa_saved_g.get(queued_node, -queued_neg_g)
+            if (-queued_neg_g != queued_g
+                    or queued_node in self.idsa_closed):
+                heapq.heappop(self.idsa_stack)
+                continue
+            _, _, _, _, _, queued_h = self._idsa_parent_h_parts(
+                queued_node, active_goals)
+            refreshed_f = queued_g + queued_h
+            if refreshed_f != queued_f or queued_h != stored_h:
+                heapq.heappop(self.idsa_stack)
+                heapq.heappush(
+                    self.idsa_stack,
+                    (refreshed_f, queued_h, -queued_g,
+                     next(self.counter), queued_node))
+                continue
+            break
+
+        if not self.idsa_stack:
+            self.state = "DONE"
+            self.message = "IDSA: PQ rong, khong con node de duyet"
+            return
+
+        f_val, h_val, queued_neg_g, _, current = self.idsa_stack[0]
+        g_leg = -queued_neg_g
+        if f_val > self.idsa_f_limit:
+            self.idsa_next_f_limit = f_val
+            self.idsa_pending_f_limit = self.idsa_f_limit + 2
+            self.idsa_search_timer = self.IDSA_ITERATION_DELAY
+            self.message = (
+                f"IDSA da xu ly het PQ trong limit {self.idsa_f_limit}; "
+                f"mo rong len {self.idsa_pending_f_limit}")
+            return
+
+        heapq.heappop(self.idsa_stack)
+        (
+            h_origin, best_target, priority, distance_h,
+            condition_cost, h_val
+        ) = self._idsa_parent_h_parts(current, active_goals)
+        self.idsa_search_goal = best_target
+
+        self.idsa_frontier.discard(current)
+        self.idsa_closed.add(current)
+        self.astar_explored.add(current)
+        self.idsa_unique_explored.add(current)
+        self.idsa_total_expansions += 1
+        self.idsa_iteration_expansions += 1
+        self.idsa_saved_scores[current] = {
+            "g": g_leg, "h": h_val, "f": f_val,
+            "target": best_target, "f_limit": self.idsa_f_limit,
+        }
+
+        found_current = current in active_goals
+        if found_current and current not in self.idsa_found_targets:
+            self.idsa_found_targets.append(current)
+            self.idsa_found_limits[current] = self.idsa_f_limit
+            self.idsa_found_paths[current] = algorithms.reconstruct_path(
+                self.idsa_saved_parent, current)
+
+        expansion_goals = (
+            active_goals - {current} if found_current else active_goals)
+        generated = 0
+        if expansion_goals:
+            for next_tile in self._neighbors(
+                    current, self.idsa_search_blocked):
+                next_g = g_leg + self._step_cost(current, next_tile)
+                if next_g >= self.idsa_saved_g.get(
+                        next_tile, algorithms.INF):
+                    continue
+                next_target, _, _, _, next_h = self._best_idsa_h_parts(
+                    current, expansion_goals)
+                next_f = next_g + next_h
+                self.idsa_saved_g[next_tile] = next_g
+                self.idsa_saved_parent[next_tile] = current
+                self.idsa_saved_scores[next_tile] = {
+                    "g": next_g, "h": next_h, "f": next_f,
+                    "target": next_target, "f_limit": self.idsa_f_limit,
+                }
+                self.idsa_closed.discard(next_tile)
+                heapq.heappush(
+                    self.idsa_stack,
+                    (next_f, next_h, -next_g, next(self.counter), next_tile))
+                self.idsa_frontier.add(next_tile)
+                self.idsa_reached.add(next_tile)
+                generated += 1
+
         self.stats = {
             "Algorithm": "IDSA",
+            "Target": f"{best_target}",
+            "Current node": f"{current}",
             "f(n)": f"{f_val}",
-            "g(n)": f"{g_val}",
-            "h(n)": f"{h_val}",
+            "g(n)": f"{g_leg}",
+            "h(n)": f"{distance_h} + {condition_cost} = {h_val}",
+            "h origin": f"parent {h_origin}",
             "h distance": f"{distance_h}",
             "h condition": (
                 f"2 * {priority} = {condition_cost} "
-                f"({self._condition_for_tile(self.idsa_search_goal)})"),
-            "h formula": "Manhattan + 2 * condition",
+                f"({self._condition_for_tile(best_target)})"),
+            "h formula": "Manhattan(parent, target) + 2 * condition",
             "f limit": self.idsa_f_limit,
-            "g leg": g_leg,
-            "g completed": self.mode2_total_g,
-            "g formula": "+1 per move",
-            "Restart from": f"{self.idsa_search_start}",
-            "This iteration": len(explored),
+            "Next f limit": self.idsa_f_limit + 2,
+            "PQ size": len(self.idsa_stack),
+            "Generated neighbors": generated,
+            "g formula": "A*: g(child) = g(parent) + step_cost",
+            "Saved nodes": len(self.idsa_saved_scores),
+            "This iteration": self.idsa_iteration_expansions,
             "Total expansions": self.idsa_total_expansions,
             "Unique explored": len(self.idsa_unique_explored),
-            "Target": f"{self.idsa_search_goal}",
         }
-        if hit_depth_guard:
-            self.stats["Stopped by guard"] = "yes"
-
-        if path is not None:
-            self.mode2_current_leg_g = len(path)
-            self.mode2_current_leg_target = self.idsa_search_goal
-            self.path = path
-            self.state = "MOVE"
-            self.message = (
-                f"IDSA tim thay {self.idsa_search_goal} voi "
-                f"f-limit {self.idsa_f_limit}")
-            self.idsa_search_timer = 0.0
-            return
-
-        if next_limit == algorithms.INF:
-            self.state = "DONE"
-            self.message = "IDSA: khong con node de duyet"
-            return
-
-        finished_limit = self.idsa_f_limit
-        self.idsa_f_limit = next_limit
-        self.idsa_search_timer = self.IDSA_ITERATION_DELAY
         self.message = (
-            f"IDSA f-limit {finished_limit} chua thay; "
-            f"quay lai {self.idsa_search_start}, tang len "
-            f"{self.idsa_f_limit}")
+            f"IDSA/A*: pop {current}, f={f_val}, PQ {len(self.idsa_stack)}")
+
+        if found_current:
+            self._move_to_idsa_target(current)
+            return
+        self.idsa_search_timer = self.IDSA_STEP_DELAY
 
 
     def _mode2_condition_h(self, tile):
@@ -6710,6 +6948,22 @@ class FarmAIController:
                     f"tu {self.ids_search_start}")
                 return
 
+            if self.mode == 2 and self.algorithm_name == "IDSA":
+                if self.idsa_search_start is None:
+                    self._begin_idsa_search(start, remaining)
+                    return
+                self.idsa_search_goals.update(remaining)
+                target = self._next_idsa_found_target(remaining)
+                if target is not None:
+                    self._move_to_idsa_target(target)
+                    return
+                self.state = "IDSA_SEARCH"
+                self.player.direction.update(0, 0)
+                self.message = (
+                    f"IDSA tiep tuc f-limit {self.idsa_f_limit} "
+                    f"tu spawn {self.idsa_search_start}")
+                return
+
             target = self._next_full_garden_target(remaining, start)
             if target is None:
                 if (self.mode == 4
@@ -7627,8 +7881,10 @@ class FarmAIController:
                 "Terrain + condition cost",
                 "Path length", "Nodes explored", "Queue max",
                 "Stack max", "Current depth limit"),
-            2: ("Target", "f(n)", "g(n)", "h(n)", "h distance",
-                "h condition", "h formula", "f limit", "Path length",
+            2: ("Target", "Current node", "f(n)", "g(n)", "h(n)",
+                "h origin", "h distance", "h condition", "f limit",
+                "Next f limit", "PQ size",
+                "Generated neighbors", "Saved nodes", "Path length",
                 "Nodes explored", "This iteration", "Total expansions"),
             3: ("Target", "Target type", "Current score", "Hill steps",
                 "Beam width", "Generated", "Temperature", "Delta",
@@ -7645,7 +7901,7 @@ class FarmAIController:
             else common.get(self.mode, ()))
         items = [(key, self.stats[key]) for key in keys if key in self.stats]
         if self.mode in common:
-            return items[:7]
+            return items[:10] if self.mode == 2 else items[:7]
 
         hidden = {
             "Algorithm", "Robot Algorithm", "Planning mode", "Phase",

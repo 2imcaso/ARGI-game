@@ -92,15 +92,9 @@ class Game:
 
         if pygame.K_1 <= event.key <= pygame.K_6:
             self.start_day(event.key - pygame.K_0)
-        elif event.key == pygame.K_m:
-            self.level.toggle_manual_control()
-        elif event.key == pygame.K_SPACE and self.level.manual_control:
-            self.level.manual_repair_current_tile()
-        elif (event.key == pygame.K_q and self.mode in (1, 2, 3, 4, 5, 6)
-              and not self.level.manual_control):
+        elif event.key == pygame.K_q and self.mode in (1, 2, 3, 4, 5, 6):
             self.level.cycle_algorithm(-1)
-        elif (event.key == pygame.K_e and self.mode in (1, 2, 3, 4, 5, 6)
-              and not self.level.manual_control):
+        elif event.key == pygame.K_e and self.mode in (1, 2, 3, 4, 5, 6):
             self.level.cycle_algorithm(1)
         elif event.key == pygame.K_RETURN and self.mode == 6:
             self.show_ending()

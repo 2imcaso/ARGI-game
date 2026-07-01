@@ -73,10 +73,12 @@ class Level:
 		# Day 2 - A*: warehouse lane, with storm debris blocking the route.
 		2: {
 			'area_name': 'Khu 2 - Loi vao nha kho',
-			'spawn_tile': (18, 18),
+			'spawn_tile': (19, 20),
 			'obstacles': [
 				(19,15),(20,15),(21,15),(22,15),(23,15),(24,15),(25,15),(26,15),
+				(18,19),(18,20),(18,21),
 				(19,21),(20,21),(21,21),(22,21),(23,21),(24,21),(25,21),(26,21),
+				(27,21),(28,21),
 				(21,16),(21,17),(21,18),
 				(23,18),(23,19),(23,20),
 				(25,16),(25,17),(25,18),
@@ -86,10 +88,13 @@ class Level:
 				(21,15): 'rock_pile', (22,15): 'bush',
 				(23,15): 'storm_debris', (24,15): 'broken_crate',
 				(25,15): 'fallen_log', (26,15): 'storm_debris',
+				(18,19): 'rock_pile', (18,20): 'storm_debris',
+				(18,21): 'rock_pile',
 				(19,21): 'storm_debris', (20,21): 'stump_small',
 				(21,21): 'broken_crate', (22,21): 'rock_pile',
 				(23,21): 'fallen_log', (24,21): 'storm_debris',
 				(25,21): 'bush', (26,21): 'rock_pile',
+				(27,21): 'storm_debris', (28,21): 'rock_pile',
 				(21,16): 'fallen_log', (21,17): 'bush', (21,18): 'rock_pile',
 				(23,18): 'broken_crate', (23,19): 'stump_small', (23,20): 'storm_debris',
 				(25,16): 'rock_pile', (25,17): 'fallen_log', (25,18): 'broken_crate',
