@@ -191,14 +191,14 @@ class FarmAIController:
         self.visual_assets = self._load_visual_assets()
         self.fog_time = 0.0
 
-        # --- Thá»‘ng kĂª hiá»ƒn thá»‹ chung ---
+        
         self.stats = {}
         self.algorithm_elapsed_seconds = {}
 
-        # --- Mode 1 (BFS): lÆ°u explored nodes ---
+        # --- Mode 1 (BFS): luu explored nodes ---
         self.bfs_explored = set()
 
-        # --- Mode 2 (A*): lÆ°u explored + f/g/h hiá»‡n táº¡i ---
+        # --- Mode 2 (A*)
         self.astar_explored = set()
         self.astar_current_fgh = (0, 0, 0)  # (f, g, h) má»›i nháº¥t
 
@@ -3103,7 +3103,7 @@ class FarmAIController:
                 accepted_worse = True
                 break
 
-        self.anneal_temperature = max(0.1, self.anneal_temperature * 0.90)
+        self.anneal_temperature = max(0.1, self.anneal_temperature * 0.95)
         if accepted is None:
             self._set_local_stats("Annealing", None, current_score, {
                 "Rejected": len(ordered),
