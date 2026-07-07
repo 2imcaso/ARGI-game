@@ -214,6 +214,7 @@ class FarmAIController:
         self.hc_current_score = 0
         self.hc_best_neighbor_score = 0
         self.anneal_temperature = 80.0
+        self._reset_local_beam_search()
         self.tile_conditions = self._build_tile_conditions()
         self.mode6_crop_profiles = {
             tile: dict(algorithms.MODE6_TREE_STATUS.get(
@@ -438,6 +439,7 @@ class FarmAIController:
         self.astar_explored.clear()
         self.hc_scores.clear()
         self.anneal_temperature = 80.0
+        self._reset_local_beam_search()
         self.and_or_intended_tile = None
         self.and_or_actual_tile = None
         self.and_or_outcome_probability = 0
@@ -2936,6 +2938,43 @@ class FarmAIController:
         self.hc_best_neighbor_score = score
 
 
+    def _reset_local_beam_search(self):
+        self.local_beam_parent_queue = deque()
+        self.local_beam_child_queue = []
+        self.local_beam_current_beam = []
+        self.local_beam_initial_beam = []
+        self.local_beam_generation = 0
+        self.local_beam_generated = 0
+
+
+    def _local_beam_state_valid(self, state, remaining_set):
+        return (
+            state.get("node") in remaining_set
+            and state.get("node") not in self.done_tiles
+            and state.get("node") not in self.enemy_done_tiles
+            and state.get("node") not in self.discovered_blocked)
+
+
+    def _local_beam_keep_best_children(self, child_queue, scores, start,
+                                       beam_width):
+        child_states = {}
+        for candidate in child_queue:
+            child = candidate["node"]
+            previous = child_states.get(child)
+            if (previous is None
+                    or (len(candidate["path"]), tuple(candidate["path"]))
+                    < (len(previous["path"]), tuple(previous["path"]))):
+                child_states[child] = candidate
+        return sorted(
+            child_states.values(),
+            key=lambda state: (
+                scores.get(state["node"], 0),
+                self._heuristic(start, state["node"]),
+                state["node"],
+            ),
+        )[:beam_width]
+
+
     def _hill_climbing_step_choose(self, remaining, start):
         """Hill Climbing bien the di xuong: chon lang gieng co score nho hon."""
         scores = self._local_scores(start, remaining)
@@ -3027,37 +3066,90 @@ class FarmAIController:
 
 
     def _local_beam_step_choose(self, remaining, start, beam_width=3):
-        """Local Beam: giu k ung vien, sinh tat ca lang gieng, chon k tot nhat."""
+        """Local Beam: sua het k node cha, gom con, roi chon k con tot nhat."""
         scores = self._local_scores(start, remaining)
-        if start not in self.dryness:
-            beam = sorted(
-                remaining,
-                key=lambda tile: (self._heuristic(start, tile), scores.get(tile, 0), tile)
-            )[:beam_width]
-        else:
-            seed = self._remaining_neighbors(remaining, start)
-            if not seed:
-                seed = list(remaining)
-            beam = sorted(
-                seed,
-                key=lambda tile: (scores.get(tile, 0), self._heuristic(start, tile), tile)
-            )[:beam_width]
+        remaining_set = set(remaining)
+        self.local_beam_parent_queue = deque(
+            state for state in self.local_beam_parent_queue
+            if self._local_beam_state_valid(state, remaining_set))
+        self.local_beam_child_queue = [
+            state for state in self.local_beam_child_queue
+            if self._local_beam_state_valid(state, remaining_set)
+        ]
 
-        children = []
-        for tile in beam:
-            children.extend(self._remaining_neighbors(remaining, tile))
-        pool = set(beam) | set(children)
-        next_beam = sorted(
-            pool,
-            key=lambda tile: (scores.get(tile, 0), self._heuristic(start, tile), tile)
-        )[:max(1, min(beam_width, len(pool)))]
-        target = next_beam[0] if next_beam else None
-        target_score = scores.get(target, 0) if target is not None else 0
+        if not self.local_beam_parent_queue:
+            if self.local_beam_child_queue:
+                next_states = self._local_beam_keep_best_children(
+                    self.local_beam_child_queue, scores, start, beam_width)
+                self.local_beam_parent_queue = deque(next_states)
+                self.local_beam_current_beam = [
+                    state["node"] for state in next_states]
+                self.local_beam_child_queue = []
+                self.local_beam_generation += 1
+            else:
+                initial_beam = sorted(
+                    remaining,
+                    key=lambda tile: (
+                        self._heuristic(start, tile),
+                        scores.get(tile, 0),
+                        tile)
+                )[:beam_width]
+                self.local_beam_parent_queue = deque(
+                    {"node": tile, "parent": start, "path": [tile]}
+                    for tile in initial_beam)
+                self.local_beam_current_beam = list(initial_beam)
+                self.local_beam_initial_beam = list(initial_beam)
+                self.local_beam_generation = 0
+
+        if not self.local_beam_parent_queue:
+            self._set_local_stats("Local Beam", None, 0, {
+                "Beam width": beam_width,
+                "Initial beam": f"{self.local_beam_initial_beam}",
+                "Generated": self.local_beam_generated,
+                "Generations": self.local_beam_generation,
+                "Stop rule": "No successor from current beam",
+            })
+            self.state = "DONE"
+            return None
+
+        parent_queue_before = [
+            state["node"] for state in self.local_beam_parent_queue]
+        current_state = self.local_beam_parent_queue.popleft()
+        target = current_state["node"]
+        target_parent = current_state["parent"]
+        current_beam_set = set(self.local_beam_current_beam)
+        blocked_for_children = (
+            set(self.done_tiles)
+            | set(self.enemy_done_tiles)
+            | set(self.discovered_blocked)
+            | current_beam_set)
+        for child in self._remaining_neighbors(remaining, target):
+            if child in blocked_for_children or child in current_state["path"]:
+                continue
+            self.local_beam_generated += 1
+            self.local_beam_child_queue.append({
+                "node": child,
+                "parent": target,
+                "path": current_state["path"] + [child],
+            })
+
+        child_queue_nodes = [
+            state["node"] for state in self.local_beam_child_queue]
+        next_parent_queue = [
+            state["node"] for state in self.local_beam_parent_queue]
+        target_score = scores.get(target, 0)
         self._set_local_stats("Local Beam", target, target_score, {
             "Beam width": beam_width,
-            "Beam": f"{next_beam}",
-            "Generated": len(children),
-            "Rule": "Lowest score in successor beam",
+            "Initial beam": f"{self.local_beam_initial_beam}",
+            "Expanded beam": f"{parent_queue_before}",
+            "Beam": f"{self.local_beam_current_beam}",
+            "Parent": f"{target_parent}",
+            "Beam path": f"{current_state['path']}",
+            "Generated": self.local_beam_generated,
+            "Parent queue": f"{next_parent_queue}",
+            "Child queue": f"{child_queue_nodes}",
+            "Generations": self.local_beam_generation,
+            "Rule": "Repair all k parents, then keep best k children",
         })
         return target
 
@@ -7934,6 +8026,10 @@ class FarmAIController:
         elif self.mode == 1 and self.algorithm_name == "DFS":
             keys = tuple(
                 key for key in common[1] if key != "Nodes explored")
+        elif self.mode == 3 and self.algorithm_name == "Local Beam":
+            keys = (
+                "Target", "Initial beam", "Expanded beam", "Beam",
+                "Parent queue", "Child queue", "Parent", "Generations")
         elif self.mode == 2 and self.algorithm_name == "A*_v2":
             keys = (
                 "Target", "f(n)", "g(n)", "g steps", "Turns",

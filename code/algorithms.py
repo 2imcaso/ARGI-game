@@ -804,7 +804,7 @@ def ucs_to_any_goal(start, goals, blocked, neighbors, counter,
                     step_cost=unit_step_cost, initial_cost=0):
     goals = set(goals)
     open_set = []
-    heapq.heappush(open_set, (initial_cost, 0, initial_cost, next(counter), start))
+    heapq.heappush(open_set, (initial_cost, next(counter), start))
     came_from = {}
     g_score = {start: initial_cost}
     explored = set()
@@ -814,7 +814,7 @@ def ucs_to_any_goal(start, goals, blocked, neighbors, counter,
     last_pushed = 1
 
     while open_set:
-        current_g, _, _, _, current = heapq.heappop(open_set)
+        current_g, _, current = heapq.heappop(open_set)
         if current_g > g_score.get(current, INF):
             continue
         if current in closed:
@@ -832,7 +832,7 @@ def ucs_to_any_goal(start, goals, blocked, neighbors, counter,
                 came_from[next_tile] = current
                 heapq.heappush(
                     open_set,
-                    (new_g, new_g, new_g, next(counter), next_tile))
+                    (new_g, next(counter), next_tile))
                 last_pushed += 1
         max_frontier = max(max_frontier, len(open_set))
 
@@ -1037,7 +1037,7 @@ def ucs_full_traversal_plan(start, goals, blocked, neighbors, counter,
                             step_cost=unit_step_cost):
     goals = set(goals)
     open_set = []
-    heapq.heappush(open_set, (0, 0, next(counter), start))
+    heapq.heappush(open_set, (0, next(counter), start))
     came_from = {}
     g_score = {start: 0}
     closed = set()
@@ -1049,7 +1049,7 @@ def ucs_full_traversal_plan(start, goals, blocked, neighbors, counter,
     last_pushed = 1
 
     while open_set and len(plan) < len(goals):
-        current_g, _, _, current = heapq.heappop(open_set)
+        current_g, _, current = heapq.heappop(open_set)
         if current_g > g_score.get(current, INF):
             continue
         if current in closed:
@@ -1067,7 +1067,7 @@ def ucs_full_traversal_plan(start, goals, blocked, neighbors, counter,
                 g_score[next_tile] = tentative_g
                 heapq.heappush(
                     open_set,
-                    (tentative_g, tentative_g, next(counter), next_tile))
+                    (tentative_g, next(counter), next_tile))
                 last_pushed += 1
         max_frontier = max(max_frontier, len(open_set))
 
